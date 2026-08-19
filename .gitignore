@@ -1,0 +1,10 @@
+state/
+.private/
+recon/
+research/
+*.tmp
+__pycache__/
+*.pyc
+dist/
+build/
+*.egg-info/
