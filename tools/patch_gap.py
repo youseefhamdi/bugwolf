@@ -42,10 +42,10 @@ from urllib.parse import quote, urlparse
 
 try:
     from tools.runtime_paths import CODE_ROOT, workspace_root
-    from tools.safety import AuthorizationError, require_authorized_target, validate_public_https_url
+    from tools.safety import AuthorizationError, require_authorized_target, safe_path, safe_target_name, validate_public_https_url
 except ImportError:  # direct script execution
     from runtime_paths import CODE_ROOT, workspace_root
-    from safety import AuthorizationError, require_authorized_target, validate_public_https_url
+    from safety import AuthorizationError, require_authorized_target, safe_path, safe_target_name, validate_public_https_url
 
 ROOT = workspace_root()
 sys.path.insert(0, str(CODE_ROOT))
@@ -183,7 +183,7 @@ def search_exploitdb(cve_id: str) -> List[str]:
 
     # Try the direct CVE search
     try:
-        url = f"https://www.exploit-db.com/search?cve={cve_id}"
+        url = f"https://www.exploit-db.com/search?cve={quote(cve_id)}"
         req = Request(url, headers={"User-Agent": "BugWolf/1.0",
                                      "X-Requested-With": "XMLHttpRequest"})
         with urlopen(req, timeout=15) as resp:
@@ -694,7 +694,8 @@ def main():
         print(json.dumps(poc, indent=2))
 
     elif args.safety_check:
-        content = Path(args.safety_check).read_text()
+        poc_path = safe_path(args.safety_check, ROOT, allow_missing=False)
+        content = poc_path.read_text()
         safe, warnings = safety_check_poc(content)
         if safe:
             print("[+] PoC passed safety checks")

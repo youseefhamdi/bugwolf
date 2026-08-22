@@ -34,7 +34,6 @@ import json
 import sys
 import time
 import hashlib
-import subprocess
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Any, Tuple
@@ -834,7 +833,13 @@ def main():
     # Load findings
     findings = []
     if args.findings_file:
-        raw = Path(args.findings_file).read_text()
+        findings_path = Path(args.findings_file).expanduser().resolve()
+        try:
+            findings_path.relative_to(ROOT.resolve())
+        except ValueError:
+            print(f"[!] findings file must be inside the project root: {args.findings_file}")
+            sys.exit(2)
+        raw = findings_path.read_text()
         findings = [json.loads(l) for l in raw.splitlines() if l.strip()]
     else:
         try:

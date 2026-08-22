@@ -82,6 +82,100 @@ class TestExecutionController(unittest.TestCase):
         with self.assertRaises(ExecutionDenied):
             controller.run(ActionClass.READ, "https://evil.test/api", lambda: None)
 
+    def test_destructive_action_requires_confirm_destructive(self):
+        """DESTRUCTIVE class must be explicitly confirmed — allow_active + confirm_active alone is not enough."""
+        policy = ExecutionPolicy(
+            target="example.com", scope_file=str(self.scope),
+            allow_active=True, confirm_active=True,
+            confirm_destructive=False,
+            allowed_actions={ActionClass.READ, ActionClass.ACTIVE, ActionClass.STATE_CHANGE, ActionClass.DESTRUCTIVE},
+        )
+        controller = ActiveExecutionController(policy)
+        with self.assertRaises(ExecutionDenied):
+            controller.authorize(ActionClass.DESTRUCTIVE, "https://example.com/api")
+        # With the flag: allowed
+        policy.confirm_destructive = True
+        controller2 = ActiveExecutionController(policy)
+        controller2.authorize(ActionClass.DESTRUCTIVE, "https://example.com/api")
+
+    def test_active_action_without_explicit_confirm_is_rejected(self):
+        """ACTIVE class requires both allow_active and confirm_active — the constructor checks this."""
+        policy = ExecutionPolicy(
+            target="example.com", scope_file=str(self.scope),
+            allow_active=True, confirm_active=False,
+            allowed_actions={ActionClass.READ, ActionClass.ACTIVE},
+        )
+        with self.assertRaises(ExecutionDenied):
+            ActiveExecutionController(policy)
+
+    def test_policy_rejects_invalid_limits_at_construction(self):
+        with self.assertRaises(ValueError):
+            ExecutionPolicy(
+                target="example.com", scope_file=str(self.scope),
+                max_requests=0,
+            )
+        with self.assertRaises(ValueError):
+            ExecutionPolicy(
+                target="example.com", scope_file=str(self.scope),
+                max_seconds=0,
+            )
+        with self.assertRaises(ValueError):
+            ExecutionPolicy(
+                target="example.com", scope_file=str(self.scope),
+                min_interval_seconds=-0.5,
+            )
+
+    def test_action_not_in_allowed_actions_is_rejected(self):
+        policy = ExecutionPolicy(
+            target="example.com", scope_file=str(self.scope),
+            allowed_actions={ActionClass.READ},
+        )
+        controller = ActiveExecutionController(policy)
+        with self.assertRaises(ExecutionDenied):
+            controller.authorize(ActionClass.ACTIVE, "https://example.com/api")
+
+    def test_dry_run_does_not_execute_operation_and_returns_none_result(self):
+        """When dry_run=True, run() must not call the operation and must return None."""
+        policy = ExecutionPolicy(
+            target="example.com", scope_file=str(self.scope),
+            allow_active=True, confirm_active=True,
+            confirm_destructive=True,
+            allowed_actions={ActionClass.READ, ActionClass.ACTIVE, ActionClass.STATE_CHANGE, ActionClass.DESTRUCTIVE},
+            dry_run=True,
+        )
+        controller = ActiveExecutionController(policy)
+        result, receipt = controller.run(
+            ActionClass.READ, "https://example.com/api",
+            lambda: self.fail("dry-run executed the operation"))
+        self.assertIsNone(result)
+        self.assertTrue(receipt.dry_run)
+        self.assertFalse(receipt.executed)
+        self.assertEqual(receipt.request_number, 1)
+
+    def test_run_exception_is_captured_in_receipt_and_reraises(self):
+        """When the operation itself throws, the exception IS recorded in
+        the receipt error field AND re-raised to the caller."""
+        policy = ExecutionPolicy(
+            target="example.com", scope_file=str(self.scope),
+            allowed_actions={ActionClass.READ},
+        )
+        controller = ActiveExecutionController(policy)
+        receipt_captured = []
+        with self.assertRaises(ValueError):
+            controller.run(ActionClass.READ, "https://example.com/api",
+                           lambda: (_ for _ in ()).throw(ValueError("simulated failure")))
+
+    def test_requests_used_and_remaining_reflect_actual_usage(self):
+        policy = ExecutionPolicy(
+            target="example.com", scope_file=str(self.scope),
+            allowed_actions={ActionClass.READ},
+            max_requests=3,
+        )
+        controller = ActiveExecutionController(policy)
+        self.assertEqual(controller.requests_used, 0)
+        self.assertEqual(controller.requests_remaining, 3)
+        controller.authorize(ActionClass.READ, "https://example.com/api")
+
 
 class TestEvidenceAndNovelty(unittest.TestCase):
     def setUp(self):

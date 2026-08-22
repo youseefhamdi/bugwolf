@@ -14,7 +14,8 @@ from tools.chain_of_custody import ChainOfCustody
 from tools.evidence import EvidenceStore
 from tools.exploit_gen import (
     gen_curl, gen_metasploit_template, gen_python_poc, gen_solidity_poc,
-    gen_burp_extension,
+    gen_burp_extension, gen_nuclei_template, generate_exploit, _safe_url,
+    _safe_method, _safe_identifier, _safe_headers,
 )
 from tools.recon_exec import main as recon_exec_main
 from tools.schema_extractor import _ScopedRedirectHandler
@@ -145,6 +146,85 @@ class TestGeneratedArtifactHardening(unittest.TestCase):
 
         curl = gen_curl(finding)
         self.assertNotIn("\r", curl)
+
+
+class TestExploitGenSanitization(unittest.TestCase):
+    """Coverage-gap tests: untested branches in exploit_gen sanitizers."""
+
+    def test_generate_exploit_blocks_path_traversal_in_output_dir(self):
+        with self.assertRaises(ValueError):
+            generate_exploit(
+                {"finding_id": "test", "title": "t", "endpoint": "https://x.com/",
+                 "method": "GET"},
+                output_dir="..",
+            )
+
+    def test_safe_url_rejects_non_http_schemes(self):
+        self.assertEqual(_safe_url("https://example.com/api"), "https://example.com/api")
+        self.assertNotEqual(_safe_url("file:///etc/passwd"), "file:///etc/passwd")
+
+    def test_safe_method_rejects_unsafe_verbs(self):
+        self.assertEqual(_safe_method("GET"), "GET")
+        self.assertNotEqual(_safe_method(123), "123")
+
+    def test_safe_identifier_rejects_digit_only_input(self):
+        self.assertNotEqual(_safe_identifier("123"), "123")
+        self.assertEqual(_safe_identifier("abc123"), "abc123")
+
+    def test_safe_headers_rejects_non_dict_values(self):
+        self.assertEqual(_safe_headers([("X-Foo", "bar")]), {})
+
+    def test_gen_nuclei_template_emits_valid_yaml_structure(self):
+        result = gen_nuclei_template({
+            "title": "test", "endpoint": "https://example.com/",
+            "method": "GET", "bug_class": "sqli",
+        })
+        self.assertIn("id:", result)
+        self.assertIn("info:", result)
+
+    def test_generate_exploit_defaults_to_curl_and_python_formats(self):
+        import shutil
+        result = generate_exploit({
+            "finding_id": "test-1", "title": "t",
+            "endpoint": "https://example.com/", "method": "GET",
+        })
+        self.assertIn("curl", result)
+        self.assertIn("python", result)
+        # Clean up generated files
+        dirs = {Path(p).parent for p in result.values() if Path(p).parent.exists()}
+        for d in dirs:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_generate_exploit_skips_unknown_format(self):
+        import shutil
+        result = generate_exploit(
+            {"finding_id": "test-2", "title": "t",
+             "endpoint": "https://example.com/", "method": "GET"},
+            formats=["rust"],
+        )
+        self.assertEqual(result, {})
+        # Clean up empty dir
+        default_dir = Path("exploits/test_2")
+        if default_dir.exists():
+            shutil.rmtree(default_dir, ignore_errors=True)
+
+    def test_gen_curl_includes_body_and_parameter_when_present(self):
+        """Branches: body-present and parameter-present in gen_curl."""
+        result = gen_curl({
+            "method": "POST", "endpoint": "https://example.com/api",
+            "request_body": '{"key":"value"}',
+            "parameter": "id",
+        })
+        self.assertIn("-d", result)
+        self.assertIn("Vulnerable parameter", result)
+
+    def test_gen_metasploit_handles_endpoint_without_port(self):
+        """Endpoint without a port falls through the colon/digit branch."""
+        result = gen_metasploit_template({
+            "title": "No Port", "endpoint": "https://example.com/api",
+            "method": "POST",
+        })
+        self.assertIn("Opt::RPORT", result)
 
 
 if __name__ == "__main__":

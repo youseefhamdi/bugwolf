@@ -15,7 +15,7 @@ from tools.agent_isolation import AgentIsolationChecker
 from tools.infra_deploy import InfraManager
 from tools.retest_scheduler import RetestJob, execute_job
 from tools.fleet import parse_targets
-from tools.safety import AuthorizationError, require_authorized_target, target_in_scope
+from tools.safety import AuthorizationError, load_authorized_scope, require_authorized_target, safe_path, safe_target_name, target_in_scope, validate_http_url, validate_public_https_url
 
 
 class TestAuthorizationScope(unittest.TestCase):
@@ -58,6 +58,77 @@ class TestAuthorizationScope(unittest.TestCase):
             require_authorized_target("example.com", bad)
         with self.assertRaises(AuthorizationError):
             require_authorized_target("other.com", self.scope_file)
+
+    # --- validate_http_url gaps ---
+
+    def test_validate_http_url_rejects_credentials_and_control_characters(self):
+        with self.assertRaises(AuthorizationError):
+            validate_http_url("http://user:pass@example.com/api")
+        with self.assertRaises(AuthorizationError):
+            validate_http_url("http://example.com/api\x00sneaky")
+
+    def test_validate_http_url_rejects_non_http_schemes(self):
+        with self.assertRaises(AuthorizationError):
+            validate_http_url("file:///etc/passwd")
+        with self.assertRaises(AuthorizationError):
+            validate_http_url("javascript:alert(1)")
+
+    def test_validate_http_url_rejects_out_of_scope_url_when_scope_is_supplied(self):
+        scope = {"authorized": True, "in_scope_domains": ["example.com"]}
+        with self.assertRaises(AuthorizationError):
+            validate_http_url("https://evil.test/api", scope)
+
+    # --- validate_public_https_url gap ---
+
+    def test_validate_public_https_url_rejects_private_ips(self):
+        with self.assertRaises(AuthorizationError):
+            validate_public_https_url("https://127.0.0.1/admin")
+        with self.assertRaises(AuthorizationError):
+            validate_public_https_url("https://10.0.0.1/api")
+
+    # --- safe_path gap ---
+
+    def test_safe_path_rejects_missing_file_when_allow_missing_is_false(self):
+        with self.assertRaises(AuthorizationError):
+            safe_path("/nonexistent/path/xyz", self.tmp.name, allow_missing=False)
+
+    # --- safe_target_name gaps ---
+
+    def test_safe_target_name_rejects_dot_dot_and_null(self):
+        with self.assertRaises(AuthorizationError):
+            safe_target_name("")
+        with self.assertRaises(AuthorizationError):
+            safe_target_name(".")
+        with self.assertRaises(AuthorizationError):
+            safe_target_name("..")
+
+    def test_safe_target_name_rejects_slashes_and_backslashes(self):
+        with self.assertRaises(AuthorizationError):
+            safe_target_name("evil/../etc")
+        with self.assertRaises(AuthorizationError):
+            safe_target_name("evil\\..\\etc")
+
+    def test_safe_target_name_rejects_unsupported_characters(self):
+        with self.assertRaises(AuthorizationError):
+            safe_target_name("evil<script>")
+        with self.assertRaises(AuthorizationError):
+            safe_target_name("host with spaces")
+
+    def test_safe_target_name_allows_valid_hostnames(self):
+        self.assertEqual(safe_target_name("example.com"), "example.com")
+        self.assertEqual(safe_target_name("sub-domain.example.com:443"),
+                         "sub-domain.example.com:443")
+        self.assertEqual(safe_target_name("192.168.1.1"), "192.168.1.1")
+
+    # --- load_authorized_scope gaps ---
+
+    def test_load_authorized_scope_rejects_non_json_and_missing_files(self):
+        bad = Path(self.tmp.name) / "bad.json"
+        bad.write_text("not json at all")
+        with self.assertRaises(AuthorizationError):
+            load_authorized_scope(bad)
+        with self.assertRaises(AuthorizationError):
+            load_authorized_scope("/nonexistent/scope.json")
 
 
 class TestAgentIsolationBoundaries(unittest.TestCase):
