@@ -44,6 +44,30 @@ deepseek export --project . --key $env:ANTHROPIC_AUTH_TOKEN --mode pro
 
 For persistence, add the same variables to your PowerShell profile.
 
+## Mandatory staged startup
+
+A newly installed harness must not start hunting directly. Initialize the
+project-local workflow and inspect its current stage:
+
+```bash
+python3 tools/stage_controller.py --target TARGET --mode web --start --json
+python3 tools/stage_controller.py --target TARGET --mode web --status --json
+```
+
+Complete stages only in this order:
+
+```text
+setup → environment-preflight → authorization → passive-recon
+→ asset-intelligence → technology-fingerprint → maps → research
+→ coverage-plan → validation → triage → report
+```
+
+The controller persists `.bugwolf/workflows/TARGET.json` and requires artifacts
+for every transition. It is deliberately fail-closed: missing maps, incomplete
+research, or unavailable current sources stay pending and cannot be skipped.
+APT-level focus means exhaustive authorized intelligence and validation planning
+with bounded execution, not unrestricted scanning or bypassing safety gates.
+
 ## Local CLI tooling support
 
 When Claude Code execution is enabled, BugWolf can orchestrate and call available local tools directly.

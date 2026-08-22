@@ -1,0 +1,182 @@
+{
+  "schema": "bugwolf-synthetic-agent-inventory/v1",
+  "synthetic": true,
+  "data_classification": "test-only; contains no credentials, tokens, personal data, or provider identifiers",
+  "agents": [
+    {
+      "id": "support-copilot-prod",
+      "purpose": "Answer support questions and draft customer follow-up messages",
+      "identity": {
+        "type": "shared_service_principal",
+        "id": "svc-support-copilot",
+        "sponsor": "support-platform"
+      },
+      "input_provenance": false,
+      "tools": [
+        {
+          "name": "send_email",
+          "capability": "external communication",
+          "authorization": null,
+          "approval": null,
+          "policy": null
+        },
+        {
+          "name": "lookup_ticket",
+          "capability": "read support records",
+          "authorization": "session scope"
+        }
+      ],
+      "skill_provenance": {
+        "signed_artifacts": false,
+        "review_status": "unknown"
+      },
+      "memory": {
+        "backend": "shared-redis",
+        "write_mode": "automatic",
+        "tenant_binding": false,
+        "source_provenance": false,
+        "expiry": null,
+        "review_state": "not_supported"
+      },
+      "data_sources": [
+        {
+          "name": "support-vector-index",
+          "access_mode": "shared_namespace",
+          "tenant_filter": false,
+          "sensitivity": "confidential",
+          "labels": ["customer-records"]
+        }
+      ],
+      "runtime": {
+        "max_iterations": 40,
+        "timeout": 90,
+        "output_validation": false,
+        "groundedness": false
+      },
+      "telemetry": {
+        "actor": true,
+        "action": true,
+        "outcome": false,
+        "correlation_id": false
+      },
+      "response": {
+        "incident_sink": null,
+        "owner": null,
+        "playbook": null,
+        "policy_writeback": null
+      }
+    },
+    {
+      "id": "research-assistant-prod",
+      "purpose": "Search tenant-scoped research documents and summarize findings",
+      "identity": {
+        "type": "managed_agent_identity",
+        "id": "agent-research-01",
+        "issuer": "synthetic-idp",
+        "lifetime": "task"
+      },
+      "input_provenance": true,
+      "tools": [
+        {
+          "name": "search_documents",
+          "authorization": "research-read-policy",
+          "approval": "task-bound"
+        }
+      ],
+      "skill_provenance": true,
+      "memory": {
+        "backend": "tenant-memory",
+        "tenant_binding": true,
+        "source_provenance": true,
+        "expiry": "24h"
+      },
+      "data_sources": [
+        {
+          "name": "research-index",
+          "tenant_filter": false,
+          "sensitivity": "internal",
+          "labels": ["tenant-data"]
+        }
+      ],
+      "budgets": {
+        "max_tokens": 4000,
+        "max_tool_calls": 12,
+        "max_cost": "synthetic-limit"
+      },
+      "runtime": {
+        "output_validation": true,
+        "groundedness": true
+      },
+      "telemetry": {
+        "actor": true,
+        "action": true,
+        "outcome": true,
+        "correlation_id": true
+      },
+      "response": {
+        "incident_sink": "synthetic-soc-queue",
+        "owner": "research-security"
+      }
+    },
+    {
+      "id": "billing-operations-agent",
+      "purpose": "Prepare billing changes for human approval",
+      "identity": {
+        "type": "managed_agent_identity",
+        "id": "agent-billing-02",
+        "issuer": "synthetic-idp",
+        "lifetime": "task"
+      },
+      "input_provenance": true,
+      "tools": [
+        {
+          "name": "read_invoice",
+          "authorization": "billing-read-policy",
+          "approval": "task-bound"
+        },
+        {
+          "name": "prepare_adjustment",
+          "authorization": "billing-write-policy",
+          "approval": "human-required"
+        }
+      ],
+      "skill_provenance": true,
+      "memory": {
+        "backend": "tenant-memory",
+        "tenant_binding": true,
+        "source_provenance": true,
+        "expiry": "1h"
+      },
+      "data_sources": [
+        {
+          "name": "billing-index",
+          "tenant_filter": true,
+          "sensitivity": "restricted",
+          "labels": ["financial"]
+        }
+      ],
+      "budgets": {
+        "max_tokens": 3000,
+        "max_tool_calls": 8,
+        "max_cost": "synthetic-limit"
+      },
+      "runtime": {
+        "output_validation": true,
+        "schema_validation": true,
+        "groundedness": true
+      },
+      "telemetry": {
+        "actor": true,
+        "action": true,
+        "outcome": true,
+        "correlation_id": true
+      },
+      "response": {
+        "incident_sink": "synthetic-soc-queue",
+        "owner": "billing-security",
+        "playbook": "billing-agent-containment",
+        "policy_writeback": "billing-policy-review"
+      }
+    }
+  ]
+}

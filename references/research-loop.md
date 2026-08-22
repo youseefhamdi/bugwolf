@@ -1,8 +1,10 @@
 # Mandatory Deep-Research Loop
 
-> **Rule:** research is not a one-time Turn-0 step. Techniques, CVEs, and bypasses age in weeks. A stale skill finds fewer bugs. **After every progress checkpoint, re-research the current surface and refresh the maps, payloads, and knowledge base with the latest techniques and upgrades.** Full accurate picture > fast-but-stale hunt.
+> **Rule:** research is not a one-time Turn-0 step. Techniques, CVEs, and bypasses age in weeks. A stale skill finds fewer bugs. **Every real hunt/recon/novelty run executes the checkpoint sequence strictly in order and refreshes the current surface, maps, payloads, and knowledge base before continuing.** Full accurate picture > fast-but-stale hunt.
 
-Use `tools/research_loop.py --checkpoint <ckpt> --mode <modes> --execute --target T` to **live-execute** the checkpoint: it fetches every canonical source via `urllib`, runs web searches (via `SERPER_API_KEY` / `RESEARCH_SEARCH_API_URL` when configured), and **persists everything to `research/{target}/{checkpoint}/`** — `SUMMARY.md`, `results.json`, and `sources/*.md`. Searches without a provider are recorded as pending for the agent's native web search. Then **write what changed back into the hunt state** (the maps / confidence / payloads).
+The enforced sequence is `pre-hunt → post-recon → post-maps → bypass → post-findings → escalation → pre-report`. `hunt.py` runs the first four before target requests and the final three after observations; `recon_engine.sh` runs the pre-hunt checkpoint before recon and the post-recon/post-maps sequence afterward; `zero_day.py` runs the same before and after local candidate analysis. Each sequence writes `research/<target>/sequence.json` with order, pending searches, and `latest_ready` status.
+
+Use `tools/research_loop.py --checkpoint <ckpt> --mode <modes> --execute --target T` to execute one checkpoint. For a mandatory ordered run use `--sequential --phase full` (or `before_hunt`, `recon`, `after_findings`): it fetches every canonical source via `urllib`, runs the configured live search provider, and persists each checkpoint plus `sequence.json`. `SERPER_API_KEY` / `RESEARCH_SEARCH_API_KEY` and an HTTPS `RESEARCH_SEARCH_API_URL` enable current web search. With `--require-latest`, bundled references are not substituted for live results; unavailable searches are recorded as pending and `latest_ready` is false. Then **write what changed back into the hunt state** (the maps / confidence / payloads).
 
 ## The 5 Checkpoints
 
@@ -14,7 +16,7 @@ Use `tools/research_loop.py --checkpoint <ckpt> --mode <modes> --execute --targe
 | R4 | **Post-findings** | Turn 4, before triage/gates | Latest bypasses + comparable disclosed reports + acceptance rates for the **specific bug classes found** | each finding's confidence + CWE + dedup check; `research/{target}/findings-research.md` |
 | R5 | **Pre-report** | After gates, before writing the report | Current program scope/rules, severity table, recent similar disclosures | report platform-fit + severity calibration + duplication |
 
-**Ordering matters:** R2 research into exact versions beats generic R1 research; R4 research into the exact bug class found beats generic R3 research. Each checkpoint narrows the research to what the hunt has *actually* uncovered, which is how a stale generalist becomes a current specialist.
+**Ordering matters:** R2 research into exact versions beats generic R1 research; R4 research into the exact bug class found beats generic R3 research. The mandatory coordinator never launches checkpoint workers in parallel. Each checkpoint narrows the research to what the hunt has *actually* uncovered, which is how a stale generalist becomes a current specialist.
 
 ## The 2 Event-Driven Checkpoints (fire mid-hunt, not in sequence)
 

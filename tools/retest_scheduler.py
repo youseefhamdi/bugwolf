@@ -31,12 +31,45 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field, asdict
-from urllib.request import urlopen, Request
+from urllib.request import urlopen, Request, HTTPRedirectHandler, build_opener
+from urllib.parse import urlparse
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+try:
+    from tools.safety import (
+        AuthorizationError, require_authorized_target, safe_path,
+        safe_target_name, validate_public_https_url,
+    )
+except ImportError:  # direct script execution
+    from safety import (
+        AuthorizationError, require_authorized_target, safe_path,
+        safe_target_name, validate_public_https_url,
+    )
+
+try:
+    from tools.runtime_paths import CODE_ROOT, workspace_root
+except ImportError:  # direct script execution
+    from runtime_paths import CODE_ROOT, workspace_root
+
+ROOT = workspace_root()
+sys.path.insert(0, str(CODE_ROOT))
 
 RETEST_DIR = ROOT / "state" / "retest"
+
+
+def _target_key(target: str) -> str:
+    """Use one validated filename key for all scheduler state."""
+    return safe_target_name(target).replace(":", "_")
+
+
+class _PublicRedirectHandler(HTTPRedirectHandler):
+    """Reject private/non-HTTPS redirect hops for monitored pages."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            validate_public_https_url(newurl)
+        except AuthorizationError as exc:
+            raise OSError(str(exc)) from exc
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 # ---------------------------------------------------------------------------
@@ -45,9 +78,9 @@ RETEST_DIR = ROOT / "state" / "retest"
 
 @dataclass
 class RetestJob:
-    job_id: str
-    target: str
-    trigger: str  # scope_change, dependency_update, cve_published, new_feature, periodic
+    job_id: str = ""
+    target: str = ""
+    trigger: str = ""  # scope_change, dependency_update, cve_published, new_feature, periodic
     trigger_detail: str = ""
     created_at: str = ""
     scheduled_for: str = ""
@@ -55,6 +88,7 @@ class RetestJob:
     last_result: Optional[Dict] = None
     retry_count: int = 0
     max_retries: int = 3
+    scope_file: Optional[str] = None
 
     def __post_init__(self):
         if not self.created_at:
@@ -75,6 +109,7 @@ class WatchConfig:
     last_scope_check: Optional[str] = None
     last_cve_check: Optional[str] = None
     last_dep_check: Optional[str] = None
+    scope_file: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -82,22 +117,29 @@ class WatchConfig:
 # ---------------------------------------------------------------------------
 
 def fetch_scope_hash(scope_urls: List[str]) -> str:
-    """Fetch scope pages and compute a hash of their content."""
+    """Fetch operator-declared public scope pages with bounded redirects."""
     contents = []
-    for url in scope_urls:
+    opener = build_opener(_PublicRedirectHandler())
+    for raw_url in scope_urls:
         try:
+            url = validate_public_https_url(raw_url)
             req = Request(url, headers={"User-Agent": "BugWolf/1.0"})
-            with urlopen(req, timeout=30) as resp:
-                contents.append(resp.read().decode("utf-8", errors="ignore"))
+            with opener.open(req, timeout=30) as resp:
+                validate_public_https_url(resp.geturl())
+                contents.append(resp.read(2_000_001).decode("utf-8", errors="ignore")[:2_000_000])
         except Exception as e:
-            contents.append(f"ERROR: {e}")
+            contents.append(f"ERROR: {type(e).__name__}: {e}")
 
     return hashlib.sha256("\n".join(contents).encode()).hexdigest()
 
 
 def check_scope_changes(target: str, config: WatchConfig) -> List[RetestJob]:
     """Compare current scope hash to stored hash. If changed, create retest jobs."""
-    scope_file = RETEST_DIR / f"{target}-scope-hash.txt"
+    safe_target_name(target)
+    if not config.scope_file:
+        raise AuthorizationError("scope monitoring requires an authorized scope file")
+    require_authorized_target(target, config.scope_file, active=False)
+    scope_file = RETEST_DIR / f"{_target_key(target)}-scope-hash.txt"
     current_hash = fetch_scope_hash(config.scope_urls)
 
     jobs = []
@@ -175,7 +217,8 @@ def fetch_recent_cves(keywords: List[str], days_back: int = 7) -> List[Dict]:
 
 def check_cves(target: str, config: WatchConfig) -> List[RetestJob]:
     """Check for new CVEs matching the target's tech stack."""
-    cve_file = RETEST_DIR / f"{target}-cve-checkpoint.json"
+    safe_target_name(target)
+    cve_file = RETEST_DIR / f"{_target_key(target)}-cve-checkpoint.json"
     last_check = None
     if cve_file.exists():
         last_check = json.loads(cve_file.read_text())
@@ -216,11 +259,15 @@ def check_dependency_changes(target: str, config: WatchConfig) -> List[RetestJob
     """Check if monitored dependency files have changed."""
     jobs = []
     for dep_path in config.dependency_files:
-        p = Path(dep_path)
+        try:
+            p = safe_path(dep_path, ROOT, allow_missing=False)
+        except AuthorizationError:
+            # A watch entry must not read arbitrary operator files.
+            continue
         if not p.exists():
             continue
 
-        hash_file = RETEST_DIR / f"{target}-dep-{p.name}.hash"
+        hash_file = RETEST_DIR / f"{_target_key(target)}-dep-{p.name}.hash"
         current = hashlib.sha256(p.read_bytes()).hexdigest()
 
         if hash_file.exists():
@@ -245,7 +292,8 @@ def check_dependency_changes(target: str, config: WatchConfig) -> List[RetestJob
 
 def create_periodic_job(target: str, config: WatchConfig) -> List[RetestJob]:
     """Create a periodic retest job if enough time has passed."""
-    periodic_file = RETEST_DIR / f"{target}-last-periodic.txt"
+    safe_target_name(target)
+    periodic_file = RETEST_DIR / f"{_target_key(target)}-last-periodic.txt"
 
     should_run = True
     if periodic_file.exists():
@@ -273,7 +321,8 @@ def create_periodic_job(target: str, config: WatchConfig) -> List[RetestJob]:
 # ---------------------------------------------------------------------------
 
 def load_config(target: str) -> WatchConfig:
-    cfg_file = RETEST_DIR / f"{target}-watch.json"
+    safe_target_name(target)
+    cfg_file = RETEST_DIR / f"{_target_key(target)}-watch.json"
     if cfg_file.exists():
         data = json.loads(cfg_file.read_text())
         return WatchConfig(**data)
@@ -281,8 +330,9 @@ def load_config(target: str) -> WatchConfig:
 
 
 def save_config(target: str, config: WatchConfig):
+    safe_target_name(target)
     RETEST_DIR.mkdir(parents=True, exist_ok=True)
-    cfg_file = RETEST_DIR / f"{target}-watch.json"
+    cfg_file = RETEST_DIR / f"{_target_key(target)}-watch.json"
     cfg_file.write_text(json.dumps(asdict(config), indent=2))
 
 
@@ -323,15 +373,25 @@ def dequeue_jobs(status: str = "pending") -> List[RetestJob]:
     return jobs
 
 
-def execute_job(job: RetestJob) -> Dict:
-    """Execute a retest job by running the hunt engine against the target."""
-    hunt_script = ROOT / "tools" / "hunt.py"
+def execute_job(job: RetestJob, scope_file: Optional[str] = None) -> Dict:
+    """Execute a retest only with an explicit authorized scope file."""
+    try:
+        selected_scope = scope_file or job.scope_file
+        require_authorized_target(job.target, selected_scope, active=False)
+        safe_target_name(job.target)
+    except AuthorizationError as exc:
+        return {"success": False, "authorization_denied": True,
+                "error": f"Authorization denied: {exc}"}
+
+    hunt_script = CODE_ROOT / "tools" / "hunt.py"
     if not hunt_script.exists():
         return {"success": False, "error": "hunt.py not found"}
 
     try:
+        selected_scope = scope_file or job.scope_file
         result = subprocess.run(
-            [sys.executable, str(hunt_script), "--target", job.target, "--quick"],
+            [sys.executable, str(hunt_script), "--target", job.target,
+             "--quick", "--scope-file", selected_scope],
             capture_output=True, text=True, timeout=300)
 
         return {
@@ -346,14 +406,14 @@ def execute_job(job: RetestJob) -> Dict:
         return {"success": False, "error": str(e)}
 
 
-def run_pending_jobs() -> int:
-    """Execute all pending jobs. Returns count of executed jobs."""
+def run_pending_jobs(scope_file: Optional[str] = None) -> int:
+    """Execute pending jobs; unscoped jobs fail closed."""
     jobs = dequeue_jobs("pending")
     executed = 0
 
     for job in jobs:
         print(f"  [{job.job_id}] {job.trigger}: {job.target}")
-        result = execute_job(job)
+        result = execute_job(job, scope_file=scope_file)
         job.status = "completed" if result.get("success") else "failed"
         job.last_result = result
 
@@ -364,7 +424,8 @@ def run_pending_jobs() -> int:
 
         executed += 1
 
-        if job.status == "failed" and job.retry_count < job.max_retries:
+        if (job.status == "failed" and job.retry_count < job.max_retries
+                and not result.get("authorization_denied")):
             job.retry_count += 1
             job.status = "pending"
             enqueue_jobs([job])
@@ -410,6 +471,8 @@ class RetestDaemon:
                     all_jobs.extend(create_periodic_job(target, config))
 
                     if all_jobs:
+                        for job in all_jobs:
+                            job.scope_file = config.scope_file
                         print(f"[*] {target}: {len(all_jobs)} new retest job(s)")
                         enqueue_jobs(all_jobs)
 
@@ -441,6 +504,7 @@ def main():
     parser.add_argument("--periodic", type=int, default=24,
                         help="Periodic retest interval in hours (default: 24)")
     parser.add_argument("--run-jobs", action="store_true", help="Execute all pending jobs")
+    parser.add_argument("--scope-file", help="Authorized scope for retest execution")
     parser.add_argument("--list-jobs", action="store_true", help="List pending jobs")
     args = parser.parse_args()
 
@@ -466,6 +530,8 @@ def main():
             config.dependency_files = args.watch_deps
         if args.periodic:
             config.periodic_interval_hours = args.periodic
+        if args.scope_file:
+            config.scope_file = args.scope_file
         save_config(args.check, config)
 
         jobs = []
@@ -483,7 +549,7 @@ def main():
             print(f"[*] No retests needed for {args.check}")
 
     elif args.run_jobs:
-        count = run_pending_jobs()
+        count = run_pending_jobs(scope_file=args.scope_file)
         print(f"[*] Executed {count} job(s)")
 
     elif args.list_jobs:

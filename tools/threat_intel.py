@@ -26,13 +26,44 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field, asdict
-from urllib.request import urlopen, Request
+from urllib.request import urlopen, Request, HTTPRedirectHandler, build_opener
 from urllib.parse import quote
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+try:
+    from tools.runtime_paths import CODE_ROOT, workspace_root
+    from tools.safety import (
+        AuthorizationError, load_authorized_scope, require_authorized_target,
+        safe_target_name, validate_http_url,
+    )
+    from tools.evidence import redact
+except ImportError:  # direct script execution
+    from runtime_paths import CODE_ROOT, workspace_root
+    from safety import (
+        AuthorizationError, load_authorized_scope, require_authorized_target,
+        safe_target_name, validate_http_url,
+    )
+    from evidence import redact
+
+ROOT = workspace_root()
+sys.path.insert(0, str(CODE_ROOT))
 
 INTEL_DIR = ROOT / "state" / "intel"
+
+
+class _ScopedRedirectHandler(HTTPRedirectHandler):
+    """Keep feature monitoring inside the declared target scope."""
+
+    def __init__(self, scope: Dict[str, Any]):
+        super().__init__()
+        self.scope = scope
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            validate_http_url(newurl, self.scope)
+        except AuthorizationError as exc:
+            raise OSError(str(exc)) from exc
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -66,6 +97,7 @@ class TargetProfile:
     h1_program_handle: Optional[str] = None
     bugcrowd_handle: Optional[str] = None
     intigriti_handle: Optional[str] = None
+    scope_file: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +337,7 @@ def map_cves_to_target(target: TargetProfile, recent_days: int = 30) -> List[Int
 # Source: Feature/Changelog Monitoring
 # ---------------------------------------------------------------------------
 
-def check_new_features(target: TargetProfile) -> List[IntelItem]:
+def check_new_features(target: TargetProfile, *, scope_file: Optional[str] = None) -> List[IntelItem]:
     """Monitor for new features that might introduce attack surface.
 
     Checks:
@@ -315,9 +347,19 @@ def check_new_features(target: TargetProfile) -> List[IntelItem]:
       - New subdomain discovery
     """
     items = []
+    selected_scope = scope_file or target.scope_file
+    try:
+        scope = load_authorized_scope(selected_scope) if selected_scope else None
+    except AuthorizationError:
+        return items
+    opener = build_opener(_ScopedRedirectHandler(scope)) if scope else None
 
-    # Check common changelog URLs
+    # Check common changelog URLs only after the target scope gate.
     for domain in target.domains:
+        try:
+            require_authorized_target(domain, selected_scope, active=False)
+        except AuthorizationError:
+            continue
         changelog_urls = [
             f"https://{domain}/changelog",
             f"https://{domain}/releases",
@@ -328,8 +370,10 @@ def check_new_features(target: TargetProfile) -> List[IntelItem]:
 
         for url in changelog_urls:
             try:
+                validate_http_url(url, scope)
                 req = Request(url, headers={"User-Agent": "BugWolf/1.0"})
-                with urlopen(req, timeout=10) as resp:
+                with (opener or build_opener()).open(req, timeout=10) as resp:
+                    validate_http_url(resp.geturl(), scope)
                     html = resp.read().decode("utf-8", errors="ignore")
                     # Simple new feature detection: look for date patterns
                     import re
@@ -423,7 +467,7 @@ class ThreatIntel:
 
         if "feature" in sources and target.domains:
             print(f"  [*] Checking for new features...")
-            items = check_new_features(target)
+            items = check_new_features(target, scope_file=target.scope_file)
             all_items.extend(items)
             print(f"      {len(items)} feature signals")
 
@@ -440,14 +484,16 @@ class ThreatIntel:
 
     def _save_intel(self, target_name: str, items: List[IntelItem]):
         """Save intelligence to the state store."""
-        intel_file = INTEL_DIR / f"{target_name}-intel.jsonl"
+        safe_target_name(target_name)
+        intel_file = INTEL_DIR / f"{target_name.replace(':', '_')}-intel.jsonl"
         with open(intel_file, "w") as f:
             for item in items:
-                f.write(json.dumps(asdict(item)) + "\n")
+                f.write(json.dumps(redact(asdict(item))) + "\n")
 
     def load_intel(self, target_name: str) -> List[IntelItem]:
         """Load cached intelligence for a target."""
-        intel_file = INTEL_DIR / f"{target_name}-intel.jsonl"
+        safe_target_name(target_name)
+        intel_file = INTEL_DIR / f"{target_name.replace(':', '_')}-intel.jsonl"
         if not intel_file.exists():
             return []
         return [IntelItem(**json.loads(l))
@@ -537,6 +583,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="BugWolf Threat Intelligence")
     parser.add_argument("--target", help="Target domain/name")
+    parser.add_argument("--scope-file", help="Explicit authorization scope for target URLs")
     parser.add_argument("--tech-stack", nargs="+", help="Technology stack keywords")
     parser.add_argument("--cve-keywords", nargs="+", help="CVE search keywords")
     parser.add_argument("--h1-program", help="HackerOne program handle")
@@ -579,6 +626,7 @@ def main():
             cve_keywords=args.cve_keywords or [args.target],
             tech_stack=args.tech_stack or [],
             h1_program_handle=args.h1_program,
+            scope_file=args.scope_file,
         )
 
         sources = [s.strip() for s in args.sources.split(",")]

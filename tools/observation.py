@@ -36,13 +36,24 @@ import json
 import os
 import hashlib
 import difflib
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback
+    fcntl = None
 from enum import Enum
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field, asdict
 
-ROOT = Path(__file__).resolve().parent.parent
+try:
+    from tools.runtime_paths import workspace_root
+    from tools.evidence import redact
+except ImportError:  # direct script execution
+    from runtime_paths import workspace_root
+    from evidence import redact
+
+ROOT = workspace_root()
 
 SCHEMA_VERSION = "observation-oracle-v1"
 
@@ -219,11 +230,19 @@ class ObservationRecord:
             "reasoning_chain": [asdict(s) for s in self.reasoning_chain],
             "llm_note": self.llm_note,
             "llm_priority_hint": self.llm_priority_hint,
-            "follow_up": asdict(self.follow_up) if self.follow_up else None,
+            "follow_up": self._follow_up_dict(),
             "provenance": self.provenance,
         }
         canonical = json.dumps(payload, sort_keys=True, default=str)
         return hashlib.sha256(canonical.encode()).hexdigest()
+
+    def _follow_up_dict(self) -> Optional[Dict[str, Any]]:
+        """Serialize follow-up enums to their stable wire values."""
+        if not self.follow_up:
+            return None
+        value = asdict(self.follow_up)
+        value["kind"] = self.follow_up.kind.value
+        return value
 
     # -- serialization ------------------------------------------------------
 
@@ -246,7 +265,7 @@ class ObservationRecord:
             "reasoning_chain": [asdict(s) for s in self.reasoning_chain],
             "llm_note": self.llm_note,
             "llm_priority_hint": self.llm_priority_hint,
-            "follow_up": asdict(self.follow_up) if self.follow_up else None,
+            "follow_up": self._follow_up_dict(),
             "provenance": self.provenance,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -268,7 +287,10 @@ class ObservationRecord:
             if not d:
                 return None
             fu = d.copy()
-            fu["kind"] = FollowUpKind(fu["kind"])
+            kind = fu.get("kind", "")
+            if isinstance(kind, str) and kind.startswith("FollowUpKind."):
+                kind = kind.rsplit(".", 1)[-1].lower()
+            fu["kind"] = FollowUpKind(kind)
             fu["requests"] = [RequestSpec(**r) for r in fu.get("requests", [])]
             return FollowUpExperiment(**fu)
 
@@ -574,7 +596,7 @@ class OracleValidator:
     def _r7_header_divergence(self, record: ObservationRecord):
         """Material header additions in the candidate (e.g. Set-Cookie,
         error markers) — observable side effect, so not a clean refutation."""
-        if not record.metrics.header_additions:
+        if not (record.metrics.header_additions or record.metrics.header_removals):
             return None
         detail = (f"candidate introduced headers: "
                   f"{', '.join(record.metrics.header_additions)} "
@@ -591,8 +613,9 @@ class OracleValidator:
         body_ok = m.body_identical
         redirect_ok = (tuple(record.candidate.redirect_chain)
                        == tuple(record.control.redirect_chain))
-        header_ok = not m.header_additions
-        if status_ok and body_ok and timing_ok and redirect_ok and header_ok:
+        header_ok = not (m.header_additions or m.header_removals)
+        size_ok = m.size_delta == 0
+        if status_ok and body_ok and timing_ok and redirect_ok and header_ok and size_ok:
             detail = (f"candidate reproduced control behavior across status, body, "
                       f"timing, redirects, and headers — the payload produced no "
                       f"observable delta. Experiment refuted.")
@@ -606,7 +629,8 @@ class OracleValidator:
         body_ok = m.body_identical
         redirect_ok = (tuple(record.candidate.redirect_chain)
                        == tuple(record.control.redirect_chain))
-        if status_ok and body_ok and redirect_ok:
+        if status_ok and body_ok and redirect_ok and not (
+                m.header_additions or m.header_removals) and m.size_delta == 0:
             detail = (f"residual deltas below thresholds; no observable delta "
                       f"worth pursuing. Experiment refuted.")
             return (ObservationState.REFUTED, detail, None)
@@ -761,9 +785,13 @@ def _url_injected(loc: str, url: str) -> bool:
 def atomic_append(path: Path, line: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
+        if fcntl:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         f.write(line.rstrip("\n") + "\n")
         f.flush()
         os.fsync(f.fileno())
+        if fcntl:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 def _obs_file(target: str) -> Path:
@@ -772,8 +800,13 @@ def _obs_file(target: str) -> Path:
 
 
 def save_observation(target: str, record: ObservationRecord):
-    """Persist an observation record (append-only)."""
-    atomic_append(_obs_file(target), json.dumps(record.to_dict()))
+    """Persist a redacted observation record (append-only)."""
+    # Preserve hashes and structure while ensuring bodies, headers, and
+    # provenance cannot turn state into a credential/PII dump.
+    payload = redact(record.to_dict())
+    payload.pop("record_hash", None)
+    stored = ObservationRecord.from_dict(payload)
+    atomic_append(_obs_file(target), json.dumps(stored.to_dict()))
 
 
 def load_observations(target: str) -> List[ObservationRecord]:

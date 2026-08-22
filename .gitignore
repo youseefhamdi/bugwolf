@@ -1,5 +1,6 @@
 state/
 .private/
+vault/
 recon/
 research/
 *.tmp

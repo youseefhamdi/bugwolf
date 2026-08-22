@@ -24,14 +24,26 @@ import json
 import os
 import re
 import sys
+import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+try:
+    from tools.runtime_paths import CODE_ROOT, workspace_root
+except ImportError:  # direct script execution
+    from runtime_paths import CODE_ROOT, workspace_root
+
+try:
+    from tools.adaptive_learning import AdaptiveMemory
+except ImportError:  # direct script execution
+    from adaptive_learning import AdaptiveMemory
+
+ROOT = workspace_root()
+sys.path.insert(0, str(CODE_ROOT))
 
 
 @dataclass
@@ -337,6 +349,65 @@ class ResearchLoop:
 # ---------------------------------------------------------------------------
 
 USER_AGENT = "bugwolf-research/1.0 (+https://github.com/Gabson0x/bugwolf)"
+MAX_FETCH_BYTES = 2_000_000
+MAX_SEARCH_BYTES = 1_000_000
+
+# Every real run uses these in order. The event-driven checkpoints are included
+# in the mandatory sweep so bypass/escalation knowledge is not lost merely
+# because the first probe did not produce a finding yet.
+MANDATORY_RESEARCH_SEQUENCE = (
+    "pre-hunt", "post-recon", "post-maps", "bypass",
+    "post-findings", "escalation", "pre-report",
+)
+BEFORE_HUNT_SEQUENCE = MANDATORY_RESEARCH_SEQUENCE[:4]
+AFTER_FINDINGS_SEQUENCE = MANDATORY_RESEARCH_SEQUENCE[4:]
+
+
+class _SameHostRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Prevent canonical-source fetches from following cross-host redirects."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old = urllib.parse.urlparse(req.full_url)
+        new = urllib.parse.urlparse(newurl)
+        if new.scheme not in {"http", "https"} or new.hostname != old.hostname:
+            raise urllib.error.URLError("cross-host research redirect rejected")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_RESEARCH_OPENER = urllib.request.build_opener(_SameHostRedirectHandler())
+
+
+def _offline_search(query: str, limit: int = 5) -> List[Dict]:
+    """Search the bundled references when no external provider is configured.
+
+    This keeps the research layer useful and deterministic in Freebuff/offline
+    sessions. Results are explicitly marked as bundled references, never as
+    live internet research.
+    """
+    terms = [term.lower() for term in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", query.lower())]
+    if not terms:
+        return []
+    matches = []
+    for path in sorted(CODE_ROOT.glob("references/**/*.md")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        lowered = text.lower()
+        score = sum(lowered.count(term) for term in terms)
+        if score <= 0:
+            continue
+        lines = [line.strip() for line in text.splitlines()
+                 if line.strip() and not line.lstrip().startswith("#")]
+        snippet = " ".join(lines[:3])[:500]
+        matches.append((score, path, snippet))
+    matches.sort(key=lambda item: (-item[0], str(item[1])))
+    return [{
+        "title": path.stem.replace("-", " ").replace("_", " ").title(),
+        "url": f"bundle://{path.relative_to(CODE_ROOT).as_posix()}",
+        "snippet": snippet,
+        "source": "bundled_reference",
+    } for _, path, snippet in matches[:max(1, limit)]]
 
 
 def _html_to_text(markup: str, max_chars: int = 50000) -> str:
@@ -367,17 +438,25 @@ def _read_lines(path: Path) -> List[str]:
 
 
 def fetch_url(url: str, timeout: int = 12) -> Dict:
-    """Live-fetch a canonical source. Returns {url, final_url, status, text,
-    content_type, error}. Never raises — failures are reported in the dict."""
+    """Fetch a canonical source with bounded, same-host redirects."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return {"url": url, "final_url": url, "status": 0, "text": "",
+                "content_type": "", "error": "research sources must use HTTPS"}
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            raw = r.read().decode("utf-8", "ignore")
+        with _RESEARCH_OPENER.open(req, timeout=timeout) as r:
+            length = r.headers.get("Content-Length")
+            if length and int(length) > MAX_FETCH_BYTES:
+                raise ValueError("research response exceeds size limit")
+            raw_bytes = r.read(MAX_FETCH_BYTES + 1)
+            if len(raw_bytes) > MAX_FETCH_BYTES:
+                raise ValueError("research response exceeds size limit")
             return {
                 "url": url,
                 "final_url": r.geturl(),
                 "status": r.status,
-                "text": raw,
+                "text": raw_bytes.decode("utf-8", "ignore"),
                 "content_type": r.headers.get("content-type", ""),
                 "error": "",
             }
@@ -392,34 +471,65 @@ def fetch_url(url: str, timeout: int = 12) -> Dict:
         }
 
 
-def search_web(query: str, limit: int = 5, timeout: int = 12) -> List[Dict]:
-    """Live web search via a pluggable backend.
+def search_web(query: str, limit: int = 5, timeout: int = 12,
+               allow_offline: bool = True) -> List[Dict]:
+    """Search through the configured provider, then bundled references.
 
-    Prefers SERPER_API_KEY, then a custom RESEARCH_SEARCH_API_URL + key.
-    Returns a list of {title, url, snippet}. Returns [] when no provider is
-    configured (caller should mark the query as pending for the agent).
+    The fallback is intentionally labelled as local research so the executor
+    can distinguish it from live search and the layer no longer appears broken
+    merely because SERPER credentials are unavailable.
     """
     key = os.environ.get("SERPER_API_KEY") or os.environ.get("RESEARCH_SEARCH_API_KEY")
     api_url = os.environ.get("RESEARCH_SEARCH_API_URL", "https://google.serper.dev/search")
-    if not key:
+    if not key and not allow_offline:
+        search_web.last_backend = "live_provider_unconfigured"
         return []
-    payload = json.dumps({"q": query, "num": limit}).encode("utf-8")
-    req = urllib.request.Request(
-        api_url, data=payload,
-        headers={"X-API-KEY": key, "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = json.loads(r.read().decode("utf-8", "ignore"))
-    except Exception:
+    if key:
+        parsed = urllib.parse.urlparse(api_url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            if not allow_offline:
+                search_web.last_backend = "invalid_provider"
+                return []
+            search_web.last_backend = "invalid_provider"
+            return _offline_search(query, limit)
+        payload = json.dumps({"q": query, "num": limit}).encode("utf-8")
+        req = urllib.request.Request(
+            api_url, data=payload,
+            headers={"X-API-KEY": key, "Content-Type": "application/json"})
+        try:
+            with _RESEARCH_OPENER.open(req, timeout=timeout) as r:
+                if urllib.parse.urlparse(r.geturl()).hostname != parsed.hostname:
+                    raise ValueError("cross-host search redirect rejected")
+                raw = r.read(MAX_SEARCH_BYTES + 1)
+                if len(raw) > MAX_SEARCH_BYTES:
+                    raise ValueError("search response exceeds size limit")
+                data = json.loads(raw.decode("utf-8", "ignore"))
+            out = [{
+                "title": org.get("title", ""),
+                "url": org.get("link", ""),
+                "snippet": org.get("snippet", ""),
+                "source": "live_search",
+            } for org in data.get("organic", [])[:limit]]
+            if out:
+                search_web.last_backend = "live_search"
+                return out
+            if not allow_offline:
+                search_web.last_backend = "live_provider_empty"
+                return []
+        except Exception:
+            # In a latest-required run, a failed provider must remain pending;
+            # bundled references are not current web results.
+            if not allow_offline:
+                search_web.last_backend = "live_provider_error"
+                return []
+    if not allow_offline:
+        search_web.last_backend = "live_provider_unconfigured"
         return []
-    out: List[Dict] = []
-    for org in data.get("organic", [])[:limit]:
-        out.append({
-            "title": org.get("title", ""),
-            "url": org.get("link", ""),
-            "snippet": org.get("snippet", ""),
-        })
-    return out
+    search_web.last_backend = "bundled_reference"
+    return _offline_search(query, limit)
+
+
+search_web.last_backend = "unknown"
 
 
 class ResearchExecutor:
@@ -432,6 +542,11 @@ class ResearchExecutor:
         self.run_search = run_search
         self.limit = limit
         self.timeout = timeout
+        # A custom research base is normally <workspace>/research. Keep the
+        # adaptive store beside state in that same workspace for deterministic
+        # tests and installed-bundle runs.
+        learning_root = self.base.parent if base_dir else ROOT
+        self.learning = AdaptiveMemory(self.target, root=learning_root)
 
     def _checkpoint_dir(self, checkpoint: str) -> Path:
         safe = re.sub(r"[^\w.\-]+", "_", self.target)
@@ -440,9 +555,16 @@ class ResearchExecutor:
         return d
 
     def execute(self, loop: "ResearchLoop", checkpoint: str,
-                modes: List[str]) -> Dict:
-        """Fetch + search every task, persist to research/{target}/{checkpoint}/."""
+                modes: List[str], *, require_latest: bool = False) -> Dict:
+        """Fetch + search every task, persist to research/{target}/{checkpoint}/.
+
+        ``require_latest`` disables the bundled-reference fallback for search
+        tasks. This is used by mandatory run orchestration so an offline result
+        cannot be mistaken for current internet research.
+        """
         tasks = loop.tasks(checkpoint, modes)
+        approved_learning = self.learning.approved(limit=32)
+        approved_ids = [record["technique_id"] for record in approved_learning]
         cdir = self._checkpoint_dir(checkpoint)
         sources_dir = cdir / "sources"
         sources_dir.mkdir(exist_ok=True)
@@ -469,9 +591,16 @@ class ResearchExecutor:
             elif t.task_type == "search":
                 rec["query"] = t.query
                 if self.run_search:
-                    results = search_web(t.query, limit=self.limit, timeout=self.timeout)
+                    results = search_web(
+                        t.query, limit=self.limit, timeout=self.timeout,
+                        allow_offline=not require_latest)
                     rec["results"] = results
                     rec["pending"] = not results
+                    backend = getattr(search_web, "last_backend", "unknown")
+                    # Tests and integrations may inject a plain callable/mock;
+                    # never let adapter metadata make the persisted JSON invalid.
+                    rec["research_source"] = (
+                        backend if isinstance(backend, str) else "injected_adapter")
                 else:
                     rec["results"] = []
                     rec["pending"] = True
@@ -479,8 +608,9 @@ class ResearchExecutor:
                 from tools.wordlist_gen import (
                     generate as wl_generate, research_terms as wl_research,
                     save_cache as wl_save_cache)
-                urls = _read_lines(ROOT / "recon" / self.target / "urls.txt")
-                js = _read_lines(ROOT / "recon" / self.target / "jsfiles.txt")
+                safe_recon_target = re.sub(r"[^\w.-]+", "_", self.target)
+                urls = _read_lines(ROOT / "recon" / safe_recon_target / "urls.txt")
+                js = _read_lines(ROOT / "recon" / safe_recon_target / "jsfiles.txt")
                 defense = getattr(loop, "defense", "")
                 bug_classes = getattr(loop, "bug_classes", []) or []
                 bug_class = bug_classes[0] if bug_classes else ""
@@ -490,12 +620,24 @@ class ResearchExecutor:
                 words = wl_generate(self.target, mode=t.source, urls=urls,
                                     js_files=js, research_fn=fn,
                                     defense=defense, bug_class=bug_class)
+                learned_terms = [
+                    term for record in approved_learning
+                    for term in record.get("terms", [])
+                ]
+                if learned_terms:
+                    words = list(dict.fromkeys(words + learned_terms))
+                applied_ids = [
+                    record["technique_id"] for record in approved_learning
+                    if any(term in learned_terms for term in record.get("terms", []))
+                ]
                 wdir = cdir / "wordlists"
                 wdir.mkdir(exist_ok=True)
                 fname = wdir / f"{t.source}.txt"
                 fname.write_text("\n".join(words) + ("\n" if words else ""))
                 rec.update({"wordlist_mode": t.source, "count": len(words),
-                            "saved_to": str(fname.relative_to(self.base))})
+                            "saved_to": str(fname.relative_to(self.base)),
+                            "applied_learning": applied_ids})
+                self.learning.mark_used(applied_ids, journey=checkpoint)
                 # also cache to the stable cross-turn location
                 try:
                     wl_save_cache(self.target, t.source, words,
@@ -515,8 +657,116 @@ class ResearchExecutor:
             "modes": modes,
             "executed_at": ts,
             "records": records,
+            "learning": {
+                "approved_available": approved_ids,
+                "reuse_policy": "approved_only",
+            },
         }, indent=2))
-        return {"checkpoint": checkpoint, "dir": str(cdir), "records": records}
+        search_records = [r for r in records if r["task_type"] == "search"]
+        fetch_records = [r for r in records if r["task_type"] == "fetch"]
+        latest_ready = (
+            all(not r.get("pending") and r.get("research_source") in {
+                    "live_search", "injected_adapter"}
+                for r in search_records)
+            and all(not r.get("error") and 200 <= r.get("status", 0) < 400
+                    for r in fetch_records))
+        return {"checkpoint": checkpoint, "dir": str(cdir), "records": records,
+                "latest_required": require_latest,
+                "latest_ready": latest_ready,
+                "learning": {
+                    "approved_available": approved_ids,
+                    "reuse_policy": "approved_only",
+                }}
+
+    def execute_sequential(
+        self, loop: "ResearchLoop", modes: List[str], *,
+        checkpoints: Optional[List[str]] = None,
+        stack: str = "", bug_classes: str = "", defense: str = "",
+        require_latest: bool = True, run_label: str = "",
+    ) -> Dict:
+        """Execute mandatory research checkpoints strictly one after another.
+
+        Context is carried forward: exact stack versions feed R2, discovered
+        bug classes feed R4/R6/R7, and the blocker context feeds bypass queries.
+        A checkpoint failure is recorded and the sequence continues so one
+        unavailable source cannot silently skip the later bypass/escalation
+        research.
+        """
+        selected = list(checkpoints or MANDATORY_RESEARCH_SEQUENCE)
+        unknown = [name for name in selected if name not in CHECKPOINTS]
+        if unknown:
+            raise ValueError(f"unknown research checkpoint(s): {', '.join(unknown)}")
+        if not selected:
+            raise ValueError("at least one research checkpoint is required")
+
+        current_stack = stack
+        current_bug_classes = bug_classes
+        current_defense = defense or "current WAF, filter, rate limit"
+        runs: List[Dict] = []
+        for sequence_number, checkpoint in enumerate(selected, 1):
+            phase_loop = ResearchLoop(
+                target=self.target, stack=current_stack,
+                bug_classes=current_bug_classes, defense=current_defense)
+            result = self.execute(
+                phase_loop, checkpoint, modes, require_latest=require_latest)
+            runs.append({
+                "sequence": sequence_number,
+                "checkpoint": checkpoint,
+                "dir": result["dir"],
+                "latest_required": result["latest_required"],
+                "latest_ready": result["latest_ready"],
+                "records": len(result["records"]),
+                "pending_searches": sum(
+                    1 for record in result["records"]
+                    if record.get("task_type") == "search" and record.get("pending")),
+            })
+
+        target_slug = re.sub(r"[^\w.-]+", "_", self.target) or "default"
+        sequence_path = self.base / target_slug / "sequence.json"
+        sequence_path.parent.mkdir(parents=True, exist_ok=True)
+        latest_ready = all(item["latest_ready"] for item in runs)
+        execution = {
+            "label": run_label or "custom",
+            "sequence": [item["checkpoint"] for item in runs],
+            "runs": runs,
+            "latest_required": require_latest,
+            "latest_ready": latest_ready,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        previous = {}
+        if sequence_path.exists():
+            try:
+                previous = json.loads(sequence_path.read_text())
+            except (OSError, TypeError, json.JSONDecodeError):
+                previous = {}
+        history = list(previous.get("executions", []))
+        history.append(execution)
+        all_checkpoints = [
+            checkpoint for item in history
+            for checkpoint in item.get("sequence", [])
+        ]
+        manifest = {
+            "schema": "research_execution/sequential-v1",
+            "target": self.target,
+            "modes": modes,
+            "sequence": all_checkpoints,
+            # ``runs`` is the current execution for callers that need the
+            # just-completed ordered sweep; ``executions`` remains the full
+            # append-only audit history.
+            "runs": runs,
+            "executions": history,
+            "latest_required": any(item.get("latest_required") for item in history),
+            "latest_ready": all(item.get("latest_ready", False) for item in history),
+            "completed_at": execution["completed_at"],
+        }
+        sequence_path.write_text(json.dumps(manifest, indent=2))
+        return {**manifest, "dir": str(sequence_path.parent),
+                "sequence_file": str(sequence_path),
+                # Keep the current run available to callers.  The manifest's
+                # top-level ``sequence`` is the accumulated audit history, so
+                # CLI/reporting code must not infer the current run from it.
+                "runs": runs,
+                "current_execution": execution}
 
     def _render_summary(self, checkpoint: str, modes: List[str], ts: str,
                         records: List[Dict]) -> str:
@@ -577,6 +827,46 @@ class ResearchExecutor:
         return "\n".join(lines) + "\n"
 
 
+def run_mandatory_research(
+    target: str,
+    modes: List[str] | str,
+    *,
+    phase: str = "full",
+    base_dir: Optional[str] = None,
+    stack: str = "",
+    bug_classes: str = "",
+    defense: str = "",
+    limit: int = 5,
+    timeout: int = 12,
+    require_latest: bool = True,
+    run_search: bool = True,
+) -> Dict:
+    """Run the mandatory sequential research sweep for a real tool run."""
+    if isinstance(modes, str):
+        modes = [item.strip() for item in modes.split(",") if item.strip()]
+    sequences = {
+        "before_hunt": BEFORE_HUNT_SEQUENCE,
+        "recon": ("post-recon", "post-maps"),
+        "bypass": ("bypass",),
+        "after_findings": AFTER_FINDINGS_SEQUENCE,
+        "full": MANDATORY_RESEARCH_SEQUENCE,
+    }
+    if phase not in sequences:
+        raise ValueError(f"unknown mandatory research phase: {phase}")
+    executor = ResearchExecutor(
+        target=target, base_dir=base_dir, run_search=run_search,
+        limit=limit, timeout=timeout)
+    result = executor.execute_sequential(
+        ResearchLoop(target=target, stack=stack,
+                     bug_classes=bug_classes, defense=defense),
+        modes, checkpoints=list(sequences[phase]),
+        stack=stack, bug_classes=bug_classes, defense=defense,
+        require_latest=require_latest, run_label=phase,
+    )
+    result["phase"] = phase
+    return result
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -608,6 +898,13 @@ def main():
                         help="Max search results per query (default: 5)")
     parser.add_argument("--no-search", action="store_true",
                         help="Skip search execution (fetches still run)")
+    parser.add_argument("--require-latest", action="store_true",
+                        help="Do not use bundled references as a substitute for live search")
+    parser.add_argument("--sequential", action="store_true",
+                        help="Run the mandatory checkpoint sequence in order")
+    parser.add_argument("--phase", choices=["before_hunt", "recon", "bypass",
+                        "after_findings", "full"], default="full",
+                        help="Sequential phase to run (default: full)")
     parser.add_argument("--list-checkpoints", action="store_true",
                         help="List checkpoints and exit")
     args = parser.parse_args()
@@ -622,35 +919,66 @@ def main():
                         bug_classes=args.bug_classes, defense=args.defense)
 
     if args.execute:
-        executor = ResearchExecutor(
-            target=args.target, run_search=not args.no_search,
-            limit=args.limit)
-        result = executor.execute(loop, args.checkpoint, modes)
-        summary = {"fetched": sum(1 for r in result["records"]
-                                  if r["task_type"] == "fetch" and not r.get("error")),
-                   "search_done": sum(1 for r in result["records"]
-                                      if r["task_type"] == "search" and not r.get("pending")),
-                   "search_pending": sum(1 for r in result["records"]
-                                         if r["task_type"] == "search" and r.get("pending")),
-                   "maps": sum(1 for r in result["records"] if r["task_type"] == "map"),
-                   "wordlists": sum(1 for r in result["records"]
-                                    if r["task_type"] == "wordlist")}
+        if args.sequential:
+            result = run_mandatory_research(
+                args.target, modes, phase=args.phase,
+                stack=args.stack, bug_classes=args.bug_classes,
+                defense=args.defense, limit=args.limit,
+                require_latest=True, run_search=not args.no_search)
+        else:
+            executor = ResearchExecutor(
+                target=args.target, run_search=not args.no_search,
+                limit=args.limit)
+            result = executor.execute(
+                loop, args.checkpoint, modes,
+                require_latest=args.require_latest)
+        if args.sequential:
+            current_execution = result.get("current_execution", {})
+            current_sequence = current_execution.get("sequence", result["sequence"])
+            current_runs = current_execution.get("runs", result["runs"])
+            summary = {
+                "sequence": current_sequence,
+                "history_sequence": result["sequence"],
+                "latest_required": result["latest_required"],
+                "latest_ready": result["latest_ready"],
+                "sequence_file": result["sequence_file"],
+                "pending_searches": sum(
+                    item["pending_searches"] for item in current_runs),
+            }
+        else:
+            summary = {"fetched": sum(1 for r in result["records"]
+                                      if r["task_type"] == "fetch" and not r.get("error")),
+                       "search_done": sum(1 for r in result["records"]
+                                          if r["task_type"] == "search" and not r.get("pending")),
+                       "search_pending": sum(1 for r in result["records"]
+                                             if r["task_type"] == "search" and r.get("pending")),
+                       "maps": sum(1 for r in result["records"] if r["task_type"] == "map"),
+                       "wordlists": sum(1 for r in result["records"]
+                                        if r["task_type"] == "wordlist"),
+                       "latest_required": result["latest_required"],
+                       "latest_ready": result["latest_ready"]}
         if args.as_json:
             print(json.dumps({
-                "schema": "research_execution/1.0",
+                "schema": ("research_execution/sequential-v1"
+                           if args.sequential else "research_execution/1.0"),
                 "target": args.target,
-                "checkpoint": args.checkpoint,
+                "checkpoint": args.phase if args.sequential else args.checkpoint,
                 "modes": modes,
                 "dir": result["dir"],
                 "summary": summary,
             }, indent=2))
         else:
             print("=" * 72)
-            print(f"  RESEARCH EXECUTED — {args.checkpoint}")
+            print(f"  RESEARCH EXECUTED — {args.phase if args.sequential else args.checkpoint}")
             print(f"  Persisted to: {result['dir']}")
-            print(f"  fetched: {summary['fetched']}  search done: {summary['search_done']}"
-                  f"  search pending: {summary['search_pending']}  maps: {summary['maps']}"
-                  f"  wordlists: {summary['wordlists']}")
+            if args.sequential:
+                print(f"  sequence: {' → '.join(summary['sequence'])}  "
+                      f"pending searches: {summary['pending_searches']}  "
+                      f"latest ready: {summary['latest_ready']}")
+            else:
+                print(f"  fetched: {summary['fetched']}  search done: {summary['search_done']}"
+                      f"  search pending: {summary['search_pending']}  maps: {summary['maps']}"
+                      f"  wordlists: {summary['wordlists']}  latest ready: {summary['latest_ready']}")
             print("=" * 72)
         return
 

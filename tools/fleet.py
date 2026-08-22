@@ -32,8 +32,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field, asdict
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+try:
+    from tools.safety import AuthorizationError, require_authorized_target, safe_target_name
+except ImportError:
+    from safety import AuthorizationError, require_authorized_target, safe_target_name
+
+try:
+    from tools.runtime_paths import CODE_ROOT, workspace_root
+except ImportError:  # direct script execution
+    from runtime_paths import CODE_ROOT, workspace_root
+
+ROOT = workspace_root()
+sys.path.insert(0, str(CODE_ROOT))
 
 FLEET_DIR = ROOT / "state" / "fleet"
 
@@ -77,6 +87,8 @@ class FleetSession:
     completed_at: Optional[str] = None
     total_findings: int = 0
     shared_patterns: List[Dict] = field(default_factory=list)
+    scope_file: Optional[str] = None
+    confirm_active: bool = False
 
     def __post_init__(self):
         if not self.started_at:
@@ -130,17 +142,30 @@ class PatternMemory:
 # Target execution
 # ---------------------------------------------------------------------------
 
-def run_recon(target: FleetTarget) -> bool:
-    """Run recon on a single target."""
-    recon_script = ROOT / "tools" / "recon_engine.sh"
+def run_recon(target: FleetTarget, scope_file: str, confirm_active: bool) -> bool:
+    """Run recon on a single target after an explicit active authorization check."""
+    try:
+        require_authorized_target(
+            target.name, scope_file, active=True,
+            confirm_active=confirm_active,
+        )
+        safe_target_name(target.name)
+    except AuthorizationError as exc:
+        target.errors.append(f"Authorization denied: {exc}")
+        target.recon_status = "failed"
+        return False
+    recon_script = CODE_ROOT / "tools" / "recon_engine.sh"
     if not recon_script.exists():
         target.errors.append("recon_engine.sh not found")
         return False
 
     try:
         target.recon_status = "running"
+        cmd = ["bash", str(recon_script), target.name, "--scope-file", scope_file]
+        if confirm_active:
+            cmd.append("--confirm-active")
         result = subprocess.run(
-            ["bash", str(recon_script), target.name],
+            cmd,
             capture_output=True, text=True, timeout=600)
 
         if result.returncode == 0:
@@ -169,16 +194,24 @@ def run_recon(target: FleetTarget) -> bool:
         return False
 
 
-def run_hunt(target: FleetTarget) -> bool:
-    """Run hunt on a single target."""
-    hunt_script = ROOT / "tools" / "hunt.py"
+def run_hunt(target: FleetTarget, scope_file: str) -> bool:
+    """Run hunt on a single target after a scope authorization check."""
+    try:
+        require_authorized_target(target.name, scope_file, active=False)
+        safe_target_name(target.name)
+    except AuthorizationError as exc:
+        target.errors.append(f"Authorization denied: {exc}")
+        target.hunt_status = "failed"
+        return False
+    hunt_script = CODE_ROOT / "tools" / "hunt.py"
     if not hunt_script.exists():
         target.errors.append("hunt.py not found")
         return False
 
     try:
         target.hunt_status = "running"
-        cmd = [sys.executable, str(hunt_script), "--target", target.name, "--quick"]
+        cmd = [sys.executable, str(hunt_script), "--target", target.name,
+               "--quick", "--scope-file", scope_file]
 
         if target.auth_file:
             cmd.extend(["--auth-file", target.auth_file])
@@ -239,7 +272,8 @@ class FleetExecutor:
 
             elif self.session.mode == "hunt-only":
                 target.started_at = datetime.now(timezone.utc).isoformat()
-                f = self._executor.submit(run_hunt, target)
+                f = self._executor.submit(run_hunt, target,
+                                           self.session.scope_file)
                 futures.append(f)
 
         # Wait for all to complete
@@ -264,10 +298,10 @@ class FleetExecutor:
     def _run_target_pipeline(self, target: FleetTarget):
         """Full pipeline: recon → hunt for one target."""
         print(f"  [{target.name}] Starting recon...")
-        if run_recon(target):
+        if run_recon(target, self.session.scope_file, self.session.confirm_active):
             print(f"  [{target.name}] Recon complete ({target.live_hosts} live hosts)")
             print(f"  [{target.name}] Starting hunt...")
-            if run_hunt(target):
+            if run_hunt(target, self.session.scope_file):
                 print(f"  [{target.name}] Hunt complete ({target.findings_count} findings)")
             else:
                 print(f"  [{target.name}] Hunt failed: {'; '.join(target.errors)}")
@@ -290,7 +324,7 @@ class FleetExecutor:
         return {
             "session_id": self.session.session_id,
             "started": self.session.started_at,
-            "completed": self.session.completed_at,
+            "completed_at": self.session.completed_at,
             "total_targets": len(self.session.targets),
             "completed": len(completed),
             "failed": len(failed),
@@ -322,10 +356,22 @@ def parse_targets(source: str) -> List[FleetTarget]:
             continue
 
         # Parse: target.com or target.com:auth.json
-        parts = line.split(":", 1)
-        name = parts[0]
-        auth_file = parts[1] if len(parts) > 1 else None
+        # Optional auth files are written as target:auth.json. Keep a host
+        # containing a port intact unless the suffix clearly names a file.
+        name, auth_file = line, None
+        if ":" in line:
+            candidate_name, candidate_auth = line.rsplit(":", 1)
+            if (candidate_auth.endswith((".json", ".yaml", ".yml"))
+                    or os.path.isfile(candidate_auth)):
+                name, auth_file = candidate_name, candidate_auth
 
+        safe_target_name(name)
+        if auth_file:
+            try:
+                auth_file = str(Path(auth_file).expanduser().resolve())
+                Path(auth_file).relative_to(ROOT.resolve())
+            except (OSError, ValueError):
+                raise ValueError("auth files must be inside the project root")
         targets.append(FleetTarget(name=name, auth_file=auth_file))
 
     return targets
@@ -346,12 +392,31 @@ def main():
                         choices=["full", "recon-only", "hunt-only"],
                         help="Execution mode (default: full)")
     parser.add_argument("--output", help="Output file for session summary (JSON)")
+    parser.add_argument("--scope-file", required=True,
+                        help="Explicit authorization scope JSON")
+    parser.add_argument("--confirm-active", action="store_true",
+                        help="Confirm authorized active recon")
     args = parser.parse_args()
 
     targets = parse_targets(args.targets)
     if not targets:
         print("[!] No targets parsed")
         sys.exit(1)
+    if args.concurrency < 1:
+        print("[!] Concurrency must be at least 1")
+        sys.exit(1)
+
+    try:
+        for target in targets:
+            safe_target_name(target.name)
+            require_authorized_target(
+                target.name, args.scope_file,
+                active=args.mode != "hunt-only",
+                confirm_active=args.confirm_active,
+            )
+    except AuthorizationError as exc:
+        print(f"[!] Authorization denied: {exc}")
+        sys.exit(2)
 
     print(f"[*] BugWolf Fleet Mode v1.0.0")
     print(f"[*] Targets: {len(targets)}")
@@ -366,6 +431,8 @@ def main():
         targets=targets,
         concurrency=args.concurrency,
         mode=args.mode,
+        scope_file=args.scope_file,
+        confirm_active=args.confirm_active,
     )
 
     executor = FleetExecutor(session)

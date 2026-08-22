@@ -1,0 +1,54 @@
+{
+  "schema": "bugwolf-freebuff-deepseek-v2",
+  "platform": "freebuff",
+  "skill": "bugwolf",
+  "install": {
+    "method": "npx skills add youseefhamdi/bugwolf --skill bugwolf --copy",
+    "path": ".agents/skills/bugwolf",
+    "global": "npx skills add youseefhamdi/bugwolf --skill bugwolf --copy -g",
+    "bundle": "dist/bugwolf-v<version>.freebuff.zip",
+    "script": "scripts/install_freebuff.sh"
+  },
+  "model": {
+    "provider": "deepseek",
+    "default": "deepseek-v4-flash",
+    "full_access": ["deepseek-v4-flash", "deepseek-v4-pro"],
+    "limited_tier": "mimo-2.5",
+    "notes": "DeepSeek V4 Flash is Freebuff's default everywhere in full mode; V4 Pro is one session a day and closed during peak hours; limited-tier access falls back to MiMo 2.5."
+  },
+  "runtime": {
+    "skill_dir": ".agents/skills/bugwolf",
+    "project_files_read": ["BUGWOLF.md", "AGENTS.md", "CLAUDE.md", ".agents/skills/"],
+    "harness_contract": "BUGWOLF-HARNESS-CONTRACT-V2",
+    "harness_guard": {
+      "source_checkout": "python3 tools/harness_guard.py --verify --json",
+      "installed_skill": "python3 .agents/skills/bugwolf/tools/harness_guard.py --project-root . --skill-root .agents/skills/bugwolf --verify --json"
+    },
+    "reload_file": "BUGWOLF.md",
+    "output_contract": "always pass --json on tools that support it; parse strict JSON; never invent flags, payloads, or scope",
+    "intelligence_contract": {
+      "profile": "configs/harness/intelligence.json",
+      "command_adapter": "tools/harness_command.py",
+      "chain_orchestrator": "tools/chain_orchestrator.py",
+      "paper_intelligence": "tools/paper_intel.py",
+      "planner": "tools/harness_intelligence.py",
+      "research_adapters": ["https_fingerprint", "agent_control_plane"],
+      "loop": "understand -> map -> generate alternatives -> select information gain -> verify -> preserve uncertainty -> refresh chain and paper-derived context",
+      "creative_angles": ["boundary_flip", "differential_pair", "state_and_time", "negative_space", "failure_recovery", "cross_surface_chain"]
+    },
+    "gates": {
+      "scope_file": "scope.json",
+      "confirm_active": true,
+      "confirm_destructive": true,
+      "environment_preflight": true
+    }
+  },
+  "verification": [
+    "python3 tools/harness_guard.py --verify --json",
+    "python3 tools/harness_command.py --text \"bugwolf --full attack this target example.test\" --json",
+    "python3 tools/harness_intelligence.py --task \"self-test\" --mode web --json",
+    "python3 tools/environment_profile.py --location unknown --json",
+    "python3 tools/methodology_playbook.py --help",
+    "python3 -m unittest discover -s tests"
+  ]
+}

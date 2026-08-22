@@ -29,8 +29,15 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Callable
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+try:
+    from tools.runtime_paths import CODE_ROOT, workspace_root
+    from tools.safety import AuthorizationError, require_authorized_target
+except ImportError:  # direct script execution
+    from runtime_paths import CODE_ROOT, workspace_root
+    from safety import AuthorizationError, require_authorized_target
+
+ROOT = workspace_root()
+sys.path.insert(0, str(CODE_ROOT))
 
 SCAN_EXTS = {".json", ".txt", ".toml", ".lock", ".mod", ".sum", ".yaml", ".yml",
              ".gradle", ".xml", ".csproj", ".rb", ".ex", ".exs", ".dart",
@@ -375,8 +382,13 @@ class TechFingerprinter:
 
         return sorted(found.values(), key=lambda c: (c.confidence, c.name))
 
-    def scan_url(self, url: str) -> List[TechComponent]:
+    def scan_url(self, url: str, *, scope_file: Optional[str] = None) -> List[TechComponent]:
         out: List[TechComponent] = []
+        try:
+            require_authorized_target(url, scope_file, active=False)
+        except AuthorizationError as exc:
+            print(f"[!] authorization denied for {url}: {exc}", file=sys.stderr)
+            return out
         try:
             import urllib.request
             req = urllib.request.Request(
@@ -418,6 +430,7 @@ def main():
         description="BugWolf Post-Recon Tech-Fingerprint Parser v1.0.0")
     parser.add_argument("--path", help="File or directory to scan (static)")
     parser.add_argument("--url", help="Live URL to fingerprint from headers")
+    parser.add_argument("--scope-file", help="Explicit authorization scope for --url")
     parser.add_argument("--json", action="store_true", dest="as_json",
                         help="Emit structured JSON")
     parser.add_argument("--stack-csv", action="store_true",
@@ -435,7 +448,7 @@ def main():
     if args.path:
         components.extend(fp.scan_path(args.path))
     if args.url:
-        components.extend(fp.scan_url(args.url))
+        components.extend(fp.scan_url(args.url, scope_file=args.scope_file))
 
     # dedupe across path+url
     deduped: Dict[str, TechComponent] = {}

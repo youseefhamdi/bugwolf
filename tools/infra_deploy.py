@@ -14,9 +14,11 @@ Supports:
   - Container mode: Docker-based disposable listeners
 
 Usage:
-  python3 tools/infra_deploy.py --mode local --type http-callback
-  python3 tools/infra_deploy.py --mode cloud --provider aws --type interactsh
-  python3 tools/infra_deploy.py --teardown --session-id abc123
+  python3 tools/infra_deploy.py --mode local --type http-callback \
+      --target example.com --scope-file scope.json --confirm-active
+  python3 tools/infra_deploy.py --type interactsh \
+      --target example.com --scope-file scope.json --confirm-active
+  python3 tools/infra_deploy.py --teardown abc123
   python3 tools/infra_deploy.py --list-sessions
 """
 
@@ -38,8 +40,23 @@ from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field, asdict
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+try:
+    from tools.safety import AuthorizationError, require_authorized_target
+except ImportError:  # direct script execution
+    from safety import AuthorizationError, require_authorized_target
+
+try:
+    from tools.evidence import redact, redact_text
+except ImportError:  # direct script execution
+    from evidence import redact, redact_text
+
+try:
+    from tools.runtime_paths import CODE_ROOT, workspace_root
+except ImportError:  # direct script execution
+    from runtime_paths import CODE_ROOT, workspace_root
+
+ROOT = workspace_root()
+sys.path.insert(0, str(CODE_ROOT))
 
 INFRA_DIR = ROOT / "state" / "infra"
 INFRA_DIR.mkdir(parents=True, exist_ok=True)
@@ -65,15 +82,28 @@ class CallbackHandler(BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length > 0 else b""
 
+        sensitive_headers = {"authorization", "cookie", "set-cookie", "x-api-key",
+                             "proxy-authorization"}
+        safe_headers = redact({
+            key: ("[REDACTED]" if key.lower() in sensitive_headers else value)
+            for key, value in self.headers.items()
+        })
+        body_text = body.decode("utf-8", errors="replace")
+        try:
+            safe_body = json.dumps(redact(json.loads(body_text)),
+                                   ensure_ascii=False)[:2000]
+        except (ValueError, TypeError):
+            safe_body = redact_text(body_text)[:2000]
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "method": self.command,
-            "path": self.path,
+            "path": redact_text(self.path)[:4000],
             "source_ip": self.client_address[0],
             "source_port": self.client_address[1],
-            "headers": dict(self.headers),
-            "body": body.decode("utf-8", errors="replace")[:2000],
-            "body_hex": body.hex()[:500],
+            "headers": safe_headers,
+            "body": safe_body,
+            "body_length": len(body),
+            "body_sha256": hashlib.sha256(body).hexdigest(),
         }
         CallbackHandler.captured_requests.append(entry)
 
@@ -112,7 +142,7 @@ class CallbackHandler(BaseHTTPRequestHandler):
 class CallbackServer:
     """Manages a disposable HTTP callback server."""
 
-    def __init__(self, port: int = 8080, bind: str = "0.0.0.0"):
+    def __init__(self, port: int = 8080, bind: str = "127.0.0.1"):
         self.port = port
         self.bind = bind
         self.server: Optional[HTTPServer] = None
@@ -121,6 +151,7 @@ class CallbackServer:
         self.started_at: Optional[str] = None
 
     def start(self):
+        CallbackHandler.captured_requests = []
         self.server = HTTPServer((self.bind, self.port), CallbackHandler)
         self.server.timeout = 1
         self._thread = threading.Thread(target=self.server.serve_forever,
@@ -130,7 +161,9 @@ class CallbackServer:
 
         return {
             "session_id": self.session_id,
-            "url": f"http://{self._get_public_ip()}:{self.port}",
+            "url": (f"http://{self._get_public_ip()}:{self.port}"
+                    if self.bind not in ("127.0.0.1", "::1", "localhost")
+                    else f"http://127.0.0.1:{self.port}"),
             "local_url": f"http://127.0.0.1:{self.port}",
             "port": self.port,
             "started_at": self.started_at,
@@ -140,6 +173,8 @@ class CallbackServer:
         if self.server:
             self.server.shutdown()
             self.server.server_close()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2)
 
     def get_captured(self) -> List[Dict]:
         return CallbackHandler.captured_requests
@@ -158,29 +193,26 @@ class CallbackServer:
         }
 
     def _get_public_ip(self) -> str:
-        """Get the machine's public IP for the callback URL."""
-        try:
-            import urllib.request
-            with urllib.request.urlopen("https://api.ipify.org", timeout=5) as r:
-                return r.read().decode().strip()
-        except Exception:
-            pass
-        try:
-            return socket.gethostbyname(socket.gethostname())
-        except Exception:
-            return "127.0.0.1"
+        """Return the operator-selected bind address without external discovery."""
+        # Contacting an external IP service here would be an untracked network
+        # operation and could leak the operator's address. Public deployment
+        # must provide its advertised address explicitly via ``bind``.
+        return self.bind if self.bind not in {"0.0.0.0", "::"} else "127.0.0.1"
 
 
 # ---------------------------------------------------------------------------
 # Interactsh self-hosted
 # ---------------------------------------------------------------------------
 
-def start_interactsh() -> Dict:
-    """Start a self-hosted interactsh server.
+def start_interactsh(target: str = "", scope_file: Optional[str] = None,
+                     confirm_active: bool = False) -> Dict:
+    """Start a self-hosted interactsh server after authorization.
 
     Interactsh is an OOB interaction server supporting DNS, HTTP, SMTP, LDAP.
     Requires: interactsh-client installed (go install -v github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest)
     """
+    require_authorized_target(
+        target, scope_file, active=True, confirm_active=confirm_active)
     interactsh_bin = shutil.which("interactsh-client")
     if not interactsh_bin:
         return {
@@ -229,6 +261,7 @@ def start_interactsh() -> Dict:
             "oob_url": oob_url or "check interactsh log",
             "config_dir": str(config_dir),
             "pid": proc.pid,
+            "start_ticks": _process_start_ticks(proc.pid),
         }
 
     except Exception as e:
@@ -256,7 +289,7 @@ class DNSExfilListener:
     def start(self):
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._socket.bind(("0.0.0.0", self.port))
+        self._socket.bind(("127.0.0.1", self.port))
         self._socket.settimeout(1.0)
         self._running = True
 
@@ -306,8 +339,14 @@ class DNSExfilListener:
 # Ngrok tunnel (for exposing local callback servers)
 # ---------------------------------------------------------------------------
 
-def start_ngrok_tunnel(local_port: int) -> Dict:
-    """Start an ngrok tunnel to expose a local port."""
+def start_ngrok_tunnel(local_port: int, *, target: str = "",
+                       scope_file: Optional[str] = None,
+                       confirm_active: bool = False) -> Dict:
+    """Start an ngrok tunnel only after the target authorization gate."""
+    require_authorized_target(target, scope_file, active=True,
+                              confirm_active=confirm_active)
+    if not 1 <= int(local_port) <= 65535:
+        return {"success": False, "error": "local port must be 1..65535"}
     ngrok_bin = shutil.which("ngrok")
     if not ngrok_bin:
         return {"success": False, "error": "ngrok not installed"}
@@ -334,8 +373,14 @@ def start_ngrok_tunnel(local_port: int) -> Dict:
             "public_url": public_url,
             "local_port": local_port,
             "pid": proc.pid,
+            "start_ticks": _process_start_ticks(proc.pid),
         }
     except Exception as e:
+        # Do not leave an unregistered tunnel running when discovery fails.
+        try:
+            _terminate_owned_process(proc.pid, "ngrok")
+        except UnboundLocalError:
+            pass
         return {"success": False, "error": str(e)}
 
 
@@ -352,21 +397,69 @@ class InfraSession:
     status: str = "active"  # active, teardown
 
 
-class InfraManager:
-    """Manages disposable attack infrastructure."""
+def _process_start_ticks(pid: int) -> str:
+    """Read Linux process start ticks to prevent PID-reuse teardown."""
+    try:
+        fields = Path(f"/proc/{int(pid)}/stat").read_text().split()
+        return fields[21] if len(fields) > 21 else ""
+    except (FileNotFoundError, PermissionError, ValueError, OSError):
+        return ""
 
-    def __init__(self):
+
+def _terminate_owned_process(pid: int, marker: str,
+                             expected_start: str = "") -> bool:
+    """Terminate only a recorded child with matching command and PID identity."""
+    try:
+        cmdline = Path(f"/proc/{int(pid)}/cmdline").read_bytes().decode(
+            "utf-8", errors="replace").replace("\x00", " ")
+        if marker not in cmdline:
+            return False
+        if expected_start and _process_start_ticks(pid) != str(expected_start):
+            return False
+        os.kill(int(pid), signal.SIGTERM)
+        return True
+    except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError, OSError):
+        return False
+
+
+class InfraManager:
+    """Manages disposable callback infrastructure for an authorized target."""
+
+    def __init__(self, target: str = "", scope_file: Optional[str] = None,
+                 confirm_active: bool = False):
         INFRA_DIR.mkdir(parents=True, exist_ok=True)
+        self.target = target
+        self.scope_file = scope_file
+        self.confirm_active = confirm_active
         self._sessions: Dict[str, InfraSession] = {}
         self._callback_server: Optional[CallbackServer] = None
         self._dns_listener: Optional[DNSExfilListener] = None
+        self._dns_session_id: Optional[str] = None
 
-    def start_callback_server(self, port: int = 8080) -> Dict:
+    def _authorize(self) -> None:
+        require_authorized_target(
+            self.target, self.scope_file, active=True,
+            confirm_active=self.confirm_active)
+
+    def register_process(self, session_id: str, pid: int, kind: str) -> None:
+        """Attach a child PID to a session for precise teardown."""
+        session = self._sessions.get(session_id)
+        if not session:
+            return
+        session.resources.setdefault("processes", []).append({
+            "pid": int(pid), "kind": kind,
+            "start_ticks": _process_start_ticks(int(pid)),
+        })
+        self._save_session(session)
+
+    def start_callback_server(self, port: int = 8080,
+                              bind: str = "127.0.0.1") -> Dict:
         """Start an HTTP callback server for SSRF verification."""
+        self._authorize()
         if self._callback_server:
             self._callback_server.stop()
 
-        self._callback_server = CallbackServer(port=port)
+        self._callback_server = CallbackServer(port=port, bind=bind)
         info = self._callback_server.start()
 
         session = InfraSession(
@@ -384,6 +477,7 @@ class InfraManager:
 
     def start_dns_listener(self, port: int = 5353) -> Dict:
         """Start a DNS exfiltration listener."""
+        self._authorize()
         self._dns_listener = DNSExfilListener(port=port)
         info = self._dns_listener.start()
 
@@ -394,13 +488,17 @@ class InfraManager:
             resources={"type": "dns-listener", "info": info},
         )
         self._sessions[session.session_id] = session
+        self._dns_session_id = session.session_id
+        info["session_id"] = session.session_id
         self._save_session(session)
 
         return info
 
     def start_interactsh(self) -> Dict:
         """Start interactsh for OOB testing."""
-        result = start_interactsh()
+        self._authorize()
+        result = start_interactsh(
+            self.target, self.scope_file, self.confirm_active)
 
         if result["success"]:
             session = InfraSession(
@@ -416,6 +514,7 @@ class InfraManager:
 
     def start_full_stack(self) -> Dict:
         """Start all listeners: HTTP callback + DNS + interactsh."""
+        self._authorize()
         results = {}
 
         http_info = self.start_callback_server(port=8080)
@@ -451,33 +550,54 @@ class InfraManager:
         return result
 
     def teardown(self, session_id: str = None):
-        """Tear down all infrastructure. If session_id, tear down specific session."""
+        """Tear down only this manager's or recorded sessions' own resources."""
         print("[*] Tearing down infrastructure...")
+        selected = lambda sid: session_id is None or sid == session_id
 
         if self._callback_server:
-            stats = self._callback_server.get_stats()
-            print(f"    HTTP callback: {stats['total_requests']} requests captured")
-            self._callback_server.stop()
-            self._callback_server = None
+            callback_id = self._callback_server.session_id
+            if selected(callback_id):
+                stats = self._callback_server.get_stats()
+                print(f"    HTTP callback: {stats['total_requests']} requests captured")
+                self._callback_server.stop()
+                self._callback_server = None
 
-        if self._dns_listener:
+        if self._dns_listener and selected(self._dns_session_id):
             print(f"    DNS listener: {len(self._dns_listener.captured)} queries captured")
             self._dns_listener.stop()
             self._dns_listener = None
+            self._dns_session_id = None
 
-        # Kill ngrok tunnels
-        subprocess.run(["pkill", "-f", "ngrok http"], capture_output=True)
+        # Load persisted sessions so a fresh CLI process can clean up its own
+        # recorded children. Never use pkill: that can terminate another
+        # operator's ngrok/interactsh process.
+        sessions = dict(self._sessions)
+        for data in self.list_sessions():
+            try:
+                sessions.setdefault(
+                    data["session_id"], InfraSession(**data))
+            except (KeyError, TypeError):
+                continue
+        for sid, session in sessions.items():
+            if not selected(sid):
+                continue
+            resources = session.resources or {}
+            process_items = list(resources.get("processes", []))
+            info = resources.get("info", {})
+            if isinstance(info, dict) and info.get("pid"):
+                process_items.append({"pid": info["pid"],
+                                      "kind": resources.get("type", ""),
+                                      "start_ticks": info.get("start_ticks", "")})
+            for item in process_items:
+                marker = str(item.get("kind", ""))
+                if marker in {"ngrok", "interactsh", "interactsh-client"}:
+                    _terminate_owned_process(
+                        int(item.get("pid", 0)), marker,
+                        str(item.get("start_ticks", "")))
+            session.status = "teardown"
+            self._save_session(session)
 
-        # Kill interactsh
-        subprocess.run(["pkill", "-f", "interactsh-client"], capture_output=True)
-
-        # Update session status
-        for sid, session in self._sessions.items():
-            if session_id is None or sid == session_id:
-                session.status = "teardown"
-                self._save_session(session)
-
-        print("[+] All infrastructure torn down")
+        print("[+] Infrastructure teardown complete")
 
     def list_sessions(self) -> List[Dict]:
         """List all infrastructure sessions."""
@@ -510,6 +630,8 @@ def main():
                         help="Infrastructure type to deploy")
     parser.add_argument("--port", type=int, default=8080,
                         help="Port for HTTP callback server")
+    parser.add_argument("--bind", default="127.0.0.1",
+                        help="Callback bind address (default: loopback)")
     parser.add_argument("--dns-port", type=int, default=5353,
                         help="Port for DNS listener")
     parser.add_argument("--ngrok", action="store_true",
@@ -521,9 +643,27 @@ def main():
                         help="List active infrastructure sessions")
     parser.add_argument("--get-captured", action="store_true",
                         help="Show captured interactions")
+    parser.add_argument("--target",
+                        help="Authorized target for starting callback infrastructure")
+    parser.add_argument("--scope-file",
+                        help="Explicit authorization scope JSON")
+    parser.add_argument("--confirm-active", action="store_true",
+                        help="Confirm authorized active infrastructure")
     args = parser.parse_args()
 
-    mgr = InfraManager()
+    mgr = InfraManager(args.target, args.scope_file, args.confirm_active)
+    starting = not (args.list_sessions or args.teardown_all or args.teardown
+                    or args.get_captured)
+    if args.teardown_all and not (args.target and args.scope_file and args.confirm_active):
+        print("[!] --teardown-all requires --target, --scope-file, and --confirm-active",
+              file=sys.stderr)
+        sys.exit(2)
+    if starting:
+        try:
+            mgr._authorize()
+        except AuthorizationError as exc:
+            print(f"[!] Authorization denied: {exc}", file=sys.stderr)
+            sys.exit(2)
 
     if args.list_sessions:
         sessions = mgr.list_sessions()
@@ -560,12 +700,16 @@ def main():
             mgr.teardown()
 
     elif args.type == "http-callback":
-        info = mgr.start_callback_server(port=args.port)
+        info = mgr.start_callback_server(port=args.port, bind=args.bind)
 
         if args.ngrok:
-            ngrok_result = start_ngrok_tunnel(args.port)
+            ngrok_result = start_ngrok_tunnel(
+                args.port, target=args.target, scope_file=args.scope_file,
+                confirm_active=args.confirm_active)
             if ngrok_result.get("success"):
                 info["ngrok_url"] = ngrok_result["public_url"]
+                mgr.register_process(info["session_id"],
+                                     ngrok_result["pid"], "ngrok")
                 print(f"[+] Ngrok tunnel: {ngrok_result['public_url']}")
 
         print(f"\n[*] Callback URL: {info['url']}")

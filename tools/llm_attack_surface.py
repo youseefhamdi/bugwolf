@@ -24,8 +24,15 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+try:
+    from tools.runtime_paths import CODE_ROOT, workspace_root
+    from tools.safety import AuthorizationError, require_authorized_target
+except ImportError:  # direct script execution
+    from runtime_paths import CODE_ROOT, workspace_root
+    from safety import AuthorizationError, require_authorized_target
+
+ROOT = workspace_root()
+sys.path.insert(0, str(CODE_ROOT))
 
 # File extensions worth scanning (source + config). Skipping binaries/lockfiles.
 SCAN_EXTS = {
@@ -264,9 +271,14 @@ class LLMAttackSurfaceScanner:
 
         return findings
 
-    def scan_url(self, url: str) -> List[SurfaceFinding]:
-        """Lightweight live fingerprint (headers/body markers only — no active probing)."""
+    def scan_url(self, url: str, *, scope_file: Optional[str] = None) -> List[SurfaceFinding]:
+        """Read-only fingerprint gated by explicit target authorization."""
         findings: List[SurfaceFinding] = []
+        try:
+            require_authorized_target(url, scope_file, active=False)
+        except AuthorizationError as exc:
+            print(f"[!] authorization denied for {url}: {exc}", file=sys.stderr)
+            return findings
         try:
             import urllib.request
             req = urllib.request.Request(url, headers={"User-Agent": "bugwolf-llm-surf/1.0"})
@@ -320,6 +332,7 @@ def main():
         description="BugWolf LLM / Agentic AI Attack-Surface Detector v1.0.0")
     parser.add_argument("--path", help="File or directory to scan (static)")
     parser.add_argument("--url", help="Live URL to fingerprint (light, passive)")
+    parser.add_argument("--scope-file", help="Explicit authorization scope for --url")
     parser.add_argument("--json", action="store_true", dest="as_json",
                         help="Emit structured JSON")
     parser.add_argument("--min-severity", default="informational",
@@ -336,7 +349,7 @@ def main():
     if args.path:
         findings = scanner.scan_path(args.path)
     if args.url:
-        findings = scanner.scan_url(args.url)
+        findings = scanner.scan_url(args.url, scope_file=args.scope_file)
 
     if args.as_json:
         print(json.dumps({

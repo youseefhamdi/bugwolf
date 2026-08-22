@@ -32,8 +32,15 @@ from typing import Optional, Dict, List, Any, Set, Tuple
 from dataclasses import dataclass, field, asdict
 from collections import defaultdict
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+try:
+    from tools.runtime_paths import CODE_ROOT, workspace_root
+    from tools.safety import safe_target_name
+except ImportError:  # direct script execution
+    from runtime_paths import CODE_ROOT, workspace_root
+    from safety import safe_target_name
+
+ROOT = workspace_root()
+sys.path.insert(0, str(CODE_ROOT))
 
 LEDGER_DIR = ROOT / "state" / "ledger"
 
@@ -83,8 +90,22 @@ class CoverageGap:
 
 
 @dataclass
+class TriggerStreamIntegrity:
+    """Integrity result for one post-finding trigger JSONL stream."""
+    stream: str
+    file: str
+    total_records: int
+    verified_records: int
+    tampered_records: int = 0
+    sequence_gaps: int = 0
+    hash_chain_intact: bool = True
+    is_valid: bool = True
+    errors: List[str] = field(default_factory=list)
+
+
+@dataclass
 class LedgerIntegrity:
-    """Result of an integrity check on the append-only journal."""
+    """Result of integrity checks on the journal and trigger streams."""
     target: str
     journal_file: str
     total_entries: int
@@ -95,6 +116,8 @@ class LedgerIntegrity:
     hash_chain_intact: bool = True
     first_entry: str = ""
     last_entry: str = ""
+    trigger_receipts: Optional[TriggerStreamIntegrity] = None
+    trigger_queue: Optional[TriggerStreamIntegrity] = None
     is_valid: bool = True
     errors: List[str] = field(default_factory=list)
 
@@ -126,6 +149,7 @@ class LedgerVerifier:
     """Cross-references findings, journal, and endpoints for truth verification."""
 
     def __init__(self, target: str):
+        safe_target_name(target)
         self.target = target
         safe = target.replace("/", "_").replace(":", "_").replace("*", "WILDCARD")
         self._dir = LEDGER_DIR / safe
@@ -202,7 +226,7 @@ class LedgerVerifier:
         endpoint_match = False
         for ep in endpoints:
             if (ep.get("url", "") == endpoint and
-                    ep.get("method", "GET") in (method, "GET")):
+                    ep.get("method", "GET") == method):
                 endpoint_match = True
                 break
         if not endpoint_match and endpoint:
@@ -400,11 +424,96 @@ class LedgerVerifier:
 
     # ---- Integrity Check ----
 
-    def check_integrity(self) -> Optional[LedgerIntegrity]:
-        """Check journal integrity — no gaps, no rewrites, no tampering."""
-        jf = self._state_dir / "journal.jsonl"
-        if not jf.exists():
+    def _check_trigger_stream(self, path: Path, stream: str) -> Optional[TriggerStreamIntegrity]:
+        """Validate one trigger JSONL stream's sequence and hash chain."""
+        if not path.exists():
             return None
+        raw_lines = [line for line in path.read_text(encoding="utf-8").splitlines()
+                     if line.strip()]
+        if not raw_lines:
+            return None
+        result = TriggerStreamIntegrity(
+            stream=stream,
+            file=str(path),
+            total_records=len(raw_lines),
+            verified_records=0,
+        )
+        previous_hash = ""
+        expected_sequence = 1
+        for index, line in enumerate(raw_lines):
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                result.tampered_records += 1
+                result.errors.append(f"Record {index}: invalid JSON: {exc.msg}")
+                continue
+            if not isinstance(record, dict):
+                result.tampered_records += 1
+                result.errors.append(f"Record {index}: record is not a JSON object")
+                continue
+            required = {"sequence", "previous_hash", "record_hash"}
+            if not required.issubset(record):
+                result.tampered_records += 1
+                result.hash_chain_intact = False
+                result.errors.append(
+                    f"Record {index}: missing trigger hash-chain metadata")
+                continue
+            if record.get("sequence") != expected_sequence:
+                result.sequence_gaps += 1
+                result.errors.append(
+                    f"Record {index}: expected sequence {expected_sequence}, "
+                    f"got {record.get('sequence')}")
+            if record.get("previous_hash", "") != previous_hash:
+                result.hash_chain_intact = False
+                result.errors.append(
+                    f"Record {index}: previous hash does not match chain tip")
+            unsigned = dict(record)
+            stored_hash = unsigned.pop("record_hash")
+            expected_hash = hashlib.sha256(
+                json.dumps(unsigned, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            if stored_hash != expected_hash:
+                result.tampered_records += 1
+                result.hash_chain_intact = False
+                result.errors.append(f"Record {index}: record hash mismatch")
+            previous_hash = str(stored_hash)
+            expected_sequence += 1
+            result.verified_records += 1
+        result.is_valid = (
+            result.tampered_records == 0
+            and result.sequence_gaps == 0
+            and result.hash_chain_intact
+            and not result.errors
+        )
+        return result
+
+    def check_integrity(self) -> Optional[LedgerIntegrity]:
+        """Check journal and trigger-stream integrity — no gaps or tampering."""
+        jf = self._state_dir / "journal.jsonl"
+        trigger_receipts = self._check_trigger_stream(
+            self._state_dir / "post-finding-triggers.jsonl", "trigger_receipts")
+        trigger_queue = self._check_trigger_stream(
+            self._state_dir / "post-finding-queue.jsonl", "trigger_queue")
+        if not jf.exists():
+            if not trigger_receipts and not trigger_queue:
+                return None
+            integrity = LedgerIntegrity(
+                target=self.target,
+                journal_file=str(jf),
+                total_entries=0,
+                verified_entries=0,
+                trigger_receipts=trigger_receipts,
+                trigger_queue=trigger_queue,
+            )
+            for label, stream_result in (("trigger receipts", trigger_receipts),
+                                         ("trigger queue", trigger_queue)):
+                if stream_result and not stream_result.is_valid:
+                    integrity.hash_chain_intact = False
+                    integrity.errors.extend(
+                        f"{label}: {error}" for error in stream_result.errors)
+            integrity.is_valid = not integrity.errors
+            return integrity
 
         entries = []
         for line in jf.read_text().splitlines():
@@ -415,7 +524,24 @@ class LedgerVerifier:
                     pass
 
         if not entries:
-            return None
+            if not trigger_receipts and not trigger_queue:
+                return None
+            integrity = LedgerIntegrity(
+                target=self.target,
+                journal_file=str(jf),
+                total_entries=0,
+                verified_entries=0,
+                trigger_receipts=trigger_receipts,
+                trigger_queue=trigger_queue,
+            )
+            for label, stream_result in (("trigger receipts", trigger_receipts),
+                                         ("trigger queue", trigger_queue)):
+                if stream_result and not stream_result.is_valid:
+                    integrity.hash_chain_intact = False
+                    integrity.errors.extend(
+                        f"{label}: {error}" for error in stream_result.errors)
+            integrity.is_valid = not integrity.errors
+            return integrity
 
         integrity = LedgerIntegrity(
             target=self.target,
@@ -427,7 +553,20 @@ class LedgerVerifier:
         )
 
         prev_ts = None
-        hashes = []
+        previous_hash = ""
+        expected_sequence = 1
+        # Rotation intentionally keeps only a suffix. The anchor authenticates
+        # that suffix's predecessor and sequence instead of treating it as a
+        # newly created journal.
+        anchor_file = self._state_dir / "journal.anchor.json"
+        if anchor_file.exists():
+            try:
+                anchor = json.loads(anchor_file.read_text())
+                previous_hash = str(anchor.get("previous_hash", ""))
+                expected_sequence = int(anchor.get("next_sequence", 1))
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                integrity.hash_chain_intact = False
+                integrity.errors.append("journal anchor is invalid")
 
         for i, entry in enumerate(entries):
             ts = entry.get("ts", "")
@@ -440,11 +579,30 @@ class LedgerVerifier:
                     f"Entry {i}: timestamp went backwards "
                     f"({prev_ts} → {ts}) for event '{event}'")
 
-            # Check: hash chain (if entries are hashed)
-            entry_hash = hashlib.sha256(
-                json.dumps(entry, sort_keys=True).encode()
-            ).hexdigest()
-            hashes.append(entry_hash)
+            # New entries carry a sequence and a hash chain. Legacy entries are
+            # readable, but cannot be called tamper-evident.
+            if not {"sequence", "previous_hash", "entry_hash"}.issubset(entry):
+                integrity.hash_chain_intact = False
+                integrity.errors.append(f"Entry {i}: legacy entry lacks hash-chain metadata")
+            else:
+                if entry.get("sequence") != expected_sequence:
+                    integrity.sequence_gaps += 1
+                    integrity.errors.append(
+                        f"Entry {i}: expected sequence {expected_sequence}, "
+                        f"got {entry.get('sequence')}")
+                if entry.get("previous_hash", "") != previous_hash:
+                    integrity.hash_chain_intact = False
+                    integrity.errors.append(f"Entry {i}: previous hash does not match chain tip")
+                unsigned = dict(entry)
+                actual_hash = unsigned.pop("entry_hash")
+                expected_hash = hashlib.sha256(
+                    json.dumps(unsigned, sort_keys=True).encode()).hexdigest()
+                if actual_hash != expected_hash:
+                    integrity.tampered_entries += 1
+                    integrity.hash_chain_intact = False
+                    integrity.errors.append(f"Entry {i}: entry hash mismatch")
+                previous_hash = actual_hash
+                expected_sequence += 1
 
             # Check: essential fields present
             if "ts" not in entry or "event" not in entry:
@@ -455,9 +613,19 @@ class LedgerVerifier:
             integrity.verified_entries += 1
             prev_ts = ts
 
+        integrity.trigger_receipts = trigger_receipts
+        integrity.trigger_queue = trigger_queue
+        for label, stream_result in (("trigger receipts", trigger_receipts),
+                                     ("trigger queue", trigger_queue)):
+            if stream_result and not stream_result.is_valid:
+                integrity.hash_chain_intact = False
+                integrity.errors.extend(
+                    f"{label}: {error}" for error in stream_result.errors)
+
         integrity.is_valid = (
             integrity.tampered_entries == 0 and
             integrity.sequence_gaps == 0 and
+            integrity.hash_chain_intact and
             len(integrity.errors) == 0
         )
 
@@ -523,6 +691,17 @@ class LedgerVerifier:
                 f"  Last entry:       {i.last_entry}",
                 "",
             ])
+            for label, stream in (("Trigger receipts", i.trigger_receipts),
+                                 ("Trigger queue", i.trigger_queue)):
+                if stream:
+                    stream_status = "VALID" if stream.is_valid else "ISSUES FOUND"
+                    lines.extend([
+                        f"{label}: {stream_status}",
+                        f"  Records:          {stream.total_records}",
+                        f"  Verified:         {stream.verified_records}",
+                        f"  Tampered:         {stream.tampered_records}",
+                        "",
+                    ])
             if i.errors:
                 for e in i.errors:
                     lines.append(f"  [!] {e}")
@@ -637,6 +816,12 @@ def main():
                 print(f"    Verified: {integrity.verified_entries}")
                 print(f"    Tampered: {integrity.tampered_entries}")
                 print(f"    Timestamp gaps: {integrity.timestamp_gaps}")
+                for label, stream in (("Trigger receipts", integrity.trigger_receipts),
+                                      ("Trigger queue", integrity.trigger_queue)):
+                    if stream:
+                        stream_status = "VALID" if stream.is_valid else "COMPROMISED"
+                        print(f"    {label}: {stream_status} "
+                              f"({stream.verified_records}/{stream.total_records} verified)")
                 if integrity.errors:
                     for e in integrity.errors:
                         print(f"    [!] {e}")

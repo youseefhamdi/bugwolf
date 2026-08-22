@@ -30,8 +30,13 @@ from typing import Optional, Dict, List, Any, Set, Tuple
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+try:
+    from tools.runtime_paths import CODE_ROOT, workspace_root
+except ImportError:  # direct script execution
+    from runtime_paths import CODE_ROOT, workspace_root
+
+ROOT = workspace_root()
+sys.path.insert(0, str(CODE_ROOT))
 
 PROGRAM_FIT_DIR = ROOT / "state" / "program_fit"
 
@@ -226,8 +231,9 @@ class ProgramFitGate:
         """
         scope = self.get_scope()
         if not scope:
-            # No scope defined — include everything, warn
-            return FitResult.INCLUDE, "No program scope defined — including by default"
+            # A missing scope must never silently authorize a report.
+            return FitResult.NEEDS_REVIEW, (
+                "No program scope defined — explicit scope is required before reporting")
 
         # Check 1: Bug class exclusion
         bug_class = finding.get("bug_class", "").lower()
@@ -400,7 +406,7 @@ class ProgramFitGate:
                 f"  Excluded bug classes: {len(scope.excluded_bug_classes)}",
             ])
         else:
-            lines.append("  No program scope defined — all findings pass")
+            lines.append("  No program scope defined — findings require review")
 
         lines.extend([
             "=" * 72,

@@ -32,7 +32,12 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-ROOT = Path(__file__).resolve().parent.parent
+try:
+    from tools.runtime_paths import workspace_root
+except ImportError:  # direct script execution
+    from runtime_paths import workspace_root
+
+ROOT = workspace_root()
 
 # ---------------------------------------------------------------------------
 # User-Agent pool (modern browsers, updated 2025-2026)

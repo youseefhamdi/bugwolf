@@ -25,12 +25,27 @@ import os
 import time
 import hashlib
 import shutil
+import re
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback
+    fcntl = None
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field, asdict
 
-ROOT = Path(__file__).resolve().parent.parent
+try:
+    from tools.runtime_paths import workspace_root
+    from tools.safety import safe_target_name
+    from tools.evidence import redact, redact_text
+except ImportError:  # direct script execution
+    from runtime_paths import workspace_root
+    from safety import safe_target_name
+    from evidence import redact, redact_text
+
+ROOT = workspace_root()
 STATE_ROOT = ROOT / "state"
 PRIVATE_ROOT = ROOT / ".private"
 
@@ -113,28 +128,46 @@ def atomic_write(path: Path, content: str):
     os.replace(tmp, path)
 
 
+def _jsonl_count(path: Path) -> int:
+    """Count non-empty JSONL records, tolerating a partial/corrupt line."""
+    if not path.exists():
+        return 0
+    count = 0
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        count += 1
+    return count
+
+
 def atomic_append(path: Path, line: str):
-    """Append a single JSON line to a JSONL file atomically."""
+    """Append one JSONL line while serializing concurrent writers."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
+        if fcntl:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         f.write(line.rstrip("\n") + "\n")
         f.flush()
         os.fsync(f.fileno())
+        if fcntl:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 def ensure_private_gitignore():
     """Ensure .private/ is gitignored."""
     gi = ROOT / ".gitignore"
-    patterns = ["state/", ".private/", "*.tmp"]
+    patterns = ["state/", ".private/", "vault/", "*.tmp"]
     existing = set()
     if gi.exists():
         existing = set(l.strip() for l in gi.read_text().splitlines())
-    changed = False
     for p in patterns:
         if p not in existing:
             with open(gi, "a") as f:
                 f.write(p + "\n")
-            changed = True
 
 
 # ---------------------------------------------------------------------------
@@ -142,8 +175,8 @@ def ensure_private_gitignore():
 # ---------------------------------------------------------------------------
 
 def _state_dir(target: str) -> Path:
-    """Get state directory for a target, sanitizing the name."""
-    safe = target.replace("/", "_").replace(":", "_").replace("*", "WILDCARD")
+    """Get a repository-contained state directory for a validated target."""
+    safe = safe_target_name(target).replace(":", "_")[:200]
     return STATE_ROOT / "sessions" / safe
 
 
@@ -167,13 +200,41 @@ def save_state(target: str, state: SessionState):
 
 
 def log_journal(target: str, event: str, data: Dict = None):
-    """Append a journal entry (append-only, tamper-evident)."""
-    entry = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "event": event,
-        "data": data or {},
-    }
-    atomic_append(_state_dir(target) / "journal.jsonl", json.dumps(entry))
+    """Append a hash-linked journal entry under an exclusive file lock."""
+    path = _state_dir(target) / "journal.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+") as f:
+        if fcntl:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        f.seek(0)
+        previous = ""
+        sequence = 1
+        lines = [line for line in f.read().splitlines() if line.strip()]
+        if lines:
+            try:
+                last = json.loads(lines[-1])
+                sequence = int(last.get("sequence", len(lines))) + 1
+                previous = last.get("entry_hash", "")
+                if not previous:
+                    previous = hashlib.sha256(
+                        json.dumps(last, sort_keys=True).encode()).hexdigest()
+            except (ValueError, TypeError, json.JSONDecodeError):
+                sequence = len(lines) + 1
+        entry = {
+            "sequence": sequence,
+            "previous_hash": previous,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "event": redact_text(str(event))[:200],
+            "data": redact(data or {}),
+        }
+        entry["entry_hash"] = hashlib.sha256(
+            json.dumps(entry, sort_keys=True).encode()).hexdigest()
+        f.seek(0, os.SEEK_END)
+        f.write(json.dumps(entry) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+        if fcntl:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 def mark_tested(target: str, url: str, method: str = "GET",
@@ -181,15 +242,15 @@ def mark_tested(target: str, url: str, method: str = "GET",
                 session_id: str = "", notes: str = ""):
     """Record that an endpoint was tested."""
     entry = EndpointEntry(
-        url=url, method=method, status=status,
+        url=redact_text(str(url))[:4000], method=method, status=status,
         content_hash=hashlib.sha256(content.encode()).hexdigest() if content else "",
         content_length=len(content),
-        session_id=session_id, notes=notes,
+        session_id=redact_text(str(session_id))[:100], notes=redact_text(str(notes))[:2000],
     )
     atomic_append(_state_dir(target) / "endpoints.jsonl", json.dumps(asdict(entry)))
 
     state = load_state(target)
-    state.endpoints_tested += 1
+    state.endpoints_tested = _jsonl_count(_state_dir(target) / "endpoints.jsonl")
     save_state(target, state)
 
 
@@ -197,28 +258,52 @@ def mark_dead_end(target: str, url: str, method: str = "GET",
                   reason: str = ""):
     """Record that an endpoint yielded nothing."""
     entry = {
-        "url": url,
+        "url": redact_text(str(url))[:4000],
         "method": method,
-        "reason": reason,
+        "reason": redact_text(str(reason))[:2000],
         "ts": datetime.now(timezone.utc).isoformat(),
     }
     atomic_append(_state_dir(target) / "dead_ends.jsonl", json.dumps(entry))
 
     state = load_state(target)
-    state.dead_ends += 1
+    state.dead_ends = _jsonl_count(_state_dir(target) / "dead_ends.jsonl")
     save_state(target, state)
 
 
 def add_finding(target: str, finding: Dict) -> str:
-    """Add a confirmed finding to the findings log. Returns finding_id."""
-    f = Finding(**finding)
-    atomic_append(_state_dir(target) / "findings.jsonl", json.dumps(asdict(f)))
+    """Add a finding and synchronously run the mandatory post-finding trigger.
+
+    The finding append and state counter remain durable even if a downstream
+    trigger component fails. In that case the trigger module records an
+    explicit error receipt/repair task; callers must not treat the handoff as
+    complete merely because this function returned the finding id.
+    """
+    f = Finding(**redact(finding))
+    record = asdict(f)
+    atomic_append(_state_dir(target) / "findings.jsonl", json.dumps(record))
 
     state = load_state(target)
-    state.findings_count += 1
+    state.findings_count = _jsonl_count(_state_dir(target) / "findings.jsonl")
     save_state(target, state)
 
     log_journal(target, "finding_added", {"finding_id": f.finding_id, "title": f.title})
+    try:
+        from tools.post_finding_trigger import trigger_after_finding
+        trigger_after_finding(target, record, project_root=ROOT)
+    except Exception as exc:
+        # Persistence must never erase evidence, but a hard-trigger failure is
+        # itself an explicit blocked event. Write a minimal receipt/repair item
+        # so every finding remains visible to the next workflow stage.
+        error = f"{type(exc).__name__}: {str(exc)[:300]}"
+        try:
+            from tools.post_finding_trigger import record_trigger_failure
+            record_trigger_failure(target, record, error, project_root=ROOT)
+        except Exception as receipt_exc:
+            error = f"{error}; receipt: {type(receipt_exc).__name__}: {str(receipt_exc)[:200]}"
+        log_journal(target, "post_finding_trigger_error", {
+            "finding_id": f.finding_id,
+            "error": error,
+        })
     return f.finding_id
 
 
@@ -269,11 +354,21 @@ def rotate_state(target: str, max_journal_lines: int = 10000):
     if len(lines) <= max_journal_lines:
         return
 
-    # Rotate: keep last N lines, archive rest
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Rotate: keep last N lines, archive rest, and preserve the chain anchor
+    # so the retained journal remains verifiable after rotation.
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     archive = _state_dir(target) / f"journal.{ts}.jsonl"
+    retained = lines[-max_journal_lines:]
+    first_retained = json.loads(retained[0])
+    anchor = {
+        "archive": archive.name,
+        "next_sequence": first_retained.get("sequence", 1),
+        "previous_hash": first_retained.get("previous_hash", ""),
+    }
     archive.write_text("\n".join(lines[:-max_journal_lines]) + "\n")
-    atomic_write(jf, "\n".join(lines[-max_journal_lines:]) + "\n")
+    atomic_write(jf, "\n".join(retained) + "\n")
+    atomic_write(_state_dir(target) / "journal.anchor.json",
+                 json.dumps(anchor, indent=2))
 
     # Keep only 3 archives
     archives = sorted(_state_dir(target).glob("journal.*.jsonl"))

@@ -27,8 +27,13 @@ from typing import Optional, Dict, List, Any, Tuple
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+try:
+    from tools.runtime_paths import CODE_ROOT, workspace_root
+except ImportError:  # direct script execution
+    from runtime_paths import CODE_ROOT, workspace_root
+
+ROOT = workspace_root()
+sys.path.insert(0, str(CODE_ROOT))
 
 REFUTATION_DIR = ROOT / "state" / "refutations"
 
@@ -442,10 +447,14 @@ class RefutationEngine:
         Returns parsed gate results or None if unavailable.
         """
         try:
+            # Feed the prompt through stdin rather than argv so the refutation
+            # text (which may embed finding details) never appears in the
+            # process list. `claude -p` reads the prompt from stdin when no
+            # positional prompt is supplied.
             result = subprocess.run(
-                ["claude", "-p", prompt, "--model", model,
+                ["claude", "-p", "--model", model,
                  "--output-format", "json", "--max-tokens", "4096"],
-                capture_output=True, text=True, timeout=300,
+                input=prompt, capture_output=True, text=True, timeout=300,
                 env={**__import__('os').environ, "CLAUDE_CODE_EFFORT_LEVEL": "max"},
             )
 

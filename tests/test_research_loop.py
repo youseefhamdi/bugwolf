@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tools.research_loop import (
     ResearchLoop, ResearchExecutor, CHECKPOINTS, CANONICAL,
-    _html_to_text, _slugify,
+    _html_to_text, _slugify, search_web,
 )
 
 
@@ -331,6 +331,64 @@ class TestExecutionAndPersistence(unittest.TestCase):
             res = ex.execute(self.loop, "pre-hunt", ["web"])
         searches = [r for r in res["records"] if r["task_type"] == "search"]
         self.assertTrue(all(r.get("pending") for r in searches))
+
+    def test_offline_search_uses_bundled_references(self):
+        with mock.patch.dict("os.environ", {
+                "SERPER_API_KEY": "", "RESEARCH_SEARCH_API_KEY": ""}, clear=False):
+            results = search_web("OWASP web application risks", limit=2)
+        self.assertTrue(results)
+        self.assertTrue(all(r["source"] == "bundled_reference" for r in results))
+        self.assertEqual(search_web.last_backend, "bundled_reference")
+
+    def test_require_latest_disables_offline_fallback(self):
+        with mock.patch.dict("os.environ", {
+                "SERPER_API_KEY": "", "RESEARCH_SEARCH_API_KEY": ""}, clear=False):
+            results = search_web("latest bypass techniques", allow_offline=False)
+        self.assertEqual(results, [])
+        self.assertEqual(search_web.last_backend, "live_provider_unconfigured")
+
+    def test_require_latest_keeps_provider_errors_pending(self):
+        with mock.patch.dict("os.environ", {
+                "SERPER_API_KEY": "test-key",
+                "RESEARCH_SEARCH_API_URL": "https://search.example.test/api",
+        }, clear=False), mock.patch("tools.research_loop.urllib.request.urlopen",
+                                    side_effect=OSError("provider unavailable")):
+            results = search_web("latest bypass techniques", allow_offline=False)
+        self.assertEqual(results, [])
+        self.assertEqual(search_web.last_backend, "live_provider_error")
+
+    def test_execute_sequential_preserves_checkpoint_order(self):
+        with mock.patch("tools.research_loop.fetch_url", return_value={
+                "url": "https://x", "final_url": "https://x", "status": 200,
+                "text": "source", "content_type": "text/plain", "error": ""}), \
+             mock.patch("tools.research_loop.search_web", return_value=[{
+                 "title": "latest", "url": "https://u", "snippet": "s"}]):
+            ex = self._executor(run_search=True)
+            result = ex.execute_sequential(
+                self.loop, ["web"],
+                checkpoints=["pre-hunt", "post-recon", "post-maps"],
+                require_latest=True)
+        self.assertEqual(result["sequence"],
+                         ["pre-hunt", "post-recon", "post-maps"])
+        self.assertTrue(result["latest_ready"])
+        manifest = json.loads(Path(result["sequence_file"]).read_text())
+        self.assertEqual([item["sequence"] for item in manifest["runs"]], [1, 2, 3])
+        self.assertEqual(len(manifest["executions"]), 1)
+
+        # A subsequent execution appends history but reports only its own
+        # ordered run to callers and the CLI summary.
+        with mock.patch("tools.research_loop.fetch_url", return_value={
+                "url": "https://x", "final_url": "https://x", "status": 200,
+                "text": "source", "content_type": "text/plain", "error": ""}), \
+             mock.patch("tools.research_loop.search_web", return_value=[{
+                 "title": "latest", "url": "https://u", "snippet": "s"}]):
+            second = ex.execute_sequential(
+                self.loop, ["web"], checkpoints=["bypass"], require_latest=True)
+        manifest = json.loads(Path(second["sequence_file"]).read_text())
+        self.assertEqual(second["sequence"], ["pre-hunt", "post-recon", "post-maps", "bypass"])
+        self.assertEqual(second["current_execution"]["sequence"], ["bypass"])
+        self.assertEqual(manifest["runs"][0]["checkpoint"], "bypass")
+        self.assertEqual(len(manifest["executions"]), 2)
 
     def test_run_search_false_marks_all_pending_without_calling(self):
         with mock.patch("tools.research_loop.search_web") as sw:

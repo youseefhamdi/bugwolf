@@ -29,8 +29,13 @@ from typing import Optional, Dict, List, Any, Set
 from dataclasses import dataclass, field, asdict
 from collections import defaultdict
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+try:
+    from tools.runtime_paths import CODE_ROOT, workspace_root
+except ImportError:  # direct script execution
+    from runtime_paths import CODE_ROOT, workspace_root
+
+ROOT = workspace_root()
+sys.path.insert(0, str(CODE_ROOT))
 
 EMULATION_DIR = ROOT / "state" / "emulation"
 

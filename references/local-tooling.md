@@ -4,7 +4,7 @@ This standalone reference file documents the local CLI tooling and web/API vulne
 
 ## Local CLI Tool Support
 
-When Claude Code can execute locally, BugWolf can orchestrate available tools directly. The **full categorized catalog** — one PRIMARY tool per phase, install commands, and API-key notes — lives in `references/recon-tooling.md`. The recon engine (`tools/recon_engine.sh [--fast|--deep]`) runs the PRIMARY of every phase with graceful fallbacks.
+When Claude Code can execute locally, BugWolf can orchestrate available tools directly after an authorized scope is loaded. The **full categorized catalog** — one PRIMARY tool per phase, install commands, and API-key notes — lives in `references/recon-tooling.md`. The recon engine (`tools/recon_engine.sh [--fast|--deep] --scope-file scope.json --confirm-active`) runs the PRIMARY of every phase with graceful fallbacks.
 
 **Core recon (minimum):** `curl`, `subfinder`, `assetfinder`, `dnsx`, `httpx`, `katana`, `nuclei`, `trufflehog`, `ffuf`, `nmap`
 

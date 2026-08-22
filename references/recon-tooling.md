@@ -6,6 +6,25 @@
 
 **Wordlists/payloads are never static:** any phase that needs one (vhost, params, dirs, payloads) generates a target-specific list via `tools/wordlist_gen.py --target T --mode <...> --research` — mine the target surface, derive wordforms, apply the tech stack, research the internet.
 
+## BugWolf intelligence adapter
+
+`tools/js_ct_intel.py` is the canonical adapter for the JS/CT category. It keeps the methodology's useful sequence—passive CT, URL collection, local JS analysis, then workflow hypotheses—without treating scanner output as a finding.
+
+| Input/adapter | Output | Safety boundary |
+|---|---|---|
+| `crt.name/v1/search?apex=<target>&dates=1` | `ct-records.jsonl` with first/last-seen fields where supplied | HTTPS, response-size bound, explicit scope filter |
+| `crt.sh` | fallback CT names | Same scope filter; never merged from an unauthorized sibling |
+| `katana`, `hakrawler` | crawler URL inputs | Optional only; `--collect-crawlers` + `--confirm-active` |
+| LinkFinder | endpoint candidates | Local JS only; unavailable means built-in extractor |
+| `js-beautify` or `prettier` | beautified local copies | No source modification; local files only |
+| `grep` | redacted line indicators | Secret values are replaced by hashes and lengths |
+
+The adapter writes `ct-subdomains.txt`, `js-endpoints.txt`, `js-analysis.jsonl`, `js-secrets.jsonl`, `js-grep.jsonl`, `workflow-hypotheses.jsonl`, and `manifest.json`. Workflow categories are hypotheses for manual state-machine testing: skipped/reordered/repeated steps, role differences, payment/subscription boundaries, verification, privileged routes, and file boundaries.
+
+`tools/methodology_playbook.py` consumes the URL and scanner artifacts after this phase. It emits `workflow-plans.jsonl`, `idor-matrix.jsonl`, `validation-tasks.jsonl`, and non-executing `tool-plans.jsonl`. `ffuf`, `nuclei`, SQLMap, and XSStrike are treated as confirmation adapters—not discovery verdicts. The default plan is offline-only; SQLMap plans exclude database enumeration and dumping.
+
+`tools/asset_intel.py` handles the broader passive-source category. It normalizes supplied Amass/Shodan/Censys/FOFA/ZoomEye/SpiderFoot exports and emits provider query plans without contacting those services. `tools/defensive_detection.py` is for supplied host/network logs; it does not collect telemetry or execute LOLBins.
+
 ---
 
 ## 1. Subdomain Enumeration (passive)

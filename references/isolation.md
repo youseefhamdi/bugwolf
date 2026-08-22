@@ -38,21 +38,21 @@ Agents must verify every target against the program's scope before testing:
 **Kill if:** Agent tests an out-of-scope asset without explicit scope expansion approval.
 
 ### 3. Execution Isolation
-Agents have defined execution permissions:
+Agents have defined execution permissions. Networked operations require a scope file with `authorized: true`; active probes additionally require explicit confirmation:
 
 | Permission Level | Allowed Actions | Agents |
 |-----------------|-----------------|--------|
 | **Passive-only** | Read, observe, fingerprint | recon-agent, credential-leak-agent |
 | **Read-only probing** | GET requests, public data access | web-api-agent, access-control-agent, graphql-agent |
 | **Active testing** | Payload injection, auth bypass attempts | All hunt agents (with authorization) |
-| **Destructive testing** | Write/delete operations, state changes | Only with explicit user approval |
+| **Destructive testing** | Write/delete operations, state changes | Disabled by default; requires explicit user approval and a scoped test environment |
 
 ### 4. Data Isolation
 Agent findings must not cross-contaminate:
 
 - Each agent's findings stay in its own namespace until deduplication
 - Finding IDs are prefixed with agent name for traceability
-- Cross-agent chains are built by KillChainBuilder, not by agents directly
+- Cross-agent chains are built by `tools/chain_orchestrator.py`, not by agents directly; the orchestrator consumes redacted findings/leads and preserves chain state
 - Shared state goes through AgentBus signals, not direct file writes
 
 ### 5. Model/Context Isolation
@@ -76,6 +76,7 @@ Before an agent's findings are accepted, run through these checks:
 
 ### Check 2: Scope Compliance
 ```
+[ ] A scope file exists and contains `authorized: true`
 [ ] Every tested endpoint/asset is in the program's scope
 [ ] No testing of excluded paths (lib/, test/, third-party)
 [ ] No testing of assets not owned by the target organization

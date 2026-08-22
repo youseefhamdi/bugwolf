@@ -34,7 +34,18 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field, asdict
 
-ROOT = Path(__file__).resolve().parent.parent
+try:
+    from tools.safety import AuthorizationError, safe_target_name
+    from tools.evidence import redact, redact_text
+except ImportError:  # direct script execution
+    from safety import AuthorizationError, safe_target_name
+
+try:
+    from tools.runtime_paths import workspace_root
+except ImportError:  # direct script execution
+    from runtime_paths import workspace_root
+
+ROOT = workspace_root()
 CUSTODY_ROOT = ROOT / "custody"
 
 # Try BLAKE3, fall back to SHA-256
@@ -65,6 +76,7 @@ class CustodyEntry:
     previous_hash: str = ""  # Hash of previous entry (Merkle chain)
     metadata: Dict = field(default_factory=dict)
     gpg_signature: Optional[str] = None
+    entry_hash: str = ""
 
     def compute_hash(self) -> str:
         """Compute hash of this entry (excluding previous_hash and gpg_signature)."""
@@ -103,6 +115,10 @@ class ChainOfCustody:
         CUSTODY_ROOT.mkdir(parents=True, exist_ok=True)
 
     def _chain_dir(self, finding_id: str) -> Path:
+        try:
+            safe_target_name(finding_id)
+        except AuthorizationError as exc:
+            raise ValueError(f"invalid finding id: {exc}") from exc
         d = CUSTODY_ROOT / finding_id
         d.mkdir(parents=True, exist_ok=True)
         return d
@@ -191,10 +207,10 @@ class ChainOfCustody:
             sequence=seq,
             timestamp=now,
             event_type=event_type,
-            description=description,
+            description=redact_text(str(description))[:4000],
             evidence_files=evidence_records,
             previous_hash=meta["chain_tip"],
-            metadata=metadata or {},
+            metadata=redact(metadata or {}),
         )
 
         entry_hash = entry.compute_hash()
@@ -206,14 +222,21 @@ class ChainOfCustody:
             meta["gpg_signed"] = True
 
         # Append to chain
-        with open(self._chain_file(finding_id), "a") as f:
-            f.write(json.dumps(asdict(entry)) + "\n")
+        entry.entry_hash = entry_hash
+        chain_file = self._chain_file(finding_id)
+        with open(chain_file, "a") as f:
+            f.write(json.dumps(asdict(entry), sort_keys=True) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
         # Update meta
         meta["chain_tip"] = entry_hash
         meta["entry_count"] = seq
         meta["updated_at"] = now
-        self._meta_file(finding_id).write_text(json.dumps(meta, indent=2))
+        meta_path = self._meta_file(finding_id)
+        temporary = meta_path.with_name(meta_path.name + ".tmp")
+        temporary.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
+        temporary.replace(meta_path)
 
         return {
             "entry_id": entry.entry_id,
@@ -258,10 +281,26 @@ class ChainOfCustody:
         expected_seq = 1
 
         for i, raw in enumerate(entries):
-            entry_hash = CustodyEntry(**{
-                k: v for k, v in raw.items()
-                if k not in ("gpg_signature",)
-            }).compute_hash()
+            try:
+                entry_hash = CustodyEntry(**{
+                    k: v for k, v in raw.items()
+                    if k in {"entry_id", "sequence", "timestamp", "event_type",
+                             "description", "evidence_files", "previous_hash",
+                             "metadata", "gpg_signature", "entry_hash"}
+                }).compute_hash()
+            except (KeyError, TypeError) as exc:
+                result["valid"] = False
+                result["errors"].append(f"Entry {i + 1}: malformed entry: {exc}")
+                continue
+
+            # Older chains did not persist the entry hash. They remain
+            # readable, but newly written chains make terminal-entry tampering
+            # detectable by comparing the stored hash and meta tip.
+            stored_hash = raw.get("entry_hash", "")
+            if stored_hash and stored_hash != entry_hash:
+                result["valid"] = False
+                result["errors"].append(
+                    f"Entry {raw.get('sequence', i + 1)}: entry hash mismatch")
 
             if raw.get("gpg_signature"):
                 # GPG signature verification
@@ -302,10 +341,18 @@ class ChainOfCustody:
         if result["errors"]:
             result["valid"] = False
 
-        if len(entries) != meta["entry_count"]:
+        if len(entries) != meta.get("entry_count", -1):
             result["valid"] = False
             result["errors"].append(
-                f"Entry count mismatch: chain has {len(entries)}, meta says {meta['entry_count']}")
+                f"Entry count mismatch: chain has {len(entries)}, meta says {meta.get('entry_count')}")
+        if entries:
+            terminal_hash = entries[-1].get("entry_hash", "")
+            if terminal_hash and meta.get("chain_tip") != terminal_hash:
+                result["valid"] = False
+                result["errors"].append("Meta chain tip does not match terminal entry")
+            elif not terminal_hash and meta.get("chain_tip") != prev_hash:
+                result["valid"] = False
+                result["errors"].append("Meta chain tip does not match computed chain tip")
 
         return result
 

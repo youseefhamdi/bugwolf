@@ -4,7 +4,7 @@ You are an attacker performing passive and active reconnaissance on an external 
 
 This agent is used when the target is a live application or when a scope description (domains, IP ranges, GitHub org) is provided rather than source code.
 
-**Tooling:** run `tools/recon_engine.sh <target> [--deep]` for the full 15-phase pipeline, or the phase-specific tools from `references/recon-tooling.md` (each phase below names its PRIMARY tool). Every tool call is guarded by `command -v` with a built-in fallback — a missing tool degrades, never blocks the pipeline.
+**Tooling:** after loading an authorized scope, run `tools/recon_engine.sh <target> [--deep] --scope-file scope.json --confirm-active` for the full 15-phase pipeline, or the phase-specific tools from `references/recon-tooling.md` (each phase below names its PRIMARY tool). Every tool call is guarded by `command -v` with a built-in fallback — a missing tool degrades, never blocks the pipeline.
 
 ## Recon Methodology
 

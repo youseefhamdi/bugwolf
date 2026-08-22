@@ -40,8 +40,15 @@ from dataclasses import dataclass, field, asdict
 from urllib.request import urlopen, Request
 from urllib.parse import quote, urlparse
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+try:
+    from tools.runtime_paths import CODE_ROOT, workspace_root
+    from tools.safety import AuthorizationError, require_authorized_target, validate_public_https_url
+except ImportError:  # direct script execution
+    from runtime_paths import CODE_ROOT, workspace_root
+    from safety import AuthorizationError, require_authorized_target, validate_public_https_url
+
+ROOT = workspace_root()
+sys.path.insert(0, str(CODE_ROOT))
 
 PATCH_GAP_DIR = ROOT / "state" / "patch_gap"
 
@@ -75,6 +82,7 @@ class PatchGapTarget:
     cve_keywords: List[str] = field(default_factory=list)
     last_checked: Optional[str] = None
     cve_matches: List[CVEMatch] = field(default_factory=list)
+    scope_file: Optional[str] = None
 
 
 @dataclass
@@ -267,7 +275,7 @@ def fetch_poc(cve_id: str) -> Dict:
 # Target version fingerprinting
 # ---------------------------------------------------------------------------
 
-def fingerprint_target(target: PatchGapTarget) -> Dict[str, str]:
+def fingerprint_target(target: PatchGapTarget, *, scope_file: Optional[str] = None) -> Dict[str, str]:
     """Attempt to fingerprint technology versions on the target.
 
     Uses HTTP headers, HTML meta tags, JS files, and error pages.
@@ -275,9 +283,19 @@ def fingerprint_target(target: PatchGapTarget) -> Dict[str, str]:
     versions = {}
 
     for domain in target.domains[:3]:
+        try:
+            require_authorized_target(domain, scope_file or target.scope_file,
+                                      active=False)
+        except AuthorizationError:
+            continue
         for proto in ["https", "http"]:
             try:
                 url = f"{proto}://{domain}"
+                try:
+                    validate_public_https_url(url) if proto == "https" else require_authorized_target(
+                        domain, scope_file or target.scope_file, active=False)
+                except AuthorizationError:
+                    continue
                 req = Request(url, headers={"User-Agent": "BugWolf/1.0"})
                 with urlopen(req, timeout=10) as resp:
                     headers = dict(resp.headers)
@@ -458,7 +476,7 @@ def dry_run_poc(poc_content: str, target: str) -> Dict:
 # ---------------------------------------------------------------------------
 
 def launch_poc(cve_id: str, target: str, poc_url: str,
-               safety_bypass: bool = False) -> ExploitAttempt:
+               safety_bypass: bool = False, *, scope_file: Optional[str] = None) -> ExploitAttempt:
     """Fetch and potentially execute a PoC against a target.
 
     WARNING: Only executes with explicit safety bypass.
@@ -473,11 +491,13 @@ def launch_poc(cve_id: str, target: str, poc_url: str,
         safety_check_passed=False,
     )
 
-    # Fetch PoC
+    # Fetch only a public HTTPS PoC; never let a user-supplied URL become an
+    # SSRF primitive. The launcher remains analysis-only and does not execute it.
     try:
+        poc_url = validate_public_https_url(poc_url)
         req = Request(poc_url, headers={"User-Agent": "BugWolf/1.0"})
         with urlopen(req, timeout=30) as resp:
-            poc_content = resp.read().decode("utf-8", errors="ignore")
+            poc_content = resp.read(1_000_001).decode("utf-8", errors="ignore")
     except Exception as e:
         attempt.evidence = f"Failed to fetch PoC: {e}"
         return attempt
@@ -514,8 +534,10 @@ class PatchGapMonitor:
         PATCH_GAP_DIR.mkdir(parents=True, exist_ok=True)
 
     def load_target(self, name: str) -> PatchGapTarget:
-        """Load target profile."""
-        f = PATCH_GAP_DIR / f"{name}-profile.json"
+        """Load a validated target profile."""
+        safe_target_name(name)
+        key = name.replace(":", "_")
+        f = PATCH_GAP_DIR / f"{key}-profile.json"
         if f.exists():
             data = json.loads(f.read_text())
             cve_matches = [CVEMatch(**c) for c in data.pop("cve_matches", [])]
@@ -525,10 +547,11 @@ class PatchGapMonitor:
         return PatchGapTarget(name=name)
 
     def save_target(self, target: PatchGapTarget):
-        """Persist target profile."""
+        """Persist a validated target profile."""
+        safe_target_name(target.name)
         data = asdict(target)
         data["cve_matches"] = [asdict(c) for c in target.cve_matches]
-        f = PATCH_GAP_DIR / f"{target.name}-profile.json"
+        f = PATCH_GAP_DIR / f"{target.name.replace(':', '_')}-profile.json"
         f.write_text(json.dumps(data, indent=2, default=str))
 
     def check_target(self, target: PatchGapTarget) -> List[CVEMatch]:
@@ -640,6 +663,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="BugWolf Patch-Gap Exploitation Engine")
     parser.add_argument("--target", help="Target name/domain")
+    parser.add_argument("--scope-file", help="Explicit authorization scope for target access")
     parser.add_argument("--domains", nargs="+", help="Target domains")
     parser.add_argument("--tech-stack", nargs="+",
                         help="Technology:version pairs (e.g., nginx:1.18.0)")
@@ -683,8 +707,12 @@ def main():
         if not args.target:
             print("[!] --target required for monitoring")
             sys.exit(1)
-
+        if not args.scope_file:
+            print("[!] --scope-file is required for target monitoring", file=sys.stderr)
+            sys.exit(2)
         target = monitor.load_target(args.target)
+        target.scope_file = args.scope_file
+
         if not target.cve_keywords:
             target.cve_keywords = [args.target]
         monitor.save_target(target)
@@ -712,8 +740,12 @@ def main():
 
         # Fingerprint if no tech stack known
         if args.fingerprint or not target.tech_stack:
+            if not args.scope_file:
+                print("[!] --scope-file is required for target fingerprinting", file=sys.stderr)
+                sys.exit(2)
             print("[*] Fingerprinting target...")
-            versions = fingerprint_target(target)
+            versions = fingerprint_target(target, scope_file=args.scope_file)
+
             if versions:
                 print(f"    Detected: {json.dumps(versions)}")
                 target.tech_stack.update(versions)

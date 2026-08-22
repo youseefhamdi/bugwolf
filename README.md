@@ -17,7 +17,7 @@
 ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 ```
 
-> All-round bug bounty skill for Claude Code — parallelized agents for smart contract audits (EVM, Move, Solana, TRON), web/API security, local tooling orchestration, and submission-ready reports for HackerOne, Bugcrowd, Intigriti & Immunefi.
+> All-round authorized security-research skill for Claude Code and Freebuff — parallelized agents for smart contract audits (EVM, Move, Solana, TRON), web/API security, local tooling orchestration, and submission-ready reports for HackerOne, Bugcrowd, Intigriti & Immunefi.
 
 > **AI Pentesting Tool:** Run isolated, cloud-hosted pentesting sandboxes at **[bugwolf.xyz](https://bugwolf.xyz)** — your AI key, your Firecracker microVM, your report. Pipeline: recon → hunt → triage → H1-ready report. AI slop gets you rate-limited; BugWolf gets you paid.
 
@@ -27,7 +27,7 @@
 
 ## What It Does
 
-BugWolf spins up **8 specialized security agents in parallel**, each attacking a different surface of your target. Findings are deduplicated, gate-evaluated, CVSS-scored, and formatted into a submission-ready report — in minutes.
+BugWolf runs six core security agents plus applicable domain agents in parallel. Findings are deduplicated, gate-evaluated, CVSS-scored, and formatted into a submission-ready report — only for explicitly authorized targets.
 
 | Agent | Covers |
 |---|---|
@@ -50,6 +50,257 @@ BugWolf spins up **8 specialized security agents in parallel**, each attacking a
 
 **Report formats:** HackerOne · Bugcrowd · Intigriti · Immunefi · Generic
 
+## Harness-Independent Session Contract
+
+Long skill prompts can be compacted or forgotten by an AI harness. BugWolf therefore ships a short, reloadable `BUGWOLF.md` contract and an offline verifier instead of relying on model memory. The Freebuff installer also creates `AGENTS.md`, `CLAUDE.md` (only when absent), and `.bugwolf/harness.json`; other harnesses can load `configs/harness/BUGWOLF.md` manually.
+
+Start every session with:
+
+```bash
+python3 tools/harness_guard.py --verify --json
+```
+
+If the verifier reports `ready: false`, reload the contract and stop rather than improvising. The executable tools still enforce authorization and mandatory research independently of the model. No plugin can override a harness's system/developer policy, but this contract makes instruction drift detectable and recoverable across Claude Code, Freebuff/Codebuff, Codex, Cursor, Windsurf, Copilot, and similar hosts.
+
+The contract supports direct conversational commands, so operators do not
+need to know BugWolf's internal Python commands:
+
+```text
+bugwolf --full attack this target https://TARGET
+bugwolf --web audit this target https://TARGET
+bugwolf --solidity review this target PROJECT
+```
+
+The harness parses the target and mode, verifies or initializes the contract,
+starts and inspects the staged workflow, and continues through the existing
+gates. It asks only for missing environment, explicit scope, or the confirmation
+needed for the next operation; “attack” means authorized assessment and never
+permission to bypass a control. Its reasoning remains creative through boundary
+flips, differential comparisons, state/time and failure-path checks,
+negative-space questions, and bounded cross-surface chains, while preserving
+uncertainty and evidence state.
+
+## Exhaustive staged startup — no direct hunting
+
+After installation, the harness must initialize the persistent workflow instead
+of jumping to `hunt.py`:
+
+```bash
+python3 tools/stage_controller.py --target TARGET --mode web --start --json
+python3 tools/stage_controller.py --target TARGET --mode web --status --json
+```
+
+Every target proceeds through this non-skippable sequence:
+
+```text
+setup → environment-preflight → authorization → passive-recon
+→ asset-intelligence → technology-fingerprint → maps → research
+→ coverage-plan → validation → triage → report
+```
+
+State is stored in `.bugwolf/workflows/TARGET.json`. The controller requires
+real artifacts for each stage, preserves pending/error status, and blocks
+validation when current research is unavailable. It also blocks `hunt.py` until
+validation and `zero_day.py` until coverage planning. “APT-level”
+means complete, methodical, authorized coverage of the full target surface and
+all trust/identity/state/capability boundaries—not unlimited traffic or a way to
+bypass authorization and active/destructive confirmations.
+
+## Potentially-Novel Research Track
+
+BugWolf includes a bounded research track for discovering **potentially novel vulnerabilities** across Web/API, smart contracts, Cloud/CI/CD, LLM/agentic systems, and mobile/binary artifacts. It uses differential analysis, invariant testing, mutation lineage, replayable redacted evidence, local/public deduplication, and mandatory human review. It does not label an unreviewed candidate a zero-day.
+
+Local candidate generation is non-networked:
+
+```bash
+python3 tools/zero_day.py --target local-project \
+  --surface cloud_cicd --path .github/workflows/build.yml --json
+```
+
+Research can run **sequentially** — round over round, each round researching
+the top ranked candidates and deriving bounded per-bug-class refinements
+(deduped through novelty assessment, so only new angles survive):
+
+```bash
+python3 tools/zero_day.py --target T --surface web_api --path recon/T/urls.txt \
+  --sequential --rounds 3 --per-round 2 --json
+```
+
+The `rounds` array in the output shows the lineage narrowing as explored
+derivations are skipped (e.g. 5 → 4 → 2 kept per round); the final list is
+still pre-ranked for validation with `--spread`/`--top-k`.
+
+The track also synthesizes **chained hypotheses** — pairing input-class
+candidates with sink/impact classes (cache-key control → write sink,
+daemon input → command sink, untrusted checkout → script pipe, hidden context
+→ tool authorization, …). Chains carry the criticals and are registered
+through the same novelty dedup. Sequential mode includes them automatically;
+standalone runs opt in with `--chains`:
+
+```bash
+python3 tools/zero_day.py --target T --surface web_api --path A --chains --json
+```
+
+Every real `hunt.py`, `recon_engine.sh`, and `zero_day.py` run now invokes the deep-research coordinator sequentially: `pre-hunt → post-recon → post-maps → bypass`, then `post-findings → escalation → pre-report`. Each checkpoint is persisted under `research/<target>/` and summarized in `research/<target>/sequence.json`; `latest_ready: false` explicitly means live-search data was unavailable. Configure `SERPER_API_KEY` or an HTTPS `RESEARCH_SEARCH_API_URL` plus `RESEARCH_SEARCH_API_KEY` when current web results are required. Use `python3 tools/research_loop.py --sequential --phase full --target T --mode web --execute --json` to run the same sequence manually.
+
+After each hunt, recon, and potentially-novel journey, newly observed techniques and blocker patterns are added to a quarantined local memory at `state/learning/<target>.jsonl`. Repeated records are deduplicated; only explicitly reviewed records can be reused in future target-specific wordlists. The plugin never self-modifies executable source or auto-approves untrusted research:
+
+```bash
+python3 tools/adaptive_learning.py --target T --list --status candidate --json
+python3 tools/adaptive_learning.py --target T --review-id ID --decision approve \\
+  --reviewer operator --evidence "Confirmed on an authorized disposable fixture" --json
+```
+
+See [`references/adaptive-learning.md`](references/adaptive-learning.md).
+
+Live validation remains scope-bound and requires the execution controller, explicit active confirmation, rate/request budgets, and separate confirmation for state-changing or destructive methods. See [`references/zero-day-research.md`](references/zero-day-research.md).
+
+The cache-key path traversal track (`tools/cache_traversal.py`, CVE-2026-18051 class) plans directory-escape probes from the target's cache-key construction and replays them against a lab with unique marker files:
+
+```bash
+# Offline escape plan (no network)
+python3 tools/cache_traversal.py --target example.com --spec w3tc-page-cache \
+  --urls-file recon/example.com/urls.txt --output-dir recon/example.com/cache-traversal
+
+# Gated lab replay: marker-served vs control-404 confirms the escape
+python3 tools/cache_traversal.py --target example.com --spec w3tc-page-cache \
+  --urls-file recon/example.com/urls.txt --base-url https://lab.example.com \
+  --scope-file scope.json --confirm-active --json
+```
+
+For Relay-style GraphQL deployments, `tools/graphql_gid.py` analyzes introspection results for `node(id:)` / `nodes(ids:)` global-id resolvers, harvests `gid://` references already present in the target's own artifacts (never enumerating ids, redacting every harvested id), and builds the bounded candidate list that feeds the two-account validation flow (Account A owns a disposable fixture; Account B replays A's *owned* gid — HackerOne #1618347 pattern):
+
+```bash
+python3 tools/graphql_gid.py --target example.com \
+  --introspection recon/example.com/introspection.json \
+  --artifacts recon/example.com/js recon/example.com/queries.txt \
+  --output-dir recon/example.com/graphql-gid --json
+```
+
+---
+
+## Recon intelligence: JavaScript and certificate transparency
+
+The recon engine now includes `tools/js_ct_intel.py`, a scoped intelligence phase adapted from the reviewed [Cyber-note/Full-Bug-Bounty-Hunting-Methodology-2026](https://github.com/Cyber-note/Full-Bug-Bounty-Hunting-Methodology-2026) workflow. It uses `crt.name` with date fields and falls back to `crt.sh`, then records scope-filtered names in `ct-records.jsonl` and `ct-subdomains.txt`.
+
+For JavaScript, the phase combines existing `katana`/`hakrawler` URL collection with local `LinkFinder` (when installed), `js-beautify`/`prettier` (when installed), plain `grep`, and built-in extraction. It writes redacted endpoint/secret indicators, source-map references, and business-logic workflow hypotheses; it never validates or prints credential values.
+
+A dedicated `tools/js_token_forge.py` static analyzer also flags client-side token forging — a hardcoded signing secret combined with an in-browser HMAC/sign primitive and client-controlled user/device/role claims (the classic `getSDToken(deviceId, userId, …)` pattern). It emits `token-forge-findings.jsonl` + `token-forge-plans.jsonl` with forgeability grades and remediation, storing only SHA-256 fingerprints of the matched lines (the raw secret is never written).
+
+```bash
+# Passive CT collection; requires an authorized scope file but no active confirmation
+python3 tools/js_ct_intel.py --target example.com \\
+  --scope-file scope.json --output-dir recon/example.com --ct-only
+
+# Analyze already-collected URLs and local JS without making network requests
+python3 tools/js_ct_intel.py --target example.com \\
+  --scope-file scope.json --urls-file recon/example.com/urls.txt \\
+  --js-dir recon/example.com/js --output-dir recon/example.com/js-intel --js-only
+```
+
+Optional crawler execution is separate and requires both `--collect-crawlers` and `--confirm-active`; it is bounded by a process timeout and remains subject to the supplied scope. These outputs are intelligence and hypotheses, not confirmed vulnerabilities or zero-day claims.
+
+## Signal-to-impact methodology playbook
+
+The reviewed 2026 articles are represented as an offline planning layer in `tools/methodology_playbook.py`. It turns URLs and scanner output into human-validation tasks for skipped/repeated/reordered steps, role and ownership boundaries, payment state, one-time tokens, idempotency, file access, server-side validation, IDOR, SQLi, and XSS.
+
+```bash
+python3 tools/methodology_playbook.py \\
+  --target example.com --scope-file scope.json \\
+  --urls-file recon/example.com/urls.txt \\
+  --signals-file recon/example.com/nuclei.txt \\
+  --output-dir recon/example.com/methodology
+```
+
+The generated ffuf/nuclei/SQLMap/XSStrike entries are **non-executing command plans**. SQLMap plans are confirmation-only and exclude database enumeration or dumping. Discovery output is never promoted directly to a finding; each task requires a reproducible trigger, bounded impact, redacted evidence, and human review.
+
+## Defensive and asset intelligence
+
+Additional offline tracks now cover passive asset graphing and diffing, provider query plans for Amass/Shodan/Censys/FOFA/ZoomEye/SpiderFoot, Shodan facet collection via the `ipfinder` CLI (offline facet plans + command lines by default; gated live collection with `--collect-ipfinder --confirm-active`; every result re-filtered through scope, with bare IPs kept only when their query term is in scope), defensive lateral-movement, persistence (TA0003), EDR-evasion *detection* hypotheses, and in-memory shellcode-runner *detection* signals (private allocation, RW→RX transitions, thread start outside a loaded module, mapped-execution variants, import-table signatures) from supplied logs, identity/MFA/OAuth/SAML posture, cloud/IaC boundaries, CVE-reference triage (including `--nuclei` template intake and curated `--seed` records), and deeper IDOR planning across the common-vector surfaces: path ids, file names, `X-Account-Id`-style headers, cookies, GraphQL `gid://` node ids, JWT claims, and PendingIntent mobile surfaces. Persistence/evasion output is detection hypotheses only — no implant, evasion loop, or bypass primitive is built or run.
+
+```bash
+python3 tools/asset_intel.py --target example.com --scope-file scope.json \\
+  --input-file recon/example.com/subs.txt \\
+  --output-dir recon/example.com/asset-intel
+
+# Shodan facet plans + ipfinder command lines (offline; live needs --confirm-active)
+python3 tools/asset_intel.py --target example.com --scope-file scope.json \\
+  --shodan-facets --output-dir recon/example.com/asset-intel
+
+python3 tools/defensive_detection.py --path exported-security.log \\
+  --rules --output-dir defensive-review
+
+python3 tools/identity_cloud.py --path infrastructure/ \\
+  --plans --output-dir posture-review
+```
+
+These modules are offline by default. They do not contact OSINT providers, execute LOLBAS commands, perform MFA prompts, replay tokens, access metadata, mutate cloud resources, enumerate users, dump data, or run CVE exploit code. See [`references/defensive-intelligence.md`](references/defensive-intelligence.md).
+
+Static high-impact chain analysis is available through `tools/chain_analyzer.py`, and AI/MCP defense analysis through `tools/ai_defense.py`. They produce source-hashed findings and remediation plans for SQLi-to-impact, upload/path consumers, deserialization, XXE file-read-to-credential chains, header/command sinks, prompt injection, indirect content, tool authorization, IFC, plan drift, and MCP OAuth boundaries. They never generate or execute exploit payloads. See [`references/chain-analysis.md`](references/chain-analysis.md).
+
+Research-derived analysis from the supplied security papers and framework notes is available through `tools/paper_intel.py`. It adds offline skill-chain composition scanning, temporal provenance bottleneck ranking, endpoint-specific authentication anomaly triage, CTI-to-Sigma grounding plans, contamination-aware binary reverse-engineering task planning, quarantined defense candidates, STAR-style HTTPS metadata privacy assessment with unknown rejection, and a vendor-neutral Agent control-plane audit across identity, data, tools, memory, telemetry, grounding, and SOC response. It does not execute skills, binaries, payloads, capture/decrypt traffic, attribute unrelated users, or change permissions. See [`references/paper-intelligence.md`](references/paper-intelligence.md).
+
+## Privacy and data governance
+
+`tools/pii_firewall.py` provides deterministic local masking before LLM, tool, log, webhook, or provider egress. It supports nested JSON/XML, request-bound reversible tokens held only in memory with TTL, token consolidation, residual warnings, and optional fail-closed behavior. `tools/data_governance.py` classifies schema fields and produces Kafka/topic encryption, ACL, retention, and field-level audit plans.
+
+```bash
+python3 tools/pii_firewall.py \\
+  --text 'Patient Jane Doe, email jane@example.com' \\
+  --request-id case-123 --policy mask_and_warn
+
+python3 tools/data_governance.py \\
+  --schema-file schemas/event.json --topic clinical.events \\
+  --output-dir governance-review
+```
+
+The privacy layer is an engineering control, not compliance certification. It never sends raw PHI to an LLM, persists reversible mappings, contacts Kafka/KMS/Schema Registry, or substitutes for legal, access-control, retention, and audit review. See [`references/privacy-governance.md`](references/privacy-governance.md).
+
+## Web/API Discovery Core
+
+A deterministic discovery layer between the methodology maps and the authorization controller. It turns recon artifacts into a coverage-aware search for novel bugs without firing anything itself.
+
+No manual schema files needed: pass `--recon-dir recon/example.com` to any of these and `tools/schema_extractor.py` auto-discovers OpenAPI/Swagger and GraphQL schemas from the recon output (URLs, live hosts, `swagger.txt`, JS bundles).
+
+```bash
+# Auto-build the model from a completed recon run
+python3 tools/schema_extractor.py --target example.com \
+  --recon-dir recon/example.com \
+  --output recon/example.com/discovery/surface-model.json
+
+# Or schedule directly from recon output
+python3 tools/discovery_scheduler.py --target example.com \
+  --recon-dir recon/example.com --output-dir recon/example.com/discovery
+
+# 1. Structured surface (OpenAPI/Swagger/GraphQL/URLs + sibling & state inference)
+python3 tools/surface_model.py --target example.com --openapi openapi.json \
+  --urls-file recon/example.com/urls.txt \
+  --output recon/example.com/discovery/surface-model.json
+
+# 2. Structure-aware mutation plans (one variable at a time)
+python3 tools/mutator.py --target example.com --openapi openapi.json \
+  --output recon/example.com/discovery/mutations.jsonl
+
+# 3. Impact-ranked, coverage-aware plan
+python3 tools/discovery_scheduler.py --target example.com --openapi openapi.json \
+  --urls-file recon/example.com/urls.txt \
+  --output-dir recon/example.com/discovery --budget 200 --min-focus medium
+```
+
+The scheduler orders mutations by impact focus (critical first) then untried surface, and its live loop runs each mutation through the oracle and emits the deterministic next step for every ambiguous result. Live execution only ever runs through the scope-bound execution controller with explicit confirmation. See [`references/discovery-core.md`](references/discovery-core.md).
+
+Add `--art` to switch budget allocation to the ART4SQLi selection method (Zhang et al., IEEE Trans. Reliability): SQLi payloads are tokenized, embedded as TF-IDF vectors, and spaced by the `1/cosine` distance, so each probe is picked farthest from everything already evaluated — effective payloads cluster in token space, and the paper measures ~26% fewer attempts before the first successful injection versus random. `--art-fixed-size` (default 10) controls the FSCS candidate-set size; `tools/art_selector.py` also exposes the tokenizer, the payload space, and the paper's F-measure metric for comparing selection strategies.
+
+Sibling surfaces are replayed live by `tools/differential_runner.py`, which sends the identical request to v1/v2 (and other paired) surfaces and scores divergence — offline pair-planning by default, live replay only through the gated controller with `--confirm-active`.
+
+Forwarded/trust headers (IP allowlist, host/vhost confusion, scheme/port override, path/URI rewrite, method override) are covered by `tools/header_trust.py` — a canonical taxonomy plus a baseline-vs-forged probe planner and gated live replay scored by the oracle. The mutator emits `header_trust` mutations per origin host so the discovery scheduler allocates budget across this surface. Forged values are trust hypotheses, never executed payloads. `recon_engine.sh` emits the offline `header-trust-plan.json` automatically after discovery; live replay stays gated behind `--confirm-active` + a scope file.
+
+Host-confusion probes also target the application's own internal vhost candidates: the surface model infers and ranks subdomains like `admin`/`api`/`dev` (grouped by resolved IP), and `header_trust` replays them as `Host`/forwarded-host values instead of only the generic `localhost`/`internal` list.
+
+The surface model also ensures a `GET /sitemap.xml` operation with `offset`/`page`/`limit`/`sort`/`order`/`filter` parameters, and the mutator plans `blind_sqli` time-based detection for those pagination/sort surfaces (`SLEEP`/`PG_SLEEP`/`WAITFOR DELAY`). Those strings are detection *plans*, never auto-fired — live execution still requires the gated controller.
+
+The same coverage loop drives smart-contract state-space exploration via `tools/contract_discovery.py`: bounded sequence/boundary/role/reentrancy mutation plans, a deterministic in-memory invariant executor, and automatic minimization of violating sequences to minimal reproducers. See [`references/discovery-core.md`](references/discovery-core.md) — smart-contract extension.
+
 ---
 
 ## AI Pentesting Tool — bugwolf.xyz
@@ -67,9 +318,39 @@ Take BugWolf hunting without spinning up your own environment. **[bugwolf.xyz](h
 
 ## Installation
 
+### Freebuff / Codebuff (terminal)
+
+BugWolf is a standard skill for the Codebuff skill loader (`npx skills`), which [Freebuff](https://github.com/CodebuffAI/freebuff) and Codebuff read from `.agents/skills/` at session start:
+
+```bash
+# Project-local install (loads in this project; also lands in .claude/skills for Claude Code)
+npx skills add youseefhamdi/bugwolf --skill bugwolf --copy
+
+# Global install (available in every project)
+npx skills add youseefhamdi/bugwolf --skill bugwolf --copy -g
+
+# Or install offline from this repo — no CLI or network needed:
+#   Option A: unzip dist/bugwolf-v<version>.freebuff.zip into your project
+#            (it creates .agents/skills/bugwolf/)
+#   Option B: run ./scripts/install_freebuff.sh [project-dir]
+```
+
+Then start a fresh Freebuff session in the project — the skill loads as **bugwolf** and triggers on the same phrases as Claude Code.
+
+### Freebuff + DeepSeek configuration
+
+Freebuff's default model in full mode is **DeepSeek V4 Flash** (V4 Pro is one session a day; the limited tier is MiMo 2.5). The skill ships a ready-to-apply runtime profile for that stack in [`configs/freebuff-deepseek.json`](configs/freebuff-deepseek.json) — install command, model facts, the authorization gates (`scope.json`, `--confirm-active`, `--confirm-destructive`), and a toolchain self-test — and a project template at [`configs/freebuff/AGENTS.md`](configs/freebuff/AGENTS.md). To make every Freebuff session in a target project load BugWolf with the DeepSeek operating contract, copy the template to the project root:
+
+```bash
+cp configs/freebuff/AGENTS.md /path/to/target-project/AGENTS.md
+```
+
+The contract matters because DeepSeek executes instructions literally: run the exact documented command lines, always pass `--json` where supported, and never skip an authorization gate. `SKILL.md` applies it in-session; the config profile and template ship inside both release bundles.
+
 ### Claude Code (terminal)
 
 ```bash
+# Either the npx skills route above (lands in .claude/skills/bugwolf too), or directly:
 git clone https://github.com/youseefhamdi/bugwolf.git ~/.claude/skills/bugwolf
 ```
 
@@ -191,6 +472,25 @@ For persistence, add the same variables to your PowerShell profile.
 
 ## Usage
 
+### Environment preflight
+
+Before starting reconnaissance or active testing, BugWolf asks whether the agent is running on a local workstation, VPS, container/VM, or unknown base, and whether it may perform a passive local OS/resource inventory. The inventory does not scan the network, read secrets, inspect user files, or contact cloud metadata services.
+
+```bash
+# Declaration only
+python3 tools/environment_profile.py --location vps --json
+
+# Requires explicit permission for passive OS/resource details
+python3 tools/environment_profile.py --location vps --scan-os --confirm-os-scan --json
+```
+
+Use the saved profile with the hunt engine:
+
+```bash
+python3 tools/hunt.py --target TARGET --scope-file scope.json \
+  --environment-profile state/environment.json --active --confirm-active --json
+```
+
 ### How to use BugWolf
 
 1. **Choose a precise scope.** For bug bounty work, point the skill at the exact contract file, API endpoint list, or web target you are testing.
@@ -214,12 +514,34 @@ check this contract for vulns --platform h1 --cvss
 
 ### Web / API target
 
+Create an explicit authorization scope before any network activity:
+
+```json
+{
+  "authorized": true,
+  "in_scope_domains": ["example.com"],
+  "in_scope_wildcards": ["*.api.example.com"],
+  "out_of_scope_domains": []
+}
 ```
-/bugwolf on https://api.target.com
+
+Then provide the scope file to the skill:
+
 ```
+/bugwolf on https://api.target.com --scope-file scope.json
+```
+
+Active network probes additionally require explicit confirmation; destructive IDOR methods require a separate confirmation:
+
+```
+/bugwolf on https://api.target.com --scope-file scope.json --active --confirm-active
+```
+
 ```
 find vulns in this API — [paste endpoints / Swagger / JS bundle]
 ```
+
+The IDOR engine tests read-only methods by default. Add `--confirm-destructive` only for an approved test environment when validating PUT/POST/DELETE behavior.
 
 ### Generate a report from findings
 
@@ -242,7 +564,10 @@ generate immunefi report --cvss: [describe the vuln]
 | `--platform intigriti` | Intigriti format |
 | `--cvss` | Include full CVSS 3.1 vector string + justification |
 | `--file-output` | Save report to `bugwolf-report-[timestamp].md` |
-| `--full` | Run all 8 agents regardless of detected file type |
+| `--full` | Run all applicable agents regardless of detected file type |
+| `--scope-file scope.json` | Required authorization scope for network operations |
+| `--confirm-active` | Explicitly authorize active probes |
+| `--confirm-destructive` | Explicitly authorize state-changing IDOR methods; read-only IDOR checks remain the default |
 
 ---
 
@@ -253,7 +578,7 @@ Discover files / scope
         ↓
 Build agent bundles (source + agent instructions)
         ↓
-Spawn 8 agents in parallel
+Spawn six core agents plus applicable domain agents in parallel
         ↓
 Deduplicate findings by (Target | location | bug-class)
         ↓
@@ -279,7 +604,7 @@ Fail any gate → rejected or demoted to a lead for manual review.
 
 - **Target hot contracts.** Point BugWolf at the 2–5 files you're actively reviewing rather than an entire repo. Smaller scope = denser context per agent = higher-signal findings.
 - **Run more than once.** LLM output is non-deterministic — each run can surface different vulnerabilities. Two or three passes often catch what a single pass misses.
-- **Chain findings.** BugWolf automatically detects composite chains (e.g., auth bypass → privilege escalation) and reports them as a combined severity.
+- **Chain findings.** BugWolf keeps chaining after the first connection: it combines findings with parked/open leads, resolves multi-hop paths, exposes missing links as the next research task, ranks terminal impact, and preserves the chain history. A chain is not reported until every edge is evidenced and reviewed.
 - **Use `--file-output`** when submitting. It saves a clean markdown report you can paste directly into the platform.
 
 ---
@@ -314,6 +639,7 @@ bugwolf/
     ├── al-mizaan-gates.md            # Al-Mizaan v3 7-gate deep validation (from Bug Bounty Intelligence MCP)
     ├── sis-intelligence.md           # SIS-MD passive security intelligence integration
     ├── isolation.md                  # Agent isolation rules and boundary enforcement
+    ├── zero-day-research.md          # Potentially-novel research lifecycle and lab workflow
     ├── cwe-knowledge-base.md          # 1,047 CWEs across 16 agent domains with detection patterns
     ├── attack-vectors/
     │   ├── web-api-vectors.md

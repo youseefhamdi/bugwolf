@@ -25,8 +25,13 @@ import sys
 from pathlib import Path
 from typing import Callable, List, Optional
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+try:
+    from tools.runtime_paths import CODE_ROOT, workspace_root
+except ImportError:  # direct script execution
+    from runtime_paths import CODE_ROOT, workspace_root
+
+ROOT = workspace_root()
+sys.path.insert(0, str(CODE_ROOT))
 
 # Universal high-value params (a small seed, not a wordlist — always augmented
 # by target mining + wordforms + research).

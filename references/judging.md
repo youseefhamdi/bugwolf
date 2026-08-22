@@ -1,6 +1,6 @@
 # Finding Gate Evaluation (Judging)
 
-> **WILD MODE preamble:** These gates govern REPORTING only. They are the last step before a report reaches a triager — never a hunting constraint, never a reason to skip a probe, never a deletion tool. Every finding that fails a gate is **demoted, not deleted**: it becomes a LEAD with its payload preserved, its chain partners listed, and its `probe_results` recorded, and it is retested or chained on the next pass. A gate-killed finding that later gains a chain partner returns as a FINDING. During the hunt: probe everything, judge nothing early.
+> **WILD MODE preamble:** These gates govern REPORTING only. They are the last step before a report reaches a triager — never a reason to skip an authorized probe, never a deletion tool. Every finding that fails a gate is **demoted, not deleted**: it becomes a LEAD with its payload preserved, its chain partners listed, and its `probe_results` recorded, and it is retested or chained on the next pass. A gate-killed finding that later gains a chain partner returns as a FINDING. During the hunt: probe every permitted surface, judge nothing early; scope, active-confirmation, and destructive-confirmation gates still apply.
 
 Every deduplicated finding passes four sequential gates. Fail any gate → **REJECTED** or **DEMOTED** to LEAD (with payload + chain partner list attached). Later gates are not evaluated for failed findings.
 

@@ -34,13 +34,17 @@ import hashlib
 import secrets
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass, asdict
 
-ROOT = Path(__file__).resolve().parent.parent
+try:
+    from tools.runtime_paths import workspace_root
+except ImportError:  # direct script execution
+    from runtime_paths import workspace_root
+
+ROOT = workspace_root()
 VAULT_ROOT = ROOT / "vault"
 
 # ---------------------------------------------------------------------------
@@ -58,12 +62,13 @@ def secure_delete(path: Path, passes: int = 3):
     try:
         size = path.stat().st_size
         for i in range(passes):
-            with open(path, "wb") as f:
+            with open(path, "r+b") as f:
                 if i < passes - 1:
                     f.write(secrets.token_bytes(size))
                 else:
                     f.write(b"\x00" * size)
-            os.fsync(path.open("wb").fileno())
+                f.flush()
+                os.fsync(f.fileno())
         path.unlink()
     except Exception:
         # If secure delete fails, fall back to regular delete
@@ -82,6 +87,11 @@ def secure_delete_dir(directory: Path, passes: int = 1):
 
 # ---------------------------------------------------------------------------
 # AES-256-GCM encryption
+#
+# Requires the ``cryptography`` package. An older OpenSSL-CLI fallback that
+# passed the raw key through ``-K``/``-iv`` process arguments was removed:
+# the key would be visible in the local process list (ps), which defeats the
+# purpose of encrypting the artifact.
 # ---------------------------------------------------------------------------
 
 def aes_encrypt(plaintext: bytes, key: bytes = None) -> Tuple[bytes, bytes, bytes, bytes]:
@@ -96,9 +106,11 @@ def aes_encrypt(plaintext: bytes, key: bytes = None) -> Tuple[bytes, bytes, byte
     """
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    except ImportError:
-        # Fallback: use openssl CLI
-        return _aes_encrypt_openssl(plaintext, key)
+    except ImportError as exc:
+        raise ImportError(
+            "AES-256-GCM requires the 'cryptography' package; "
+            "install it with: python3 -m pip install cryptography"
+        ) from exc
 
     if key is None:
         key = secrets.token_bytes(32)
@@ -114,69 +126,17 @@ def aes_encrypt(plaintext: bytes, key: bytes = None) -> Tuple[bytes, bytes, byte
 
 
 def aes_decrypt(nonce: bytes, ciphertext: bytes, tag: bytes, key: bytes) -> bytes:
-    """Decrypt AES-256-GCM."""
+    """Decrypt AES-256-GCM (requires the ``cryptography`` package)."""
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    except ImportError:
-        return _aes_decrypt_openssl(nonce, ciphertext, tag, key)
+    except ImportError as exc:
+        raise ImportError(
+            "AES-256-GCM requires the 'cryptography' package; "
+            "install it with: python3 -m pip install cryptography"
+        ) from exc
 
     aesgcm = AESGCM(key)
     return aesgcm.decrypt(nonce, ciphertext + tag, None)
-
-
-def _aes_encrypt_openssl(plaintext: bytes, key: bytes = None) -> Tuple[bytes, bytes, bytes, bytes]:
-    """Fallback AES-256-GCM via openssl CLI."""
-    if key is None:
-        key = secrets.token_bytes(32)
-
-    with tempfile.NamedTemporaryFile(delete=False) as tmp_in:
-        tmp_in.write(plaintext)
-        in_path = tmp_in.name
-
-    out_path = in_path + ".enc"
-    nonce = secrets.token_bytes(12)
-
-    try:
-        # Write key + nonce to temp files
-        key_hex = key.hex()
-        nonce_hex = nonce.hex()
-
-        subprocess.run([
-            "openssl", "enc", "-aes-256-gcm",
-            "-K", key_hex, "-iv", nonce_hex,
-            "-in", in_path, "-out", out_path,
-        ], check=True, capture_output=True)
-
-        ciphertext = Path(out_path).read_bytes()
-        # OpenSSL GCM appends 16-byte tag at end
-        tag = ciphertext[-16:]
-        ciphertext = ciphertext[:-16]
-
-        return nonce, ciphertext, tag, key
-    finally:
-        Path(in_path).unlink(missing_ok=True)
-        Path(out_path).unlink(missing_ok=True)
-
-
-def _aes_decrypt_openssl(nonce: bytes, ciphertext: bytes, tag: bytes, key: bytes) -> bytes:
-    """Fallback AES-256-GCM decryption via openssl CLI."""
-    with tempfile.NamedTemporaryFile(delete=False) as tmp_in:
-        tmp_in.write(ciphertext + tag)
-        in_path = tmp_in.name
-
-    out_path = in_path + ".dec"
-
-    try:
-        subprocess.run([
-            "openssl", "enc", "-d", "-aes-256-gcm",
-            "-K", key.hex(), "-iv", nonce.hex(),
-            "-in", in_path, "-out", out_path,
-        ], check=True, capture_output=True)
-
-        return Path(out_path).read_bytes()
-    finally:
-        Path(in_path).unlink(missing_ok=True)
-        Path(out_path).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -188,18 +148,23 @@ def age_encrypt_file(input_path: Path, output_path: Path,
     """Encrypt a file with age-encryption (requires `age` CLI or `rage`)."""
     age_bin = shutil.which("age") or shutil.which("rage")
     if not age_bin:
-        # Fallback: use AES-256-GCM with ephemeral key
-        plaintext = input_path.read_bytes()
-        nonce, ct, tag, key = aes_encrypt(plaintext)
-        bundle = json.dumps({
-            "method": "aes-256-gcm",
+        # Do not write an artifact containing its own encryption key. A
+        # passphrase-backed fallback is safer than the old self-decrypting JSON.
+        passphrase = os.environ.get("BUGWOLF_VAULT_PASSPHRASE")
+        if not passphrase:
+            return False
+        salt = secrets.token_bytes(16)
+        key = hashlib.scrypt(
+            passphrase.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32)
+        nonce, ct, tag, _ = aes_encrypt(input_path.read_bytes(), key=key)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps({
+            "method": "aes-256-gcm-scrypt",
+            "salt": salt.hex(),
             "nonce": nonce.hex(),
             "ciphertext": ct.hex(),
             "tag": tag.hex(),
-            "key": key.hex(),  # Not truly age, but encrypted at rest
-            "note": "Install 'age' or 'rage' for asymmetric encryption",
-        })
-        output_path.write_text(bundle)
+        }))
         return True
 
     if recipient_pubkey:
@@ -225,16 +190,22 @@ def age_decrypt_file(input_path: Path, output_path: Path,
     """Decrypt an age-encrypted file."""
     age_bin = shutil.which("age") or shutil.which("rage")
     if not age_bin:
-        # Fallback AES-GCM
         bundle = json.loads(input_path.read_text())
-        if bundle.get("method") != "aes-256-gcm":
-            print("[!] Unknown encryption method, cannot decrypt without age/rage")
+        if bundle.get("method") != "aes-256-gcm-scrypt":
+            print("[!] age/rage is unavailable and the artifact has no safe fallback")
             return False
+        passphrase = os.environ.get("BUGWOLF_VAULT_PASSPHRASE")
+        if not passphrase:
+            print("[!] BUGWOLF_VAULT_PASSPHRASE is required for fallback decryption")
+            return False
+        salt = bytes.fromhex(bundle["salt"])
+        key = hashlib.scrypt(
+            passphrase.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32)
         plaintext = aes_decrypt(
             bytes.fromhex(bundle["nonce"]),
             bytes.fromhex(bundle["ciphertext"]),
             bytes.fromhex(bundle["tag"]),
-            bytes.fromhex(bundle["key"]),
+            key,
         )
         output_path.write_bytes(plaintext)
         return True
@@ -273,7 +244,18 @@ class VaultEntry:
 
 
 class Vault:
-    """Manages the encrypted artifact store."""
+    """Manages the encrypted artifact store.
+
+    The vault index (artifact metadata incl. plaintext hashes) is itself
+    encrypted at rest with a per-vault key kept in ``.vault-index.key``
+    (0600). The index key is local, so this protects the index against
+    accidental exposure (e.g. a stray ``git add``) rather than a filesystem
+    attacker; the artifact keys themselves are never stored.
+    """
+
+    INDEX_FILE = ".vault-index.json.enc"
+    INDEX_KEY_FILE = ".vault-index.key"
+    LEGACY_INDEX_FILE = ".vault-index.json"
 
     def __init__(self):
         VAULT_ROOT.mkdir(parents=True, exist_ok=True)
@@ -281,19 +263,55 @@ class Vault:
         (VAULT_ROOT / "reports").mkdir(exist_ok=True)
         (VAULT_ROOT / "findings").mkdir(exist_ok=True)
         (VAULT_ROOT / "keys").mkdir(exist_ok=True)
-        self.index_path = VAULT_ROOT / ".vault-index.json"
+        self.index_path = VAULT_ROOT / self.INDEX_FILE
+        self.legacy_index_path = VAULT_ROOT / self.LEGACY_INDEX_FILE
+        self._index_key_path = VAULT_ROOT / self.INDEX_KEY_FILE
+
+    def _index_key(self) -> bytes:
+        """Load or create the per-vault index encryption key (0600)."""
+        if self._index_key_path.exists():
+            return bytes.fromhex(self._index_key_path.read_text().strip())
+        key = secrets.token_bytes(32)
+        temporary = self._index_key_path.with_name(
+            self._index_key_path.name + ".tmp")
+        temporary.write_text(key.hex())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, self._index_key_path)
+        return key
 
     def _load_index(self) -> List[VaultEntry]:
-        """Load the vault index."""
-        if not self.index_path.exists():
-            return []
-        data = json.loads(self.index_path.read_text())
-        return [VaultEntry(**e) for e in data]
+        """Load the vault index (encrypted; migrates a legacy plaintext one)."""
+        if self.index_path.exists():
+            bundle = json.loads(self.index_path.read_text())
+            plaintext = aes_decrypt(
+                bytes.fromhex(bundle["nonce"]),
+                bytes.fromhex(bundle["ciphertext"]),
+                bytes.fromhex(bundle["tag"]),
+                self._index_key(),
+            )
+            return [VaultEntry(**e) for e in json.loads(plaintext)]
+        if self.legacy_index_path.exists():
+            data = json.loads(self.legacy_index_path.read_text())
+            entries = [VaultEntry(**e) for e in data]
+            self._save_index(entries)
+            self.legacy_index_path.unlink(missing_ok=True)
+            return entries
+        return []
 
     def _save_index(self, entries: List[VaultEntry]):
-        """Persist the vault index."""
-        self.index_path.write_text(
-            json.dumps([asdict(e) for e in entries], indent=2))
+        """Persist the vault index, encrypted at rest, atomically."""
+        key = self._index_key()
+        nonce, ct, tag, _ = aes_encrypt(
+            json.dumps([asdict(e) for e in entries]).encode("utf-8"), key=key)
+        bundle = json.dumps({
+            "v": 1,
+            "nonce": nonce.hex(),
+            "ciphertext": ct.hex(),
+            "tag": tag.hex(),
+        })
+        temporary = self.index_path.with_name(self.index_path.name + ".tmp")
+        temporary.write_text(bundle)
+        os.replace(temporary, self.index_path)
 
     def _encrypt_artifact(self, plaintext: bytes, artifact_type: str,
                           prefix: str = "artifact") -> Tuple[str, bytes, Path]:

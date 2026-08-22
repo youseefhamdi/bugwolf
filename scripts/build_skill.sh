@@ -1,23 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build the BugWolf .skill release bundle for Claude.ai (web/app upload).
+# Build the BugWolf release bundles.
+#   dist/bugwolf-v<version>.skill          — Claude.ai (web/app) upload: zip with SKILL.md at root
+#   dist/bugwolf-v<version>.freebuff.zip   — Freebuff/Codebuff: zip laid out as .agents/skills/bugwolf/…
+#                                            (unzip into any project, or install with
+#                                            `npx skills add youseefhamdi/bugwolf --skill bugwolf`)
 # Usage: ./scripts/build_skill.sh
-# Output: dist/bugwolf-v<version>.skill  (zip archive with SKILL.md at root)
+# Output: dist/bugwolf-v<version>.skill and dist/bugwolf-v<version>.freebuff.zip
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 VERSION="$(cat VERSION | tr -d '[:space:]')"
 OUT_DIR="$ROOT/dist"
-OUT_FILE="$OUT_DIR/bugwolf-v${VERSION}.skill"
+OUT_SKILL="$OUT_DIR/bugwolf-v${VERSION}.skill"
+OUT_FREEBUFF="$OUT_DIR/bugwolf-v${VERSION}.freebuff.zip"
 STAGE="$(mktemp -d)"
-trap 'rm -rf "$STAGE"' EXIT
+STAGE_FB="$(mktemp -d)"
+trap 'rm -rf "$STAGE" "$STAGE_FB"' EXIT
 
-echo "==> Building BugWolf v${VERSION} .skill bundle"
+echo "==> Building BugWolf v${VERSION} release bundles"
 
-mkdir -p "$OUT_DIR" "$STAGE/bugwolf"
+mkdir -p "$OUT_DIR" "$STAGE" "$STAGE_FB"
 
+# Shared payload for both bundles.
 cp -r \
   SKILL.md \
   README.md \
@@ -28,22 +35,39 @@ cp -r \
   tools \
   wordlists \
   tests \
-  "$STAGE/bugwolf/"
+  scripts \
+  configs \
+  "$STAGE/"
 
 # Strip build artifacts from the bundle
-rm -rf "$STAGE/bugwolf/tools/__pycache__" "$STAGE/bugwolf/tests/__pycache__"
-find "$STAGE/bugwolf" -name '*.pyc' -delete
-find "$STAGE/bugwolf" -name '*.tmp' -delete
-find "$STAGE/bugwolf" -name '.DS_Store' -delete
+rm -rf "$STAGE/tools/__pycache__" "$STAGE/tests/__pycache__"
+find "$STAGE" -name '*.pyc' -delete
+find "$STAGE" -name '*.tmp' -delete
+find "$STAGE" -name '.DS_Store' -delete
 
+# --- Claude.ai .skill bundle (SKILL.md at archive root) --------------------
 if command -v zip >/dev/null 2>&1; then
-  (cd "$STAGE" && zip -qr "$OUT_FILE" bugwolf)
+  (cd "$STAGE" && zip -qr "$OUT_SKILL" .)
 else
   (cd "$STAGE" && python3 -c "
 import shutil
-shutil.make_archive('$STAGE/bundle', 'zip', '$STAGE', 'bugwolf')
+shutil.make_archive('$STAGE/bundle', 'zip', '$STAGE')
 ")
-  mv "$STAGE/bundle.zip" "$OUT_FILE"
+  mv "$STAGE/bundle.zip" "$OUT_SKILL"
 fi
 
-echo "==> Bundle written to $OUT_FILE ($(du -h "$OUT_FILE" | cut -f1))"
+# --- Freebuff/Codebuff bundle (.agents/skills/bugwolf/ at archive root) ----
+mkdir -p "$STAGE_FB/.agents/skills/bugwolf"
+cp -r "$STAGE"/. "$STAGE_FB/.agents/skills/bugwolf/"
+if command -v zip >/dev/null 2>&1; then
+  (cd "$STAGE_FB" && zip -qr "$OUT_FREEBUFF" .)
+else
+  (cd "$STAGE_FB" && python3 -c "
+import shutil
+shutil.make_archive('$STAGE_FB/bundle', 'zip', '$STAGE_FB')
+")
+  mv "$STAGE_FB/bundle.zip" "$OUT_FREEBUFF"
+fi
+
+echo "==> Claude.ai bundle:   $OUT_SKILL ($(du -h "$OUT_SKILL" | cut -f1))"
+echo "==> Freebuff bundle:    $OUT_FREEBUFF ($(du -h "$OUT_FREEBUFF" | cut -f1))"

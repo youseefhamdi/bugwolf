@@ -18,6 +18,12 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
+
+try:
+    from tools.safety import AuthorizationError, target_in_scope
+except ImportError:
+    from safety import AuthorizationError, target_in_scope
 
 
 class PermissionLevel(Enum):
@@ -178,6 +184,41 @@ AGENT_DOMAINS: dict[str, AgentDomain] = {
         never_touches=["web-injection", "xss", "csrf", "ssrf"],
         permission_level=PermissionLevel.READ_ONLY_PROBING,
     ),
+    "rogue-agent": AgentDomain(
+        agent_name="rogue-agent",
+        owns=["supply-chain", "protocol-confusion", "timing-side-channel", "workflow-abuse"],
+        queries=["credential-leak", "infrastructure-misconfig"],
+        never_touches=["destructive-testing"],
+        permission_level=PermissionLevel.ACTIVE_TESTING,
+    ),
+    "counter-intelligence-agent": AgentDomain(
+        agent_name="counter-intelligence-agent",
+        owns=["honeypot", "waf-detection", "active-defense", "canary"],
+        queries=["rate-limit", "dead-end"],
+        never_touches=["finding", "exploitation"],
+        permission_level=PermissionLevel.READ_ONLY_PROBING,
+    ),
+    "temp-email-agent": AgentDomain(
+        agent_name="temp-email-agent",
+        owns=["verification-bypass", "disposable-email", "sms-verification"],
+        queries=["account-takeover", "broken-auth"],
+        never_touches=["credential-leak", "destructive-testing"],
+        permission_level=PermissionLevel.ACTIVE_TESTING,
+    ),
+    "browser-automation-agent": AgentDomain(
+        agent_name="browser-automation-agent",
+        owns=["oauth-flow", "session-management", "browser-automation"],
+        queries=["xss", "csrf", "auth-bypass"],
+        never_touches=["smart-contract", "destructive-testing"],
+        permission_level=PermissionLevel.ACTIVE_TESTING,
+    ),
+    "regression-agent": AgentDomain(
+        agent_name="regression-agent",
+        owns=["patch-gap", "fix-verification", "regression"],
+        queries=["waf-bypass", "auth-bypass"],
+        never_touches=["destructive-testing"],
+        permission_level=PermissionLevel.READ_ONLY_PROBING,
+    ),
 }
 
 # Patterns that indicate scope violations
@@ -213,19 +254,39 @@ class AgentIsolationChecker:
         self.target = target
         self.scope_domains: list[str] = []
         self.scope_exclusions: list[str] = []
+        self.scope_data: dict[str, Any] = {}
+        self.scope_error = ""
+        self.authorized = False
         if scope_file:
             self._load_scope(scope_file)
-        self.state_dir = Path("state/isolation")
+        try:
+            from tools.runtime_paths import workspace_root
+        except ImportError:  # direct script execution
+            from runtime_paths import workspace_root
+        self.state_dir = workspace_root() / "state" / "isolation"
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.reports: list[IsolationReport] = []
 
     def _load_scope(self, scope_file: str) -> None:
         """Load program scope from file."""
         path = Path(scope_file)
-        if path.exists():
+        if not path.exists():
+            self.scope_error = f"scope file not found: {path}"
+            return
+        try:
             data = json.loads(path.read_text())
-            self.scope_domains = data.get("in_scope", [])
-            self.scope_exclusions = data.get("out_of_scope", [])
+        except (OSError, json.JSONDecodeError) as exc:
+            self.scope_error = f"invalid scope file: {exc}"
+            return
+        if not isinstance(data, dict):
+            self.scope_error = "scope file must contain a JSON object"
+            return
+        self.scope_data = data
+        self.scope_domains = data.get(
+            "in_scope_domains", data.get("in_scope", []))
+        self.scope_exclusions = data.get(
+            "out_of_scope_domains", data.get("out_of_scope", []))
+        self.authorized = data.get("authorized") is True
 
     def check_domain(self, agent_name: str, finding: dict) -> list[IsolationViolation]:
         """Check if finding is in the agent's owned domain."""
@@ -296,6 +357,19 @@ class AgentIsolationChecker:
         violations = []
         endpoint = finding.get("endpoint", finding.get("location", finding.get("target", "")))
 
+        # Check for explicit scope exclusions before inclusion checks.
+        for excluded in self.scope_exclusions:
+            if str(excluded).lower() in str(endpoint).lower():
+                violations.append(IsolationViolation(
+                    agent_name=agent_name,
+                    check_type="scope",
+                    severity=ViolationSeverity.CRITICAL,
+                    description="Finding matches an explicitly excluded scope asset",
+                    evidence=f"Endpoint '{endpoint}' contains exclusion '{excluded}'",
+                    recommendation="Kill finding immediately. Explicitly excluded asset.",
+                ))
+                return violations
+
         # Check for excluded paths
         for pattern, reason in SCOPE_VIOLATION_PATTERNS:
             if re.search(pattern, str(endpoint), re.IGNORECASE):
@@ -309,20 +383,50 @@ class AgentIsolationChecker:
                 ))
                 return violations
 
-        # Check against explicit scope if loaded
-        if self.scope_domains:
-            in_scope = any(
-                d in str(endpoint) for d in self.scope_domains
-            )
-            if not in_scope:
+        # Network findings require an authorized scope, and host matching must
+        # use domain boundaries rather than an unsafe substring check.
+        endpoint_text = str(endpoint)
+        parsed = urlparse(endpoint_text if "://" in endpoint_text
+                          else f"//{endpoint_text}")
+        is_network_endpoint = (
+            "://" in endpoint_text or endpoint_text.startswith("//") or
+            "." in (parsed.hostname or "")
+        )
+        if is_network_endpoint:
+            if not self.authorized:
+                reason = self.scope_error or "no scope file with authorized: true"
                 violations.append(IsolationViolation(
                     agent_name=agent_name,
                     check_type="scope",
                     severity=ViolationSeverity.CRITICAL,
-                    description=f"Finding outside program scope",
-                    evidence=f"Endpoint '{endpoint}' not in scope domains: {self.scope_domains}",
-                    recommendation="Kill finding. Out of scope.",
+                    description="Network finding lacks an authorized scope",
+                    evidence=reason,
+                    recommendation="Kill finding. Supply a valid authorized scope file.",
                 ))
+            else:
+                try:
+                    in_scope = target_in_scope(endpoint_text, self.scope_data)
+                except AuthorizationError:
+                    in_scope = False
+                if not in_scope:
+                    violations.append(IsolationViolation(
+                        agent_name=agent_name,
+                        check_type="scope",
+                        severity=ViolationSeverity.CRITICAL,
+                        description="Finding outside program scope",
+                        evidence=f"Endpoint '{endpoint}' does not match the supplied scope",
+                        recommendation="Kill finding. Out of scope.",
+                    ))
+        elif self.scope_domains and not any(
+                str(d).lower() in endpoint_text.lower() for d in self.scope_domains):
+            violations.append(IsolationViolation(
+                agent_name=agent_name,
+                check_type="scope",
+                severity=ViolationSeverity.CRITICAL,
+                description="Finding does not identify an in-scope asset",
+                evidence=f"Endpoint '{endpoint}' is not tied to the supplied scope",
+                recommendation="Quarantine finding until its target is established.",
+            ))
 
         return violations
 
@@ -333,9 +437,19 @@ class AgentIsolationChecker:
         if not domain:
             return violations
 
-        method = finding.get("method", finding.get("http_method", "GET"))
+        method = str(finding.get("method", finding.get("http_method", "GET"))).upper()
         has_payload = bool(finding.get("payload", finding.get("attack_payload", "")))
         has_active_exploit = finding.get("exploited", finding.get("confirmed_exploit", False))
+
+        if domain.requires_auth and (has_payload or has_active_exploit) and not self.authorized:
+            violations.append(IsolationViolation(
+                agent_name=agent_name,
+                check_type="execution",
+                severity=ViolationSeverity.CRITICAL,
+                description=f"Agent '{agent_name}' attempted active work without explicit authorization",
+                evidence="No scope file with authorized: true was supplied",
+                recommendation="Stop active testing and provide an authorized scope file.",
+            ))
 
         if domain.permission_level == PermissionLevel.PASSIVE_ONLY:
             if has_payload or has_active_exploit:
@@ -358,6 +472,15 @@ class AgentIsolationChecker:
                 ))
 
         if domain.permission_level == PermissionLevel.READ_ONLY_PROBING:
+            if method not in ("GET", "HEAD", "OPTIONS"):
+                violations.append(IsolationViolation(
+                    agent_name=agent_name,
+                    check_type="execution",
+                    severity=ViolationSeverity.HIGH,
+                    description=f"Read-only agent '{agent_name}' used non-read HTTP method: {method}",
+                    evidence=f"HTTP method '{method}' exceeds read-only permission",
+                    recommendation="Quarantine finding. Read-only agents may only use GET/HEAD/OPTIONS.",
+                ))
             if has_active_exploit:
                 violations.append(IsolationViolation(
                     agent_name=agent_name,
@@ -440,12 +563,13 @@ class AgentIsolationChecker:
         all_violations.extend(self.check_data_integrity(agent_name, finding))
         all_violations.extend(self.check_context_safety(agent_name, finding))
 
-        criticals = [v for v in all_violations if v.severity == ViolationSeverity.CRITICAL]
+        blocking = [v for v in all_violations
+                    if v.severity in (ViolationSeverity.CRITICAL, ViolationSeverity.HIGH)]
         warnings = [v.description for v in all_violations if v.severity in (ViolationSeverity.LOW,)]
 
         report = IsolationReport(
             agent_name=agent_name,
-            passed=len(criticals) == 0,
+            passed=len(blocking) == 0,
             violations=all_violations,
             warnings=warnings,
         )
@@ -494,6 +618,7 @@ class AgentIsolationChecker:
                             "check_type": v.check_type,
                             "severity": v.severity.value,
                             "description": v.description,
+                            "evidence": v.evidence,
                             "recommendation": v.recommendation,
                         }
                         for v in r.violations
@@ -512,10 +637,10 @@ class AgentIsolationChecker:
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) < 2:
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print("Usage: python3 tools/agent_isolation.py <findings.json> [--target T] [--scope scope.json]")
         print("       python3 tools/agent_isolation.py --list-agents")
-        sys.exit(1)
+        sys.exit(0 if len(sys.argv) >= 2 else 1)
 
     if sys.argv[1] == "--list-agents":
         for name, domain in AGENT_DOMAINS.items():

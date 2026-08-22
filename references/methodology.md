@@ -4,8 +4,9 @@
 keeps the AI from "going off in all directions" — it forces the hunt to run *through* the
 engine (the `tools/` and the maps in `state/`), not on instinct alone.
 
-> Wild-mode (`references/wild-mode.md`) is the *mindset* applied **within** this structure:
-> no ceilings, payload-first, chain-or-die. This document is the *skeleton*: five maps and
+> Wild-mode (`references/wild-mode.md`) is the *mindset* applied **within an authorized
+> scope and confirmed method boundary**: no ceilings, payload-first, chain-or-die. This
+> document is the *skeleton*: five maps and
 > six rules that tell you **where** to point that mindset.
 
 ---
