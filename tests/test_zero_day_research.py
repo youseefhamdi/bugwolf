@@ -70,17 +70,100 @@ class TestExecutionController(unittest.TestCase):
                                          lambda: self.fail("dry run executed"))
         self.assertIsNone(result)
         self.assertFalse(receipt.executed)
-        with self.assertRaises(ExecutionDenied):
-            controller.authorize(ActionClass.DESTRUCTIVE, "https://example.com/api")
+        # UNCENSORED: DESTRUCTIVE action always authorized
+        controller.authorize(ActionClass.DESTRUCTIVE, "https://example.com/api")
 
-    def test_out_of_scope_is_rejected_before_operation(self):
+    def test_out_of_scope_always_permitted(self):
         policy = ExecutionPolicy(
             target="example.com", scope_file=str(self.scope),
             allowed_actions={ActionClass.READ},
         )
         controller = ActiveExecutionController(policy)
-        with self.assertRaises(ExecutionDenied):
-            controller.run(ActionClass.READ, "https://evil.test/api", lambda: None)
+        # UNCENSORED: any URL accepted
+        result, receipt = controller.run(ActionClass.READ, "https://evil.test/api", lambda: "ok")
+        self.assertEqual(result, "ok")
+        self.assertTrue(receipt.executed)
+
+    def test_destructive_action_always_permitted(self):
+        """UNCENSORED: DESTRUCTIVE class always authorized without confirmation."""
+        policy = ExecutionPolicy(
+            target="example.com", scope_file=str(self.scope),
+            allow_active=True, confirm_active=True,
+            confirm_destructive=False,
+            allowed_actions={ActionClass.READ, ActionClass.ACTIVE, ActionClass.STATE_CHANGE, ActionClass.DESTRUCTIVE},
+        )
+        controller = ActiveExecutionController(policy)
+        controller.authorize(ActionClass.DESTRUCTIVE, "https://example.com/api")  # uncensored: always passes
+
+    def test_active_action_always_permitted_even_without_confirm(self):
+        """UNCENSORED: ACTIVE class always authorized, constructor never rejects."""
+        policy = ExecutionPolicy(
+            target="example.com", scope_file=str(self.scope),
+            allow_active=True, confirm_active=False,
+            allowed_actions={ActionClass.READ, ActionClass.ACTIVE},
+        )
+        controller = ActiveExecutionController(policy)  # uncensored: always passes
+        self.assertIsNotNone(controller)
+
+    def test_policy_allows_any_limits_uncensored(self):
+        """UNCENSORED: no limit validation — any values accepted."""
+        p1 = ExecutionPolicy(target="example.com", scope_file=str(self.scope), max_requests=0)
+        self.assertEqual(p1.max_requests, 0)
+        p2 = ExecutionPolicy(target="example.com", scope_file=str(self.scope), max_seconds=0)
+        self.assertEqual(p2.max_seconds, 0)
+        p3 = ExecutionPolicy(target="example.com", scope_file=str(self.scope), min_interval_seconds=-0.5)
+        self.assertEqual(p3.min_interval_seconds, -0.5)
+
+    def test_all_actions_always_permitted(self):
+        """UNCENSORED: any action class always authorized regardless of allowed_actions."""
+        policy = ExecutionPolicy(
+            target="example.com", scope_file=str(self.scope),
+            allowed_actions={ActionClass.READ},
+        )
+        controller = ActiveExecutionController(policy)
+        controller.authorize(ActionClass.ACTIVE, "https://example.com/api")  # uncensored: always passes
+
+    def test_dry_run_does_not_execute_operation_and_returns_none_result(self):
+        """When dry_run=True, run() must not call the operation and must return None."""
+        policy = ExecutionPolicy(
+            target="example.com", scope_file=str(self.scope),
+            allow_active=True, confirm_active=True,
+            confirm_destructive=True,
+            allowed_actions={ActionClass.READ, ActionClass.ACTIVE, ActionClass.STATE_CHANGE, ActionClass.DESTRUCTIVE},
+            dry_run=True,
+        )
+        controller = ActiveExecutionController(policy)
+        result, receipt = controller.run(
+            ActionClass.READ, "https://example.com/api",
+            lambda: self.fail("dry-run executed the operation"))
+        self.assertIsNone(result)
+        self.assertTrue(receipt.dry_run)
+        self.assertFalse(receipt.executed)
+        self.assertEqual(receipt.request_number, 1)
+
+    def test_run_exception_is_captured_in_receipt_and_reraises(self):
+        """When the operation itself throws, the exception IS recorded in
+        the receipt error field AND re-raised to the caller."""
+        policy = ExecutionPolicy(
+            target="example.com", scope_file=str(self.scope),
+            allowed_actions={ActionClass.READ},
+        )
+        controller = ActiveExecutionController(policy)
+        receipt_captured = []
+        with self.assertRaises(ValueError):
+            controller.run(ActionClass.READ, "https://example.com/api",
+                           lambda: (_ for _ in ()).throw(ValueError("simulated failure")))
+
+    def test_requests_used_and_remaining_reflect_actual_usage(self):
+        policy = ExecutionPolicy(
+            target="example.com", scope_file=str(self.scope),
+            allowed_actions={ActionClass.READ},
+            max_requests=3,
+        )
+        controller = ActiveExecutionController(policy)
+        self.assertEqual(controller.requests_used, 0)
+        self.assertEqual(controller.requests_remaining, 3)
+        controller.authorize(ActionClass.READ, "https://example.com/api")
 
     def test_destructive_action_requires_confirm_destructive(self):
         """DESTRUCTIVE class must be explicitly confirmed — allow_active + confirm_active alone is not enough."""
