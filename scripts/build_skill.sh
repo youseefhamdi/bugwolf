@@ -40,7 +40,7 @@ cp -r \
   "$STAGE/"
 
 # Strip build artifacts from the bundle
-rm -rf "$STAGE/tools/__pycache__" "$STAGE/tests/__pycache__"
+find "$STAGE" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 find "$STAGE" -name '*.pyc' -delete
 find "$STAGE" -name '*.tmp' -delete
 find "$STAGE" -name '.DS_Store' -delete

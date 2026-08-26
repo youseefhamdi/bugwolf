@@ -596,6 +596,28 @@ Five checkpoints fire, in order, every session:
 
 R6 turns a blocker into fresh ammunition instead of a dead end; R7 forces every sub-critical finding through an escalation search before it is downgraded. Both persist to `research/{target}/{checkpoint}/` exactly like R1–R5.
 
+### Deep-Hunt Tool Suite (APT Commander modules)
+
+The modular deep-hunt suite lives under `tools/domains/` (plus `tools/recon/`, `tools/intelligence/`, `tools/validation/`). Every tool is deterministic, `--json`-capable, offline-plan-first, and wired into the 12-stage workflow as **supplementary evidence** (hash-chained when present, never required when a surface doesn't exist).
+
+| Domain | Tools | Artifact (stage) |
+|---|---|---|
+| **core** | `signal_bus.py` — typed event bus (`FINDING_DISCOVERED`, `WAF_BLOCKED`, `SMUGGLING_CANDIDATE`, `AUTH_CANDIDATE`, `CLOUD_CANDIDATE`, `MOBILE_CANDIDATE`, `ASSET_DELTA`, `LLM_CANDIDATE`, `LAB_PLANNED`, `CHAIN_PROPOSAL`) | `state/signals/events/<t>.jsonl` |
+| **web** | `http_smuggling_detector.py` (CL.TE/TE.CL/TE.TE/H2/0.CL/TE.0 probes), `parser_differential.py` (WAFFLED-style WAF bypass families) | `recon/<t>/discovery/smuggling-plan.jsonl`, `research/<t>/bypass/waf-payloads-<stack>.json` (coverage-plan / research) |
+| **api** | `graphql_batch_analyzer.py`, `bopla_matrix.py` (OWASP API3 property-level), plus `idor_research.py` BFLA matrices | `recon/<t>/discovery/{graphql-plans,bopla-matrix}.json` (coverage-plan) |
+| **auth** | `jwt_forgery.py`, `oauth_flow_analyzer.py`, `ato_chain_planner.py` (email-change/MFA/session → ATO) | `research/<t>/auth/*.json`, `recon/<t>/discovery/ato-chain-plans.json` |
+| **cloud** | `iam_privesc_graph.py` (21 Rhino methods, capability graph) | `state/capability/iam-privesc-<t>.json` (coverage-plan) |
+| **mobile** | `deep_link_analyzer.py`, `mobile_policy_checker.py` | `recon/<t>/discovery/{deep-link-plans,mobile-policy-check}.json` (coverage-plan) |
+| **smart-contracts** | `llm_contract_triage.py` (exploitability ranking + adversarial verification prompts), `price_manipulation_analyzer.py` (AMM/oracle/TWAP/flash-loan) | `research/<t>/contracts/*.json` (research) |
+| **llm** | `agentic_tool_auth.py` (ASI02/03), `rag_memory_poisoning.py` (ASI04/06) | `research/<t>/llm/*.json` (research) |
+| **recon** | `historical_asset_delta.py` (passive-DNS/CRT churn: added/removed/reattached/forgotten) | `recon/<t>/asset-intel/{history.jsonl,delta.json}` (passive-recon / asset-intelligence) |
+| **intelligence** | `seed_advisor.py` (probe proposals, `--llm-advisor` hook), `failure_learning.py` (blocker→bypass, auto-quarantined), `chain_graph_ai.py` (missing-link chains, graph-validated) | `research/<t>/{advisor,learning,chains}/*.json` (research) |
+| **validation** | `verification_lab.py` (disposable-lab plans: setup→reproduce→verify→capture→discard), `self_eval_harness.py` (AutoPenBench-style milestone scoring, 6-task fixed eval) | `research/<t>/verification/lab-plans.json` (research); `state/eval/milestones-<t>.json` (eval) |
+
+**Event-driven reactions** (the nervous system): `chain_orchestrator` refreshes the chain graph on `FINDING_DISCOVERED`; `parser_differential` regenerates WAF payloads on `WAF_BLOCKED`; `failure_learning` records blockers and quarantines bypass candidates on `WAF_BLOCKED`. **Hierarchical depth**: sub-checkpoints (`graphql-deep-dive`, `waf-profile`, `cloud-metadata`, `chain-partners`) and dynamic checkpoints (`post-chain`, `post-lab-verification`, `blocker-exhausted`) append to the research sequence without weakening the mandatory 7 — `research_loop.py --list-sub-checkpoints` / `--list-dynamic-checkpoints`.
+
+**CI verification** (`.github/workflows/ci.yml` → `scripts/ci_bundle_check.sh`): on every push/PR the full test suite runs, then both release bundles are built fresh and verified — the self-eval harness and core domain tools must ship, `VERSION` must match, no `__pycache__`/bytecode may leak in, and the eval must score **100% (6/6 tasks)** when run from inside the extracted Freebuff bundle against a deterministic synthetic campaign.
+
 ### No Static Wordlists — Generate Custom Ones (mandatory)
 
 A hunt must never fire a static, off-the-shelf wordlist or payload. When any phase needs a wordlist (vhosts, params, directories) or a payload, generate a **target-specific** one first:

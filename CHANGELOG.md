@@ -1,5 +1,49 @@
 # Changelog
 
+## v1.1.0 — APT-Grade Deep-Hunt Platform (2026-08-26)
+
+- **Modular domain architecture** (`tools/domains/`): the flat tool
+  collection became a hierarchical, event-driven APT framework — `core/`
+  (stage controller, campaign orchestrator, research loop, signal bus),
+  `domains/{web,api,auth,cloud,mobile,smart_contracts,llm}/`,
+  `recon/`, `intelligence/`, and `validation/`.
+- **Event-driven signal bus** (`tools/core/signal_bus.py`): typed events
+  (`RECON_COMPLETE`, `FINDING_DISCOVERED`, `WAF_BLOCKED`, `SMUGGLING_CANDIDATE`,
+  `AUTH_CANDIDATE`, `CLOUD_CANDIDATE`, `MOBILE_CANDIDATE`, `ASSET_DELTA`,
+  `LLM_CANDIDATE`, `LAB_PLANNED`, `CHAIN_PROPOSAL`, `EVAL_COMPLETE`) with
+  canonical listeners; tools react to findings instead of running in a flat
+  sequence.
+- **Hierarchical research loop**: 3 event-driven dynamic checkpoints
+  (`post-chain`, `post-lab-verification`, `blocker-exhausted`) append to the
+  mandatory 7; sub-checkpoints (e.g. `graphql-deep-dive`, `waf-profile`,
+  `cloud-metadata`) inject depth per domain; `latest_ready` respects both.
+- **16 deep-hunt tools built in Weeks 1–8**: HTTP smuggling detector,
+  parser differential (WAF bypass payloads), JWT forgery planner, BFLA
+  matrix, BOPLA object-property over-POST matrix, GraphQL batch analyzer,
+  OAuth flow analyzer, IAM privilege-escalation graph (23 Rhino methods),
+  deep-link analyzer, mobile policy checker, historical asset delta,
+  LLM contract triage, agentic tool-auth, RAG memory poisoning, price-
+  manipulation analyzer, ATO chain planner, failure learning, chain-graph
+  AI (missing-link synthesis), seed/mutation advisor, disposable verification
+  lab planner, and the self-evaluation harness (AutoPenBench-style milestone
+  scoring).
+- **Workflow integrity hygiene**: `refresh_artifact_hashes` now supports
+  audited re-recording for a stage the campaign legitimately updated (e.g.
+  per-asset recon appended to `asset-intel/`) without weakening integrity
+  checks on other completed stages; the self-eval harness reads the workflow
+  manifest from the canonical `.bugwolf/workflows/` location with a legacy
+  `state/workflows/` fallback.
+- **CI bundle verification** (`.github/workflows/ci.yml` →
+  `scripts/ci_bundle_check.sh`): every push/PR runs the full test suite, then
+  builds both release bundles and verifies they ship the self-eval harness
+  and core domain tools with a matching `VERSION` and no leaked bytecode —
+  then runs the harness from inside the extracted Freebuff bundle against a
+  deterministic synthetic campaign and requires a **100% eval pass**
+  (6/6 tasks).
+- **685 tests passing** — full suite green, zero regressions (including
+  negative-path tests asserting the bundle check fails on a tampered bundle,
+  a missing core tool, and a VERSION mismatch).
+
 ## v1.0.1 — APT Commander: Strict Workflow, Uncensored Execution (2026-08-26)
 
 - **APT Commander architecture restored.** The workflow layer

@@ -1,0 +1,1 @@
+"""BugWolf modular domain package."""

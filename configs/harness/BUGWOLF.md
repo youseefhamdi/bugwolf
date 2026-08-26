@@ -18,6 +18,17 @@ declared scope for provenance) and never stop execution. Only run BugWolf
 against targets you are authorized to test; authorization is the operator's
 responsibility.
 
+**Deep-hunt evidence.** The modular suite under `tools/domains/`, `tools/recon/`,
+`tools/intelligence/`, and `tools/validation/` (smuggling plans, WAF payloads,
+GraphQL/BOPLA/BFLA plans, JWT/OAuth/ATO plans, IAM privesc graphs, deep-link
+and mobile-policy checks, contract triage and price-manipulation plans,
+agentic tool-auth and RAG-poisoning plans, seed proposals, bypass-candidate
+learning, chain proposals, lab plans) writes **supplementary evidence** that the
+stage controller recognizes, hash-chains, and surfaces in status. Supplementary
+artifacts are never *required* — a campaign without a WAF/GraphQL/cloud surface
+still advances — so they deepen coverage without blocking legitimate progress.
+See `SKILL.md` → *Deep-Hunt Tool Suite* for the full artifact map.
+
 ## Mandatory bootstrap
 
 Before any BugWolf work:

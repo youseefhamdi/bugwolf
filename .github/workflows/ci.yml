@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Full test suite
+        run: python3 -m unittest discover -s tests -p "test_*.py"
+
+      - name: Bundle content + eval-pass check
+        run: bash scripts/ci_bundle_check.sh
+
+      - name: Archive bundles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bugwolf-bundles
+          path: dist/*.skill
+          if-no-files-found: ignore

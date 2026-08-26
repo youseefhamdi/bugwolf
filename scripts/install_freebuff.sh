@@ -31,7 +31,7 @@ cp -r \
   "$ROOT"/configs \
   "$DEST/"
 
-rm -rf "$DEST/tools/__pycache__" "$DEST/tests/__pycache__"
+find "$DEST" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 find "$DEST" -name '*.pyc' -delete
 find "$DEST" -name '*.tmp' -delete
 find "$DEST" -name '.DS_Store' -delete

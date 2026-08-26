@@ -445,6 +445,34 @@ def refresh_target(project: str | Path, target: str, *,
     return result
 
 
+def make_finding_discovered_listener(
+    target: str, *, project_root: Optional[str | Path] = None,
+    max_hops: int = 4, max_chains: int = 32,
+) -> Any:
+    """Return a FINDING_DISCOVERED listener that refreshes the chain graph.
+
+    Event-driven integration: the campaign publishes ``FINDING_DISCOVERED``
+    the moment a finding is registered; this listener re-reads the target's
+    findings + leads and rebuilds the chain graph so chain partners for the
+    new finding surface immediately (not on the next manual run).
+
+    The listener is advisory and never raises: a chain refresh failure is
+    recorded on the event but must not block the finding pipeline.
+    """
+    def on_finding_discovered(event: Any) -> None:
+        try:
+            payload = getattr(event, "payload", {}) or {}
+            refresh_target(
+                project_root or str(workspace_root()),
+                payload.get("target") or target,
+                max_hops=max_hops, max_chains=max_chains)
+        except Exception:
+            # Chain refresh is opportunistic; a failed refresh must never
+            # gate the finding pipeline.
+            return
+    return on_finding_discovered
+
+
 def _persist(project: Path, target: str, result: Dict[str, Any]) -> Dict[str, str]:
     safe = safe_target_name(target).replace(":", "_")
     directory = project / CHAIN_DIR_NAME / safe

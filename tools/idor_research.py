@@ -21,9 +21,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+import sys
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import parse_qs, unquote, urlparse
+
+if str(Path(__file__).resolve().parent.parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 try:
     from tools.safety import AuthorizationError, safe_target_name, target_in_scope
@@ -94,6 +99,33 @@ class IdorValidationPlan:
     evidence_required: List[str]
     prohibited_actions: List[str]
     status: str = "offline_plan_only"
+
+
+@dataclass
+class BflaValidationPlan:
+    """Function-level (BFLA) authorization plan: call function X as role Y.
+
+    BFLA is the function-level twin of BOLA: the object is in scope for the
+    caller, but the *function* (privileged action) requires a role the caller
+    does not hold.  Plans are offline-only and require cooperating test
+    accounts with distinct declared roles.
+    """
+    plan_id: str
+    function: str
+    method: str
+    location: str
+    declared_roles: List[str]
+    required_role: str
+    baseline: List[str]
+    mutations: List[str]
+    invariant: str
+    impact_boundaries: List[str]
+    evidence_required: List[str]
+    prohibited_actions: List[str]
+    status: str = "offline_plan_only"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 def _id(prefix: str, *parts: str) -> str:
@@ -242,6 +274,205 @@ def classify_endpoint(url: str, *, method: str = "GET", body: str = "",
     return references
 
 
+# ---------------------------------------------------------------------------
+# BFLA (function-level authorization) matrix
+# ---------------------------------------------------------------------------
+
+# Signal words that mark an endpoint/operation as a privileged function.
+# These are the function-level counterpart of OBJECT_KEYS: a route containing
+# one of these is a candidate "role-B-only" function to test as role A.
+PRIVILEGED_FUNCTION_MARKERS = (
+    "delete", "remove", "update", "patch", "role", "permission", "grant",
+    "revoke", "promote", "demote", "ban", "suspend", "invite", "transfer",
+    "export", "import", "admin", "manage", "approve", "reject", "publish",
+    "deploy", "config", "setting", "billing", "invoice", "refund", "payout",
+    "impersonate", "masquerade", "sudo", "run-as", "elevate", "privilege",
+    "access-control", "acl", "policy", "webhook", "token", "apikey",
+    "apikeys", "secret", "key", "credential", "mfa", "2fa", "recovery",
+    "owner", "team", "workspace", "billing-portal", "gateway", "payout",
+)
+
+# Default role ladder for the two-account model (lowest -> highest).
+DEFAULT_ROLE_SETS = [
+    ["user", "admin"],
+    ["member", "owner"],
+    ["viewer", "editor"],
+    ["user", "support"],
+    ["user", "operator"],
+]
+
+
+class BflaMatrixError(RuntimeError):
+    """Raised for invalid BFLA matrix inputs."""
+
+
+def _looks_privileged(url: str, method: str, operation: str) -> bool:
+    """Heuristic: does this endpoint look like a privileged function?"""
+    path = urlparse(url).path.lower()
+    return bool(any(marker in path for marker in PRIVILEGED_FUNCTION_MARKERS)
+                or operation in {"function", "write"}
+                or method.upper() in {"DELETE", "PATCH"})
+
+
+def _required_role_for(endpoint: Dict[str, Any]) -> str:
+    """Best-effort required-role hint from the endpoint/surface model.
+
+    Uses the declared role (when supplied), an admin signal in the path, or
+    defaults to the top of the role ladder.
+    """
+    declared = str(endpoint.get("required_role") or "").strip()
+    if declared:
+        return declared
+    path = urlparse(str(endpoint.get("url") or "")).path.lower()
+    for marker in ("admin", "owner", "operator", "support"):
+        if marker in path:
+            return marker
+    return "admin"
+
+
+def build_bfla_matrix(
+    target: str,
+    endpoints: Iterable[Dict[str, Any] | str],
+    *,
+    role_sets: Optional[List[List[str]]] = None,
+    max_plans: int = 128,
+) -> List[BflaValidationPlan]:
+    """Build function-level authorization (BFLA) validation plans.
+
+    For every endpoint that looks like a privileged function, produce a plan
+    of the form "call function X as role Y": the baseline is role A's own
+    legitimate call (if any), and the mutation is the same function invoked
+    with a lower-privileged session — the server must reject it with an
+    authorization error, not just a missing-parameter error.
+
+    Role sets are operator-declared (two cooperating accounts with distinct
+    roles); ``required_role`` on an endpoint overrides the heuristic.
+
+    Uncensored: no scope filtering here — the operator declares authorization.
+    Offline: plans only; nothing is executed.
+    """
+    safe_target_name(target)
+    roles = role_sets or DEFAULT_ROLE_SETS
+    plans: List[BflaValidationPlan] = []
+    seen = set()
+    for item in endpoints:
+        if isinstance(item, str):
+            endpoint: Dict[str, Any] = {"url": item, "method": "GET", "operation": "read"}
+        else:
+            endpoint = dict(item)
+        url = str(endpoint.get("url") or endpoint.get("location") or "")
+        if not url:
+            continue
+        method = str(endpoint.get("method") or "GET")
+        operation = str(endpoint.get("operation") or "")
+        if not _looks_privileged(url, method, operation):
+            continue
+        required_role = _required_role_for(endpoint)
+        for role_set in roles:
+            if required_role not in role_set:
+                continue
+            # The lower-privileged caller is the role just below required_role
+            # in this ladder (or any other role in the set when the required
+            # role is at the bottom).
+            try:
+                idx = role_set.index(required_role)
+            except ValueError:
+                continue
+            caller_roles = role_set[:idx] if idx > 0 else [r for r in role_set if r != required_role]
+            if not caller_roles:
+                continue
+            key = (url, method, required_role)
+            if key in seen or len(plans) >= max_plans:
+                continue
+            seen.add(key)
+            plans.append(BflaValidationPlan(
+                plan_id=_id("bfla-plan", target, url, method, required_role),
+                function=f"{method.upper()} {url}",
+                method=method.upper(),
+                location=url,
+                declared_roles=role_set,
+                required_role=required_role,
+                baseline=[
+                    f"Provision two cooperating test accounts: one with the '{required_role}' role "
+                    "and one with only the lower-privileged role(s) "
+                    + ", ".join(caller_roles) + ".",
+                    "Call the privileged function as the privileged account to record the "
+                    "expected success shape (status, body keys, side effects).",
+                ],
+                mutations=[
+                    f"Call the same function with the '{caller_roles[0]}' session (same object/"
+                    "endpoint, nothing else changed).",
+                    "The server must reject with an authorization error (403/401 or an "
+                    "explicit role/denied body); a 200/201 or a generic missing-parameter "
+                    "error is a BFLA signal — record both shapes for comparison.",
+                    "If the lower-privileged call succeeds, try the remaining caller roles "
+                    "in the same ladder to bound the missing check.",
+                ],
+                invariant=(
+                    "A session may invoke only functions authorized for its declared role; "
+                    "privileged functions must fail closed with an authorization error."),
+                impact_boundaries=[
+                    "privileged function invoked by unauthorized role",
+                    "role escalation",
+                    "cross-tenant admin action",
+                ],
+                evidence_required=[
+                    "sanitized A/B requests (privileged vs lower-role session)",
+                    "response fingerprints for both callers",
+                    "declared role map for both test accounts",
+                    "bounded impact trace",
+                    "rollback confirmation for state-changing functions",
+                ],
+                prohibited_actions=[
+                    "no victim-account or third-party data access",
+                    "no bulk role enumeration",
+                    "no destructive irreversible actions without separate approval",
+                ],
+            ))
+    return plans
+
+
+def openapi_role_inventory(spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract privileged-function candidates from an OpenAPI/Swagger spec.
+
+    Reads the paths/operations and their ``security``/``x-permission`` hints to
+    build the endpoint inventory the BFLA matrix consumes.  Deterministic and
+    offline — pass the parsed spec dict.
+    """
+    inventory: List[Dict[str, Any]] = []
+    paths = spec.get("paths", {}) if isinstance(spec, dict) else {}
+    for path, item in (paths.items() if isinstance(paths, dict) else []):
+        if not isinstance(item, dict):
+            continue
+        for method in ("get", "put", "post", "delete", "patch"):
+            operation = item.get(method)
+            if not isinstance(operation, dict):
+                continue
+            operation_id = str(operation.get("operationId") or "")
+            required_role = ""
+            security = operation.get("security") or spec.get("security")
+            if isinstance(security, list):
+                for requirement in security:
+                    if isinstance(requirement, dict):
+                        for scheme, scopes in requirement.items():
+                            if isinstance(scopes, list) and scopes:
+                                required_role = str(scopes[0])
+                                break
+                        if required_role:
+                            break
+            permissions = operation.get("x-permission") or operation.get("x-acl") or ""
+            if not required_role and permissions:
+                required_role = str(permissions)
+            inventory.append({
+                "url": path,
+                "method": method.upper(),
+                "operation": operation_id or method,
+                "summary": str(operation.get("summary") or ""),
+                "required_role": required_role,
+            })
+    return inventory
+
+
 def build_idor_matrix(target: str, endpoints: Iterable[Dict[str, Any] | str], *,
                       scope: Optional[Dict[str, Any]] = None,
                       max_plans: int = 128) -> List[IdorValidationPlan]:
@@ -294,3 +525,75 @@ def build_idor_matrix(target: str, endpoints: Iterable[Dict[str, Any] | str], *,
                 status=risk,
             ))
     return plans
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    import argparse
+    import json
+    parser = argparse.ArgumentParser(
+        description="BugWolf IDOR/BFLA access-control research planner")
+    parser.add_argument("--target", required=True, help="Target name")
+    parser.add_argument("--bfla", action="store_true",
+                        help="Build the BFLA (function-level authorization) matrix")
+    parser.add_argument("--openapi", default="",
+                        help="Path to an OpenAPI/Swagger spec JSON for the role inventory")
+    parser.add_argument("--endpoints-file", default="",
+                        help="JSONL/JSON file of endpoint objects (url, method, body, ...)")
+    parser.add_argument("--role-sets", default="",
+                        help="JSON array of role ladders, e.g. '[[\"user\",\"admin\"]]'")
+    parser.add_argument("--json", action="store_true", help="Emit strict JSON")
+    args = parser.parse_args()
+
+    endpoints: List[Dict[str, Any]] = []
+    if args.endpoints_file:
+        try:
+            raw = Path(args.endpoints_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+            return 2
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        endpoints = parsed if isinstance(parsed, list) else [parsed]
+    if not endpoints:
+        print(json.dumps({"ok": False,
+                          "error": "--bfla requires --endpoints-file (endpoint objects)"},
+                         indent=2))
+        return 2
+
+    role_sets = None
+    if args.role_sets:
+        try:
+            role_sets = json.loads(args.role_sets)
+        except json.JSONDecodeError as exc:
+            print(json.dumps({"ok": False, "error": f"--role-sets invalid: {exc}"}))
+            return 2
+
+    if args.bfla:
+        inventory = endpoints
+        if args.openapi:
+            try:
+                spec = json.loads(Path(args.openapi).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                print(json.dumps({"ok": False, "error": f"invalid OpenAPI spec: {exc}"}))
+                return 2
+            inventory = openapi_role_inventory(spec)
+        plans = build_bfla_matrix(args.target, inventory, role_sets=role_sets)
+        output = {"schema": "bugwolf/bfla-matrix/v1", "ok": True,
+                  "target": args.target, "plan_count": len(plans),
+                  "plans": [asdict(p) for p in plans]}
+        print(json.dumps(output, indent=2) if args.json else
+              f"[+] {args.target}: {len(plans)} BFLA validation plans")
+        return 0
+
+    parser.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
