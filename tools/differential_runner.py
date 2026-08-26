@@ -13,6 +13,9 @@ the observation layer share one definition of "a material delta".
 The runner never performs HTTP itself: a ``transport`` callable (e.g. hunt.py's
 ``curl_fetch_observation`` wrapped by the execution controller) executes each
 request and returns an :class:`tools.observation.HttpObservation`.
+
+Usage:
+  python3 tools/differential_runner.py --target T --urls-file recon/T/urls.txt --base-url https://target --scope-file scope.json --max-pairs 20 --json
 """
 
 from __future__ import annotations

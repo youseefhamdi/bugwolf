@@ -47,7 +47,7 @@ from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field, asdict
 
 try:
-    from tools.runtime_paths import workspace_root
+    from tools.runtime_paths import target_slug, workspace_root
     from tools.evidence import redact
 except ImportError:  # direct script execution
     from runtime_paths import workspace_root
@@ -795,8 +795,7 @@ def atomic_append(path: Path, line: str):
 
 
 def _obs_file(target: str) -> Path:
-    safe = target.replace("/", "_").replace(":", "_").replace("*", "WILDCARD")
-    return OBSERVATIONS_ROOT / f"{safe}.jsonl"
+    return OBSERVATIONS_ROOT / f"{target_slug(target)}.jsonl"
 
 
 def save_observation(target: str, record: ObservationRecord):

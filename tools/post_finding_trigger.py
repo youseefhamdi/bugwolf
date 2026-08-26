@@ -30,12 +30,12 @@ except ImportError:  # pragma: no cover - Windows fallback
 try:
     from tools.chain_orchestrator import refresh_target as refresh_chain_target
     from tools.evidence import redact
-    from tools.runtime_paths import workspace_root
+    from tools.runtime_paths import target_slug, workspace_root
     from tools.safety import safe_target_name
 except ImportError:  # direct script execution
     from chain_orchestrator import refresh_target as refresh_chain_target
     from evidence import redact
-    from runtime_paths import workspace_root
+    from runtime_paths import target_slug, workspace_root
     from safety import safe_target_name
 
 
@@ -55,8 +55,7 @@ def _clean(value: Any, limit: int = 500) -> str:
 
 
 def _state_dir(project: Path, target: str) -> Path:
-    safe = safe_target_name(target).replace(":", "_")[:200]
-    return project / "state" / "sessions" / safe
+    return project / "state" / "sessions" / target_slug(target)
 
 
 def _append(path: Path, value: Dict[str, Any]) -> None:

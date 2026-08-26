@@ -4,6 +4,9 @@
 The firewall performs no model calls and persists no token mappings. It masks
 known structured identifiers before an application sends content elsewhere.
 Reversal is available only through the in-memory, request-bound TTL map.
+
+Usage:
+  python3 tools/pii_firewall.py --text 'Patient Jane Doe, email jane@example.com' --request-id case-123 --policy mask_and_warn
 """
 
 from __future__ import annotations

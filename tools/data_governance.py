@@ -4,6 +4,9 @@
 No brokers, schema registries, KMS services, or consumers are contacted. The
 module produces classification and audit plans from local JSON/Avro/Proto-like
 schema files and topic manifests.
+
+Usage:
+  python3 tools/data_governance.py --schema-file schemas/event.json --topic clinical.events --output-dir governance-review
 """
 
 from __future__ import annotations

@@ -7,6 +7,9 @@ false findings from agents operating outside their domain.
 Integrated from:
 - SIS-MD Security Intelligence SkillMD (passive-only boundary enforcement)
 - Bug Bounty Intelligence MCP (scope-aware filtering lesson from Slither benchmark)
+
+Usage:
+  python3 tools/agent_isolation.py state/sessions/T/findings_structured.json --target T --scope scope.json
 """
 
 import json

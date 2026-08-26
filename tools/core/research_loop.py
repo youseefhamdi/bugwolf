@@ -21,12 +21,16 @@ Usage:
 
 import html
 import json
+import logging
 import os
 import re
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Callable
+
+logger = logging.getLogger("bugwolf.research_loop")
 from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
@@ -35,7 +39,7 @@ from typing import List, Dict, Optional
 _CODE_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(_CODE_ROOT))
-from tools.runtime_paths import CODE_ROOT, workspace_root
+from tools.runtime_paths import CODE_ROOT, target_slug, workspace_root
 from tools.adaptive_learning import AdaptiveMemory
 
 ROOT = workspace_root()
@@ -698,8 +702,7 @@ class ResearchExecutor:
         self.learning = AdaptiveMemory(self.target, root=learning_root)
 
     def _checkpoint_dir(self, checkpoint: str) -> Path:
-        safe = re.sub(r"[^\w.\-]+", "_", self.target)
-        d = self.base / safe / checkpoint
+        d = self.base / target_slug(self.target) / checkpoint
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -757,7 +760,7 @@ class ResearchExecutor:
                 from tools.wordlist_gen import (
                     generate as wl_generate, research_terms as wl_research,
                     save_cache as wl_save_cache)
-                safe_recon_target = re.sub(r"[^\w.-]+", "_", self.target)
+                safe_recon_target = target_slug(self.target)
                 urls = _read_lines(ROOT / "recon" / safe_recon_target / "urls.txt")
                 js = _read_lines(ROOT / "recon" / safe_recon_target / "jsfiles.txt")
                 defense = getattr(loop, "defense", "")
@@ -826,7 +829,7 @@ class ResearchExecutor:
         waf_payloads_present = False
         if checkpoint == "bypass":
             fingerprint = self.base.parent / "recon" / \
-                (re.sub(r"[^\w.-]+", "_", self.target) or "default") / \
+                target_slug(self.target) / \
                 "tech-fingerprint.json"
             try:
                 fp_data = json.loads(fingerprint.read_text(encoding="utf-8"))
@@ -837,8 +840,7 @@ class ResearchExecutor:
                    ("waf", "cloudflare", "akamai", "aws shield", "imperva",
                     "fastly", "modsecurity", "f5")):
                 waf_payloads_expected = True
-                target_dir = self.base / (re.sub(r"[^\w.-]+", "_", self.target)
-                                          or "default")
+                target_dir = self.base / target_slug(self.target)
                 waf_payloads_present = bool(
                     list(target_dir.glob("bypass/waf-payloads-*.json")))
         return {"checkpoint": checkpoint, "dir": str(cdir), "records": records,
@@ -857,6 +859,7 @@ class ResearchExecutor:
         stack: str = "", bug_classes: str = "", defense: str = "",
         context: Optional[Dict] = None,
         require_latest: bool = True, run_label: str = "",
+        on_checkpoint: Optional[Callable] = None,
     ) -> Dict:
         """Execute mandatory research checkpoints strictly one after another.
 
@@ -901,6 +904,11 @@ class ResearchExecutor:
                 bug_classes=current_bug_classes, defense=current_defense)
             result = self.execute(
                 phase_loop, name, modes, require_latest=require_latest)
+            # Fast-path hook (U1): notify a caller after each checkpoint so it
+            # can spawn parallel deep-dive research without blocking the main
+            # sweep.  Handler failures are logged and never abort the loop.
+            if on_checkpoint is not None:
+                self._safe_notify(on_checkpoint, result, ctx)
             runs.append({
                 "sequence": sequence_number,
                 "checkpoint": name,
@@ -914,8 +922,8 @@ class ResearchExecutor:
                     if record.get("task_type") == "search" and record.get("pending")),
             })
 
-        target_slug = re.sub(r"[^\w.-]+", "_", self.target) or "default"
-        sequence_path = self.base / target_slug / "sequence.json"
+        target_dir = target_slug(self.target)
+        sequence_path = self.base / target_dir / "sequence.json"
         sequence_path.parent.mkdir(parents=True, exist_ok=True)
         latest_ready = all(item["latest_ready"] for item in runs)
         execution = {
@@ -960,6 +968,20 @@ class ResearchExecutor:
                 # CLI/reporting code must not infer the current run from it.
                 "runs": runs,
                 "current_execution": execution}
+
+    @staticmethod
+    def _safe_notify(on_checkpoint: Callable, result: Dict,
+                     context: Dict) -> None:
+        """Invoke the fast-path callback without ever blocking the sweep.
+
+        The callback receives the finished checkpoint result plus the carried
+        context (stack/bug classes/defense).  Any exception is logged and
+        swallowed — the fast-path engine is advisory by design.
+        """
+        try:
+            on_checkpoint(result, context)
+        except Exception as exc:
+            logger.warning("fast-path on_checkpoint handler failed: %s", exc)
 
     def _render_summary(self, checkpoint: str, modes: List[str], ts: str,
                         records: List[Dict]) -> str:
@@ -1034,6 +1056,7 @@ def run_mandatory_research(
     timeout: int = 12,
     require_latest: bool = True,
     run_search: bool = True,
+    on_checkpoint: Optional[Callable] = None,
 ) -> Dict:
     """Run the mandatory sequential research sweep for a real tool run."""
     if isinstance(modes, str):
@@ -1056,9 +1079,58 @@ def run_mandatory_research(
         modes, checkpoints=list(sequences[phase]),
         stack=stack, bug_classes=bug_classes, defense=defense,
         context=context, require_latest=require_latest, run_label=phase,
+        on_checkpoint=on_checkpoint,
     )
     result["phase"] = phase
     return result
+
+
+def fast_path_signals(result: Dict) -> List[Dict]:
+    """Deterministic fast-path triggers derived from one checkpoint result.
+
+    The caller (orchestrator or harness) uses these signals to spawn parallel
+    deep-dive research *without* altering the mandatory sweep: the signals
+    describe what already became available at this checkpoint (fresh WAF
+    payload families, fetched canonical sources, search results), so follow-up
+    hypothesis work can run off the main path.  Order is stable.
+    """
+    signals: List[Dict] = []
+    checkpoint = str(result.get("checkpoint", ""))
+    if checkpoint == "bypass" and result.get("waf_payloads_present"):
+        signals.append({
+            "trigger": "waf-bypass-payloads",
+            "checkpoint": checkpoint,
+            "detail": "parser-differential WAF payload families are ready "
+                       "for the detected stack",
+            "payload": {"waf_payloads": True},
+        })
+    records = result.get("records", []) or []
+    fresh_fetches = [
+        record for record in records
+        if record.get("task_type") == "fetch"
+        and record.get("status") and 200 <= int(record.get("status", 0)) < 400
+    ]
+    if fresh_fetches:
+        signals.append({
+            "trigger": "canonical-source-fresh",
+            "checkpoint": checkpoint,
+            "detail": f"{len(fresh_fetches)} canonical sources fetched",
+            "payload": {"sources": [record.get("source") or ""
+                                     for record in fresh_fetches[:8]]},
+        })
+    searches = [
+        record for record in records
+        if record.get("task_type") == "search" and record.get("results")
+    ]
+    if searches:
+        signals.append({
+            "trigger": "search-signal",
+            "checkpoint": checkpoint,
+            "detail": f"{len(searches)} search(es) returned results",
+            "payload": {"queries": [record.get("query") or ""
+                                     for record in searches[:8]]},
+        })
+    return signals
 
 
 def mandatory_ordered_subsequence(sequence: List[str]) -> bool:
@@ -1105,10 +1177,10 @@ def verify_sequence(target: str, *, base_dir: Optional[str] = None,
     Mirrors ``WorkflowController._validate_research`` so both enforcement
     points always agree.
     """
-    target_slug = re.sub(r"[^\w.\-]+", "_", target or "default") or "default"
+    target_dir = target_slug(target)
     # Same location execute_sequential persists to: <research-root>/<target>/.
     root = Path(base_dir) if base_dir else ROOT / "research"
-    path = root / target_slug / "sequence.json"
+    path = root / target_dir / "sequence.json"
     report: Dict[str, Any] = {
         "schema": "research_execution/verify-v1",
         "target": target or "",

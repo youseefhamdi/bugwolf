@@ -11,6 +11,10 @@ It intentionally does not execute commands, contact targets, generate exploit
 payloads, evade scanners, decode binaries, or mutate executable source. Every
 output is a plan, signal, or quarantined candidate requiring the existing
 scope, execution, evidence, and human-review gates.
+
+Usage:
+  python3 tools/paper_intel.py --output-dir research/T/paper-intelligence --json
+  python3 tools/paper_intel.py --agent-control-plane-file .private/agent-inventory.json --map-output state/sessions/T/maps/paper-intelligence.md --json
 """
 
 from __future__ import annotations

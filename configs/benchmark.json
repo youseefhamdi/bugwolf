@@ -1,0 +1,74 @@
+{
+  "schema": "bugwolf/benchmark/v1",
+  "benchmark_version": 1,
+  "lab": "vulnbank",
+  "lab_fixture": "lab/vulnbank/server.py",
+  "setting": "synthetic-lab",
+  "cases": [
+    {
+      "case_id": "bola-user-1",
+      "bug_class": "bola",
+      "method": "GET",
+      "path": "/api/users/1",
+      "expected_finding": true,
+      "expected_severity": "high",
+      "notes": "Object-level authorization is never checked; user 1 returns to any caller."
+    },
+    {
+      "case_id": "bola-admin-42",
+      "bug_class": "bola",
+      "method": "GET",
+      "path": "/api/users/42",
+      "expected_finding": true,
+      "expected_severity": "critical",
+      "notes": "Admin record is reachable without authentication."
+    },
+    {
+      "case_id": "bola-missing-999",
+      "bug_class": "bola",
+      "method": "GET",
+      "path": "/api/users/999",
+      "expected_finding": false,
+      "expected_severity": "none",
+      "notes": "Negative control: a 404 must never be reported as a finding."
+    },
+    {
+      "case_id": "mass-assignment-role",
+      "bug_class": "mass_assignment",
+      "method": "POST",
+      "path": "/api/users",
+      "body": {"username": "mallory", "role": "admin", "isAdmin": true},
+      "expected_finding": true,
+      "expected_severity": "critical",
+      "notes": "Role/isAdmin over-binding is trusted by the server."
+    },
+    {
+      "case_id": "fuzz-crash-ingest",
+      "bug_class": "fuzz_crash",
+      "method": "GET",
+      "path": "/api/ingest?q=%27%20OR%20%271%27%3D%271",
+      "expected_finding": true,
+      "expected_severity": "medium",
+      "notes": "Ingest parser deterministically 5xxes on SQL-ish input."
+    },
+    {
+      "case_id": "gateway-open",
+      "bug_class": "none",
+      "method": "GET",
+      "path": "/api/gateway",
+      "expected_finding": false,
+      "expected_severity": "none",
+      "notes": "Negative control: an open gateway response is expected, not a finding."
+    },
+    {
+      "case_id": "login-valid",
+      "bug_class": "none",
+      "method": "POST",
+      "path": "/login",
+      "body": {"username": "alice", "password": "x"},
+      "expected_finding": false,
+      "expected_severity": "none",
+      "notes": "Negative control: a normal 200 login is expected, not a finding."
+    }
+  ]
+}

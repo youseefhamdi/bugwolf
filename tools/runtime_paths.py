@@ -10,10 +10,23 @@ the current working directory is the safe default used by the documented CLI.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
 CODE_ROOT = Path(__file__).resolve().parent.parent
+
+
+def target_slug(value: str | Path, *, max_length: int = 200) -> str:
+    """Return one safe, deterministic filesystem component for a target.
+
+    Target identifiers may be URLs, host:port pairs, or operator labels, but
+    they must never be interpreted as path syntax when used for runtime state.
+    """
+    raw = str(value or "").strip()
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", raw)
+    slug = slug.strip(".")[:max_length]
+    return slug or "default"
 
 
 def workspace_root(explicit: Optional[str | Path] = None) -> Path:

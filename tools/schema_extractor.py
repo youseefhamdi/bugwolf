@@ -15,6 +15,9 @@ schema files:
 4. **Fetch** (gated live) — download discovered schemas and run GraphQL
    introspection only through the authorization controller with explicit
    active confirmation.
+
+Usage:
+  python3 tools/schema_extractor.py --target T --recon-dir recon/T --output recon/T/discovery/surface-model.json --json
 """
 
 from __future__ import annotations

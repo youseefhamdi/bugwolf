@@ -11,6 +11,9 @@ This module detects the ingredients of that bug class and emits a forgeability
 hypothesis plus a remediation plan. It is a *static* analyzer: it never runs
 the code, never prints or persists the raw secret (evidence is a SHA-256
 fingerprint of the matched line only), and never mints or validates a token.
+
+Usage:
+  python3 tools/js_token_forge.py --path recon/T/js --output-dir recon/T/token-forge --json
 """
 
 from __future__ import annotations

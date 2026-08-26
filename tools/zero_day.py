@@ -4,6 +4,10 @@
 The orchestrator performs local/static candidate generation and records the
 artifacts needed for later authorized validation. It does not claim zero-days
 or perform live network actions by itself.
+
+Usage:
+  python3 tools/zero_day.py --target T --surface web_api --path recon/T/urls.txt --json
+  python3 tools/zero_day.py --target T --surface web_api --path recon/T/urls.txt --sequential --rounds 3 --per-round 2 --json
 """
 
 from __future__ import annotations
@@ -11,8 +15,21 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+
+
+@dataclass
+class ProbeObservation:
+    """Minimal probe response shape the Phase-3 modes consume.
+
+    Both the live executor's ``ProbeResult`` and simple dict-shaped results
+    duck-type into this (``status`` / ``body`` are all the modes read), so
+    the orchestrator can hand real probe results straight to these modes.
+    """
+    status: int = 0
+    body: str = ""
 
 try:
     from tools.art_selector import DEFAULT_FIXED_SIZE, adaptive_select
@@ -736,6 +753,462 @@ class ZeroDayResearchEngine:
             self.target, initial_state, transitions, invariant,
             invariant_name, max_depth=max_depth,
         )
+
+    # ------------------------------------------------------------------
+    # Phase 3: novel-class hunting (beyond the fixed bug-class templates)
+    # ------------------------------------------------------------------
+
+    def diff_analysis_mode(
+        self,
+        snapshots: Sequence[Dict[str, Any]],
+        *,
+        probe: Optional[Callable[[str], ProbeObservation]] = None,
+        project_root: Optional[str] = None,
+    ) -> List[ResearchCandidate]:
+        """Compare the same endpoint across two points (versions/snapshots)
+        and turn *divergent behavior* into hypotheses.
+
+        Each snapshot carries the endpoint + its recorded response; when two
+        snapshots of the same endpoint disagree on status/body shape, the
+        divergence is a candidate (a behavior delta is where novel bugs live
+        — a new code path, a changed authz decision, a dropped header). If
+        ``probe`` is supplied, each snapshot's endpoint is re-probed live
+        (Phase 3 integration) instead of trusting the recorded body.
+        """
+        by_endpoint: Dict[str, List[Dict[str, Any]]] = {}
+        for snap in snapshots:
+            endpoint = str(snap.get("endpoint") or "").strip()
+            if not endpoint:
+                continue
+            by_endpoint.setdefault(endpoint, []).append(snap)
+        def _body(item: Dict[str, Any]) -> str:
+            return str(item.get("body") or item.get("response_body") or "").strip()
+
+        candidates: List[ResearchCandidate] = []
+        for endpoint, group in by_endpoint.items():
+            if len(group) < 2:
+                continue
+            first, second = group[0], group[1]
+            if probe is not None:
+                # Phase 3: re-probe the endpoint live; compare the recorded
+                # (v1) snapshot against current behavior (v2 = "now").
+                try:
+                    live = probe(endpoint)
+                    second = {
+                        "status": int(getattr(live, "status", 0)),
+                        "body": getattr(live, "body", None)
+                        or getattr(live, "response_body", ""),
+                    }
+                except Exception:
+                    continue
+            s1 = int(first.get("status") or 0)
+            s2 = int(second.get("status") or 0)
+            b1 = _body(first)
+            b2 = _body(second)
+            divergent = (s1 != s2) or (b1 and b2 and b1 != b2)
+            if not divergent:
+                continue
+            candidates.append(ResearchCandidate(
+                target=self.target,
+                surface=Surface.WEB_API,
+                bug_class="behavior_differential",
+                title=f"Behavior delta on {endpoint}",
+                hypothesis=(
+                    f"{endpoint} returned {s1} (v1) vs {s2} (v2): "
+                    "a changed execution path — hunt the delta."),
+                location=endpoint,
+                severity="medium",
+                confidence=0.55,
+                metadata={"mode": "diff_analysis",
+                          "endpoint": endpoint,
+                          "status_v1": s1, "status_v2": s2,
+                          "delta": True},
+            ))
+        return candidates
+
+    def anomaly_detection_mode(
+        self,
+        observations: Sequence[Dict[str, Any]],
+        *,
+        baseline_status: int = 200,
+        baseline_elapsed_ms: float = 500.0,
+    ) -> List[ResearchCandidate]:
+        """Flag unusual responses (unexpected headers, timing, error patterns).
+
+        Deterministic anomaly classifier over probe observations: status
+        deltas from the endpoint baseline, extreme timing, unexpected
+        security/error headers, and error-pattern bodies all become
+        hypotheses. An optional per-observation ``signal`` (e.g. the fuzz
+        classifier's deterministic reason) is itself a reason, so fuzz
+        crash/timeout/anomaly observations surface even without a
+        status/timing delta. Pure function of the observations — no live
+        probing here (the executor collects them; this hunts the anomalies).
+        """
+        candidates: List[ResearchCandidate] = []
+        for obs in observations:
+            endpoint = str(obs.get("endpoint") or "").strip()
+            status = int(obs.get("status") or 0)
+            elapsed = float(obs.get("elapsed_ms") or 0.0)
+            headers = obs.get("headers") or {}
+            body = str(obs.get("body") or "")
+            reasons: List[str] = []
+            if status and status != baseline_status:
+                reasons.append(f"status {status} vs baseline {baseline_status}")
+            if elapsed and elapsed > baseline_elapsed_ms * 4:
+                reasons.append(f"timing {elapsed:.0f}ms vs baseline "
+                               f"{baseline_elapsed_ms:.0f}ms")
+            # An explicit deterministic signal (e.g. the fuzz classifier's
+            # reason) is itself an anomaly — fuzz observations with no
+            # status/timing delta still surface as candidates.
+            signal_note = str(obs.get("signal") or "").strip()
+            if signal_note:
+                reasons.append(signal_note)
+            for hdr in ("x-powered-by", "server", "x-aspnet-version",
+                        "x-debug-token", "x-backend"):
+                if hdr in {k.lower() for k in headers}:
+                    reasons.append(f"unexpected header {hdr}")
+            for marker in ("stack trace", "traceback", "syntax error",
+                           "exception", "debug:"):
+                if marker in body.lower():
+                    reasons.append(f"error-pattern '{marker}' in body")
+                    break
+            if not reasons:
+                continue
+            candidates.append(ResearchCandidate(
+                target=self.target,
+                surface=Surface.WEB_API,
+                bug_class="anomaly",
+                title=f"Anomaly on {endpoint or 'unknown'}",
+                hypothesis=f"{'; '.join(reasons)} — investigate the deviation.",
+                location=endpoint,
+                severity="medium",
+                confidence=0.5,
+                metadata={"mode": "anomaly_detection",
+                          "endpoint": endpoint,
+                          "status": status,
+                          "elapsed_ms": elapsed,
+                          "reasons": reasons},
+            ))
+        return candidates
+
+    def state_machine_probing(
+        self,
+        workflow: Sequence[Dict[str, Any]],
+        *,
+        probe: Optional[Callable[[Dict[str, Any]], ProbeObservation]] = None,
+    ) -> List[ResearchCandidate]:
+        """Hunt business-logic flaws: workflow skip / repeat / reorder.
+
+        Given the declared workflow steps (ordered), generate the bounded set
+        of *illegal* sequences — each step probed out of order, skipped, and
+        repeated — and treat any step that succeeds (2xx) when it should not
+        be reachable as a candidate. ``probe`` executes a step request
+        (injectable; the orchestrator supplies the live executor).
+        """
+        steps = [dict(s) for s in workflow if s.get("step")]
+        candidates: List[ResearchCandidate] = []
+        seen: set = set()
+        for i, step in enumerate(steps):
+            for kind, seq in (
+                ("skip", [s for j, s in enumerate(steps) if j != i]),
+                ("reorder", [steps[j] for j in range(len(steps) - 1, -1, -1)]
+                             if i == 0 else None),
+                ("repeat", [s for s in steps] + [step]),
+            ):
+                if seq is None:
+                    continue
+                key = f"{kind}:{step.get('step')}:{len(seq)}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                reached = False
+                if probe is not None:
+                    try:
+                        reached = int(probe(step).status) in (200, 201, 204)
+                    except Exception:
+                        reached = False
+                if not reached:
+                    continue
+                candidates.append(ResearchCandidate(
+                    target=self.target,
+                    surface=Surface.WEB_API,
+                    bug_class="business_logic",
+                    title=f"Workflow {kind} succeeds: {step.get('step')}",
+                    hypothesis=(
+                        f"Step '{step.get('step')}' succeeded despite illegal "
+                        f"workflow order ({kind}) — the state machine does not "
+                        "enforce sequencing."),
+                    location=str(step.get("endpoint") or ""),
+                    severity="high",
+                    confidence=0.6,
+                    metadata={"mode": "state_machine",
+                              "kind": kind, "step": step.get("step"),
+                              "sequence": [s.get("step") for s in seq]},
+                ))
+        return candidates
+
+    # -- Fuzz-bridge feed (novel-class hunting consumes fuzz signals too) --
+
+    @staticmethod
+    def _obs_get(obs: Any, key: str, default: Any = "") -> Any:
+        """Read a field from a dict-shaped or dataclass-shaped observation."""
+        if isinstance(obs, dict):
+            return obs.get(key, default)
+        return getattr(obs, key, default)
+
+    def hunt_fuzz_signals(
+        self,
+        observations: Sequence[Any],
+        *,
+        baseline_status: int = 200,
+        baseline_elapsed_ms: float = 500.0,
+    ) -> List[ResearchCandidate]:
+        """Feed fuzz crash/timeout/anomaly evidence into the novel-class modes.
+
+        Fuzz signals are both *anomalies* (5xx, timing outliers, transport
+        failures) and *behavior deltas* (the endpoint diverged from its
+        oracle under mutation), so they are routed through the two Phase-3
+        modes:
+
+          1. ``anomaly_detection_mode`` — every crash / timeout / anomaly
+             becomes an anomaly candidate; the deterministic fuzz signal
+             (e.g. ``server error 500 on probe input``) is carried as a
+             reason, so even a pure timeout with no timing delta surfaces.
+          2. ``diff_analysis_mode`` — every crash is paired with the
+             endpoint's oracle (baseline) behavior and emitted as a
+             ``behavior_differential`` candidate: same endpoint, normal vs
+             mutated input.
+
+        Every candidate is stamped with the fuzz provenance (``mutation_id``,
+        ``kind``, fuzz ``state``, ``replay_key``) so the novel-class hunter
+        can reproduce the crash from the recorded evidence.  Accepts
+        ``FuzzObservation`` dataclass instances or dict-shaped records; pure
+        function of the observations (no persistence, no live probing).
+        """
+        signals = [o for o in observations
+                   if self._obs_get(o, "state", "")
+                   in ("crash", "timeout", "anomaly")]
+        if not signals:
+            return []
+
+        # -- 1. Anomaly mode: every fuzz signal is an anomaly ----------------
+        anomaly_obs: List[Dict[str, Any]] = []
+        for obs in signals:
+            state = str(self._obs_get(obs, "state") or "")
+            evidence = self._obs_get(obs, "evidence", {}) or {}
+            response = evidence.get("response") or {}
+            anomaly_obs.append({
+                "endpoint": str(self._obs_get(obs, "url")
+                                 or self._obs_get(obs, "endpoint") or ""),
+                "status": self._obs_get(obs, "status", 0),
+                "elapsed_ms": self._obs_get(obs, "elapsed_ms", 0.0),
+                "headers": response.get("headers") or {},
+                "body": response.get("body")
+                or self._obs_get(obs, "body", ""),
+                # Guaranteed non-empty so the mode always yields a candidate
+                # (the signal reason is first-class) — the 1:1 stamp below is
+                # therefore exact.
+                "signal": str(self._obs_get(obs, "signal")
+                               or f"fuzz {state}"),
+                "state": state,
+                "mutation_id": str(self._obs_get(obs, "mutation_id") or ""),
+                "kind": str(self._obs_get(obs, "kind") or ""),
+                "replay_key": str(evidence.get("replay_key") or ""),
+            })
+        candidates = self.anomaly_detection_mode(
+            anomaly_obs, baseline_status=baseline_status,
+            baseline_elapsed_ms=baseline_elapsed_ms)
+        for cand, obs in zip(candidates, anomaly_obs):
+            _stamp_fuzz_provenance(cand, obs, mode="fuzz_anomaly",
+                                   state=obs["state"])
+
+        # -- 2. Diff mode: crashes are baseline-vs-mutation behavior deltas --
+        crash_snaps: List[Dict[str, Any]] = []
+        crash_provenance: Dict[str, Dict[str, Any]] = {}
+        for obs in signals:
+            if self._obs_get(obs, "state") != "crash":
+                continue
+            url = str(self._obs_get(obs, "url") or "").strip()
+            if not url:
+                continue
+            evidence = self._obs_get(obs, "evidence", {}) or {}
+            response = evidence.get("response") or {}
+            crash_provenance[url] = {
+                "mutation_id": str(self._obs_get(obs, "mutation_id") or ""),
+                "kind": str(self._obs_get(obs, "kind") or ""),
+                "state": "crash",
+                "signal": str(self._obs_get(obs, "signal") or ""),
+                "replay_key": str(evidence.get("replay_key") or ""),
+            }
+            crash_snaps.append({"endpoint": url, "status": baseline_status,
+                                "body": ""})
+            crash_snaps.append({"endpoint": url,
+                                "status": int(self._obs_get(obs, "status")
+                                               or 0),
+                                "body": str(response.get("body") or "")})
+        if crash_snaps:
+            for cand in self.diff_analysis_mode(crash_snaps):
+                provenance = crash_provenance.get(
+                    cand.metadata.get("endpoint", ""))
+                if provenance is None:
+                    continue
+                _stamp_fuzz_provenance(cand, provenance, mode="fuzz_diff",
+                                       state="crash")
+                candidates.append(cand)
+        return candidates
+
+
+    def hunt_exploit_feedback(
+        self,
+        impacts: Sequence[Dict[str, Any]],
+        *,
+        baseline_status: int = 200,
+    ) -> List[ResearchCandidate]:
+        """Feed exploited findings' demonstrated impact into the novel-class hunter.
+
+        A reproduced exploit is the hardest evidence the loop produces: the
+        replay returned real data (``demonstrated_impact``).  That data both
+        *reveals* an anomaly (the endpoint demonstrably returns data it
+        should not) and *unlocks* the derived chain-hypothesis classes
+        (``chain_hypotheses`` on the impact record).  Every candidate is
+        stamped with the exploit provenance (``finding_id``, ``replay_key``,
+        ``replayed_status``) so the hunter can reproduce it from the recorded
+        evidence, and — the novelty refinement — the unlock candidates are
+        built **impact-bounded**: the demonstrated impact proves the impact
+        half, so ``NoveltyEngine.apply`` promotes them into
+        ``NOVELTY_PENDING`` (human-review-ready) instead of leaving them as
+        bare hypotheses.  Candidates that duplicate an already-known surface
+        come back ``EXACT_DUPLICATE`` from the engine — the impact *confirms*
+        the known pool rather than re-reporting it.
+
+        Pure function of the impact records (no persistence, no live
+        probing); accepts the ``live_exploit`` impact dicts the exploitation
+        phase produces.  Dedup is in-feed: pass@k variants of the same
+        finding replay the same endpoint, so one candidate per
+        (bug_class, endpoint) — first impact wins.
+        """
+        candidates: List[ResearchCandidate] = []
+        seen_reveal: set = set()
+        seen_unlock: set = set()
+        for impact in impacts or []:
+            if not impact.get("reproduced"):
+                continue
+            endpoint = str(impact.get("endpoint") or "").strip()
+            body = str(impact.get("demonstrated_impact") or "").strip()
+            if not body or not endpoint:
+                continue
+            finding_id = str(impact.get("finding_id")
+                             or impact.get("thread_id") or "")
+            source_class = str(impact.get("bug_class") or "")
+            replay_key = str(impact.get("replay_key") or "")
+            status = int(impact.get("replayed_status") or 0)
+            provenance = {
+                "finding_id": finding_id,
+                "bug_class": source_class,
+                "replay_key": replay_key,
+                "replayed_status": status,
+                "demonstrated_impact": body[:500],
+            }
+
+            # 1. Impact-reveal anomaly: the exploit returned data the
+            #    operator cannot normally hold.
+            anomaly_obs = [{
+                "endpoint": endpoint,
+                "status": status or baseline_status,
+                "body": body,
+                "signal": (f"exploit replay reproduced ({status or 200}) "
+                            "with demonstrated impact"),
+            }]
+            if endpoint not in seen_reveal:
+                seen_reveal.add(endpoint)
+                for cand in self.anomaly_detection_mode(
+                        anomaly_obs, baseline_status=baseline_status):
+                    _stamp_exploit_provenance(cand, provenance,
+                                              mode="exploit_impact")
+                    candidates.append(cand)
+
+            # 2. Unlock candidates: each chain hypothesis the impact derived
+            #    is a novel class the demonstrated data makes reachable.
+            for hypo in impact.get("chain_hypotheses") or []:
+                cls = str(hypo.get("bug_class") or "").strip()
+                if not cls:
+                    continue
+                if (cls, endpoint) in seen_unlock:
+                    continue
+                seen_unlock.add((cls, endpoint))
+                cand = ResearchCandidate(
+                    target=self.target,
+                    surface=Surface.WEB_API,
+                    bug_class=cls,
+                    title=f"Exploit-unlocked: {cls} reachable via {endpoint}",
+                    hypothesis=str(hypo.get("reason")
+                                   or f"demonstrated impact on {endpoint} "
+                                   f"unlocks {cls}"),
+                    location=endpoint,
+                    severity=_bump_severity(
+                        str(impact.get("severity") or "low")),
+                    confidence=0.8,
+                    # The demonstrated impact proves the impact half: the
+                    # novelty engine promotes IMPACT_BOUNDED -> NOVELTY_PENDING
+                    # on assessment, so the impact refines where the
+                    # hypothesis sits in the pipeline.
+                    status=CandidateStatus.IMPACT_BOUNDED,
+                    trigger_trace=(f"Exploited {source_class or 'finding'} "
+                                   f"{finding_id or '?'} on {endpoint}"),
+                    impact_trace=body[:500],
+                    metadata={"hypothesis_id": str(hypo.get("lead_id") or ""),
+                              "source": "exploit-feedback"},
+                )
+                _stamp_exploit_provenance(cand, provenance, mode="exploit_unlock")
+                candidates.append(cand)
+        return candidates
+
+
+#: Exploit evidence is the hardest signal the loop produces: a reproduced
+#: replay with returned data outranks bare fuzz crashes.
+_EXPLOIT_CONFIDENCE = 0.8
+
+_SEVERITY_UP = {"info": "low", "low": "medium", "medium": "high",
+                "high": "critical", "critical": "critical"}
+
+
+def _bump_severity(severity: str) -> str:
+    """One tier up the severity ladder (capped at critical)."""
+    return _SEVERITY_UP.get(str(severity).strip().lower(), "medium")
+
+
+def _stamp_exploit_provenance(candidate: ResearchCandidate,
+                              provenance: Dict[str, Any], *, mode: str) -> None:
+    """Attach exploit provenance to a candidate and scale its confidence."""
+    candidate.metadata["mode"] = mode
+    candidate.metadata["exploit"] = {
+        "finding_id": provenance.get("finding_id", ""),
+        "bug_class": provenance.get("bug_class", ""),
+        "replay_key": provenance.get("replay_key", ""),
+        "replayed_status": provenance.get("replayed_status", 0),
+    }
+    candidate.metadata["source"] = "exploit-feedback"
+    candidate.confidence = max(candidate.confidence, _EXPLOIT_CONFIDENCE)
+
+
+#: Fuzz evidence is stronger than a bare header fingerprint: crashes are the
+#: hardest signal, timeouts next, generic anomalies weakest.
+_FUZZ_CONFIDENCE = {"crash": 0.7, "timeout": 0.6, "anomaly": 0.55}
+
+
+def _stamp_fuzz_provenance(candidate: ResearchCandidate,
+                           provenance: Dict[str, Any], *, mode: str,
+                           state: str) -> None:
+    """Attach fuzz provenance to a candidate and scale its confidence."""
+    candidate.metadata["mode"] = mode
+    candidate.metadata["fuzz"] = {
+        "mutation_id": provenance.get("mutation_id", ""),
+        "kind": provenance.get("kind", ""),
+        "state": state,
+        "signal": provenance.get("signal", ""),
+        "replay_key": provenance.get("replay_key", ""),
+    }
+    candidate.confidence = _FUZZ_CONFIDENCE.get(state, candidate.confidence)
 
 
 def _load_input(path: str) -> str:

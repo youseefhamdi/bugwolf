@@ -28,9 +28,9 @@ except ImportError:
     from research_model import CandidateStatus, NoveltyLabel, ResearchCandidate
 
 try:
-    from tools.safety import safe_target_name
+    from tools.runtime_paths import target_slug
 except ImportError:
-    from safety import safe_target_name
+    from runtime_paths import target_slug
 
 try:
     from tools.art_selector import payload_tokens
@@ -100,8 +100,7 @@ class CandidateIndex:
 
     def __init__(self, target: str):
         self.target = target
-        safe = safe_target_name(target).replace(":", "_")
-        self.path = RESEARCH_ROOT / safe / "candidates.jsonl"
+        self.path = RESEARCH_ROOT / target_slug(target) / "candidates.jsonl"
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def add(self, candidate: ResearchCandidate) -> None:

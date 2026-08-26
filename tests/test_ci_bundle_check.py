@@ -141,7 +141,14 @@ def _write_synthetic_campaign(ws: Path, target: str) -> None:
         (research / "llm" / "agentic-tool-auth-plans.json", {"plans": [{"asi": "ASI02"}]}),
         (research / "llm" / "rag-poisoning-plans.json", {"plans": [{"vector": "write_back"}]}),
         (research / "advisor" / "seed-proposals.json", {"proposals": [{"mode": "web"}]}),
-        (research / "learning" / "failure-bypass-candidates.json", {"candidates": [{"blocker": "403"}]}),
+        (research / "learning" / "failure-bypass-candidates.json", {"candidates": [
+            {"blocker": "403", "status": "quarantined"},
+            {"candidate_id": "bc-gw-1", "blocker": "blocked by akamai (403)",
+             "defense": "akamai", "bug_class": "web",
+             "payload": "X-Original-URL: /admin",
+             "technique": "header-based path access",
+             "provenance": "catalog", "status": "approved",
+             "approved_by": "operator", "approved_at": "2026-08-26T00:00:00Z"}]}),
         (research / "chains" / "graph-ai-proposals.json", {"proposals": [{"kind": "terminal-gap"}]}),
         (research / "verification" / "lab-plans.json", {"plans": [{"family": "web"}]}),
     ]
@@ -155,6 +162,125 @@ def _write_synthetic_campaign(ws: Path, target: str) -> None:
             f.write(json.dumps({"event_type": event_type, "payload": {}}) + "\n")
     (ws / "state" / "chains" / target / "orchestration.json").write_text(
         json.dumps({"graph": {"nodes": [], "edges": []}}))
+
+    # pass@k variant threads + model-routing audit (eval task 7: U4/U5).
+    campaign_dir = ws / "state" / "campaigns" / target
+    threads_dir = campaign_dir / "threads"
+    threads_dir.mkdir(parents=True, exist_ok=True)
+    for variant in (0, 1, 2):
+        (threads_dir / f"t-sqli-v{variant}.json").write_text(json.dumps({
+            "thread_id": f"t-sqli-v{variant}", "asset_id": "a1",
+            "bug_class": "sqli", "pass_variant": variant,
+            "pass_group": "sqli", "state": "hypothesis"}))
+    with (campaign_dir / "audit.jsonl").open("a") as f:
+        for tier, pref, unit, complexity in (
+            ("local_slm", "slm-fast", "u-probe", 0.4),
+            ("frontier", "frontier-reasoning", "u-chain", 0.85),
+        ):
+            f.write(json.dumps({"event": "unit_routed",
+                                "data": {"unit_id": unit, "model_tier": tier,
+                                         "model_preference": pref,
+                                         "complexity": complexity}}) + "\n")
+
+    # Live-execution-loop probe evidence (eval task 8: Phase 3).  Verdicts
+    # are derived deterministically by the eval: p1 signal, p2 clean, p3
+    # blocked — so the adaptation milestone sees >1 distinct verdict.
+    probes = ws / "state" / "sessions" / target / "probes.jsonl"
+    probes.parent.mkdir(parents=True, exist_ok=True)
+    probe_records = [
+        {"probe_id": "p1",
+         "spec": {"method": "GET", "url": f"https://api.{target}/v1/users/2",
+                   "bug_class": "idor"},
+         "status": 500, "blocked": False, "waf_detected": False,
+         "timed_out": False, "transport_error": "", "signals": ["server-error"],
+         "evidence": {"request": {"method": "GET",
+                                   "url": f"https://api.{target}/v1/users/2"},
+                      "replay_key": "k1"}},
+        {"probe_id": "p2",
+         "spec": {"method": "GET", "url": f"https://api.{target}/v1/users/999",
+                   "bug_class": "idor"},
+         "status": 404, "blocked": False, "waf_detected": False,
+         "timed_out": False, "transport_error": "", "signals": [],
+         "evidence": {"request": {"method": "GET",
+                                   "url": f"https://api.{target}/v1/users/999"},
+                      "replay_key": "k2"}},
+        {"probe_id": "p3",
+         "spec": {"method": "POST", "url": f"https://api.{target}/v1/users",
+                   "bug_class": "mass_assignment"},
+         "status": 403, "blocked": True, "waf_detected": True,
+         "timed_out": False, "transport_error": "", "signals": [],
+         "evidence": {"request": {"method": "POST",
+                                   "url": f"https://api.{target}/v1/users"},
+                      "replay_key": "k3"}},
+    ]
+    probes.write_text(
+        "\n".join(json.dumps(r) for r in probe_records) + "\n")
+
+    # Fuzz-to-thread cycle (eval task 9): a fuzz run that found a crash, and
+    # the thread spawned from it that COMPLETED with recorded evidence and a
+    # 5xx in its confirmed behavior (reproduced, deduped).
+    fuzz_dir = ws / "state" / "fuzz" / target
+    fuzz_dir.mkdir(parents=True, exist_ok=True)
+    crash_url = f"https://api.{target}/v1/ingest?q=' OR '1'='1"
+    (fuzz_dir / "runs.jsonl").write_text(json.dumps({
+        "schema": "bugwolf/fuzz-bridge/v1", "run_id": "fuzz-ci-1",
+        "target": target, "mutations_run": 6, "crashes": 1,
+        "timeouts": 0, "anomalies": 0, "clean": 5, "errors": 0,
+        "observations": [{
+            "mutation_id": "m1", "operation_id": "op1", "method": "GET",
+            "url": crash_url, "kind": "injection", "status": 500,
+            "elapsed_ms": 12.0, "state": "crash",
+            "signal": "server error 500 on probe input",
+            "evidence": {"replay_key": "kf1"}}]}))
+    (threads_dir / "t-fuzz-crash-1.json").write_text(json.dumps({
+        "thread_id": "t-fuzz-crash-1", "asset_id": "a1",
+        "bug_class": "fuzz_crash", "endpoint": crash_url,
+        "state": "complete", "pass_variant": 0, "pass_group": "",
+        "confirmed_behavior": "fuzz_crash signal: 500 on "
+                               f"https://api.{target}/v1/ingest "
+                               "(server-error)",
+        "live_evidence": {"replay_key": "kf1", "request": {},
+                          "response": {"status": 500}}}))
+    (threads_dir / "t-fuzz-blocked-1.json").write_text(json.dumps({
+        "thread_id": "t-fuzz-blocked-1", "asset_id": "a1",
+        "bug_class": "fuzz_blocked",
+        "endpoint": f"https://api.{target}/v1/gateway",
+        "state": "blocked", "pass_variant": 0, "pass_group": "",
+        "confirmed_behavior": "blocked by akamai (403)",
+        "live_evidence": {"replay_key": "kf1", "request": {},
+                          "response": {"status": 403}, "waf": "akamai"}}))
+
+    # Exploitation phase (eval task 10): impact demonstrations from
+    # replaying gate-CONFIRMED findings — one crash replay and one data
+    # extraction, both reproduced with demonstrated_impact captured.
+    sessions = ws / "state" / "sessions" / target
+    sessions.mkdir(parents=True, exist_ok=True)
+    exploit_records = [
+        {"schema": "bugwolf/exploit-demonstration/v1",
+         "finding_id": "f-idor-1", "thread_id": "t-idor-1",
+         "bug_class": "idor", "endpoint": f"https://api.{target}/v1/users/1",
+         "replayed_status": 200, "reproduced": True,
+         "replay_key": "kf1",
+         "demonstrated_impact": "{\"id\": \"1\", \"username\": \"alice\", "
+                                "\"role\": \"user\"}"},
+        {"schema": "bugwolf/exploit-demonstration/v1",
+         "finding_id": "f-crash-1", "thread_id": "t-fuzz-crash-1",
+         "bug_class": "fuzz_crash", "endpoint": crash_url,
+         "replayed_status": 500, "reproduced": True,
+         "replay_key": "kf1",
+         "demonstrated_impact": "ingest parser failure"},
+        {"schema": "bugwolf/exploit-demonstration/v1",
+         "kind": "bypass-approval", "candidate_id": "bc-gw-1",
+         "technique": "header-based path access",
+         "approved_by": "operator", "finding_id": "t-fuzz-blocked-1",
+         "thread_id": "t-fuzz-blocked-1", "bug_class": "fuzz_blocked",
+         "endpoint": f"https://api.{target}/v1/gateway",
+         "replayed_status": 200, "reproduced": True,
+         "replay_key": "kf1",
+         "demonstrated_impact": "{\"id\": \"gw-1\", \"role\": \"admin\"}"},
+    ]
+    (sessions / "exploits.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in exploit_records) + "\n")
 
 
 class TestBundleContent(unittest.TestCase):
@@ -316,8 +442,8 @@ class TestEvalPassFromBundle(unittest.TestCase):
             capture_output=True, text=True, cwd=ROOT)
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout)
-        self.assertEqual(data["task_count"], 6)
-        self.assertEqual(data["tasks_passed"], 6)
+        self.assertEqual(data["task_count"], 10)
+        self.assertEqual(data["tasks_passed"], 10)
         self.assertEqual(data["score_pct"], 100.0)
         self.assertEqual(data["milestone_pct"], 100.0)
 

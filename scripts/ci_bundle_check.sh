@@ -66,6 +66,20 @@ REQUIRED = [
     "tools/core/research_loop.py",
     "tools/core/signal_bus.py",
     "tools/core/campaign_orchestrator.py",
+    "tools/core/model_router.py",
+    "tools/core/live_executor.py",
+    "tools/core/fuzz_bridge.py",
+    "tools/readiness.py",
+    "configs/readiness.json",
+    "tools/engagement_context.py",
+    "tools/research_core.py",
+    "tools/benchmark.py",
+    "configs/benchmark.json",
+    "tools/impact_validation.py",
+    "tools/static_bridge.py",
+    "tools/research_sources.py",
+    "tools/reporting.py",
+    "tools/release_ops.py",
     "tools/domains/web/http_smuggling_detector.py",
     "tools/domains/web/parser_differential.py",
     "tools/domains/auth/jwt_forgery.py",
@@ -217,7 +231,14 @@ write(f"research/{t}/llm/rag-poisoning-plans.json",
 write(f"research/{t}/advisor/seed-proposals.json",
       {"proposals": [{"mode": "web"}]})
 write(f"research/{t}/learning/failure-bypass-candidates.json",
-      {"candidates": [{"blocker": "403"}]})
+      {"candidates": [
+          {"blocker": "403", "status": "quarantined"},
+          {"candidate_id": "bc-gw-1", "blocker": "blocked by akamai (403)",
+           "defense": "akamai", "bug_class": "web",
+           "payload": "X-Original-URL: /admin", "technique": "header-based path access",
+           "provenance": "catalog", "status": "approved",
+           "approved_by": "operator", "approved_at": "2026-08-26T00:00:00Z"},
+      ]})
 write(f"research/{t}/chains/graph-ai-proposals.json",
       {"proposals": [{"kind": "terminal-gap"}]})
 write(f"research/{t}/verification/lab-plans.json",
@@ -270,6 +291,154 @@ done
 # Chain graph (eval task 6).
 mkdir -p "$WS/state/chains/$T"
 printf '{"graph": {"nodes": [], "edges": []}}\n' > "$WS/state/chains/$T/orchestration.json"
+
+# pass@k variant threads + model-routing audit (eval task 7: U4/U5).
+CAMPAIGN_DIR="$WS/state/campaigns/$T"
+mkdir -p "$CAMPAIGN_DIR/threads"
+python3 - "$CAMPAIGN_DIR" <<'PYEOF'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+campaign_dir = Path(sys.argv[1])
+threads = [
+    {"thread_id": "t-sqli-v0", "asset_id": "a1", "bug_class": "sqli",
+     "pass_variant": 0, "pass_group": "sqli", "state": "hypothesis"},
+    {"thread_id": "t-sqli-v1", "asset_id": "a1", "bug_class": "sqli",
+     "pass_variant": 1, "pass_group": "sqli", "state": "hypothesis"},
+    {"thread_id": "t-sqli-v2", "asset_id": "a1", "bug_class": "sqli",
+     "pass_variant": 2, "pass_group": "sqli", "state": "hypothesis"},
+]
+for t in threads:
+    (campaign_dir / "threads" / f"{t['thread_id']}.json").write_text(
+        json.dumps(t) + "\n")
+now = datetime.now(timezone.utc).isoformat()
+with open(campaign_dir / "audit.jsonl", "a", encoding="utf-8") as f:
+    for tier, pref, unit, complexity in (
+        ("local_slm", "slm-fast", "u-probe", 0.4),
+        ("frontier", "frontier-reasoning", "u-chain", 0.85),
+    ):
+        f.write(json.dumps({"event": "unit_routed", "ts": now,
+                            "data": {"unit_id": unit, "model_tier": tier,
+                                     "model_preference": pref,
+                                     "complexity": complexity}}) + "\n")
+PYEOF
+
+# Live-execution-loop probe evidence (eval task 8: Phase 3).
+# Verdicts are derived deterministically by the eval: p1 signal, p2 clean,
+# p3 blocked — so the adaptation milestone sees >1 distinct verdict.
+mkdir -p "$WS/state/sessions/$T"
+python3 - "$WS" "$T" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+ws, t = sys.argv[1], sys.argv[2]
+records = [
+    {"probe_id": "p1",
+     "spec": {"method": "GET", "url": f"https://api.{t}/v1/users/2",
+               "bug_class": "idor"},
+     "status": 500, "blocked": False, "waf_detected": False,
+     "timed_out": False, "transport_error": "", "signals": ["server-error"],
+     "evidence": {"request": {"method": "GET",
+                               "url": f"https://api.{t}/v1/users/2"},
+                  "replay_key": "k1"}},
+    {"probe_id": "p2",
+     "spec": {"method": "GET", "url": f"https://api.{t}/v1/users/999",
+               "bug_class": "idor"},
+     "status": 404, "blocked": False, "waf_detected": False,
+     "timed_out": False, "transport_error": "", "signals": [],
+     "evidence": {"request": {"method": "GET",
+                               "url": f"https://api.{t}/v1/users/999"},
+                  "replay_key": "k2"}},
+    {"probe_id": "p3",
+     "spec": {"method": "POST", "url": f"https://api.{t}/v1/users",
+               "bug_class": "mass_assignment"},
+     "status": 403, "blocked": True, "waf_detected": True,
+     "timed_out": False, "transport_error": "", "signals": [],
+     "evidence": {"request": {"method": "POST",
+                               "url": f"https://api.{t}/v1/users"},
+                  "replay_key": "k3"}},
+]
+out = Path(ws) / "state" / "sessions" / t / "probes.jsonl"
+out.parent.mkdir(parents=True, exist_ok=True)
+with out.open("w") as f:
+    for rec in records:
+        f.write(json.dumps(rec) + "\n")
+PYEOF
+
+# Fuzz-to-thread cycle (eval task 9): a fuzz run that found a crash, and
+# the thread spawned from it that COMPLETED with recorded evidence and a
+# 5xx in its confirmed behavior (reproduced, deduped).
+mkdir -p "$WS/state/fuzz/$T"
+python3 - "$WS" "$T" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+ws, t = sys.argv[1], sys.argv[2]
+crash_url = f"https://api.{t}/v1/ingest?q=' OR '1'='1"
+fuzz_dir = Path(ws) / "state" / "fuzz" / t
+fuzz_dir.mkdir(parents=True, exist_ok=True)
+(fuzz_dir / "runs.jsonl").write_text(json.dumps({
+    "schema": "bugwolf/fuzz-bridge/v1", "run_id": "fuzz-ci-1",
+    "target": t, "mutations_run": 6, "crashes": 1, "timeouts": 0,
+    "anomalies": 0, "clean": 5, "errors": 0,
+    "observations": [{
+        "mutation_id": "m1", "operation_id": "op1", "method": "GET",
+        "url": crash_url, "kind": "injection", "status": 500,
+        "elapsed_ms": 12.0, "state": "crash",
+        "signal": "server error 500 on probe input",
+        "evidence": {"replay_key": "kf1"}}]}) + "\n")
+threads_dir = Path(ws) / "state" / "campaigns" / t / "threads"
+threads_dir.mkdir(parents=True, exist_ok=True)
+(threads_dir / "t-fuzz-crash-1.json").write_text(json.dumps({
+    "thread_id": "t-fuzz-crash-1", "asset_id": "a1",
+    "bug_class": "fuzz_crash", "endpoint": crash_url,
+    "state": "complete", "pass_variant": 0, "pass_group": "",
+    "confirmed_behavior": "fuzz_crash signal: 500 on "
+                           f"https://api.{t}/v1/ingest (server-error)",
+    "live_evidence": {"replay_key": "kf1", "request": {},
+                      "response": {"status": 500}}}) + "\n")
+(threads_dir / "t-fuzz-blocked-1.json").write_text(json.dumps({
+    "thread_id": "t-fuzz-blocked-1", "asset_id": "a1",
+    "bug_class": "fuzz_blocked", "endpoint": f"https://api.{t}/v1/gateway",
+    "state": "blocked", "pass_variant": 0, "pass_group": "",
+    "confirmed_behavior": "blocked by akamai (403)",
+    "live_evidence": {"replay_key": "kf1", "request": {},
+                      "response": {"status": 403}, "waf": "akamai"}})
+    + "\n")
+
+# Exploitation phase (eval task 10): impact demonstrations from replaying
+# gate-CONFIRMED findings — one crash replay and one data extraction, both
+# reproduced with demonstrated_impact captured.
+sessions = Path(ws) / "state" / "sessions" / t
+sessions.mkdir(parents=True, exist_ok=True)
+exploit_records = [
+    {"schema": "bugwolf/exploit-demonstration/v1",
+     "finding_id": "f-idor-1", "thread_id": "t-idor-1",
+     "bug_class": "idor", "endpoint": f"https://api.{t}/v1/users/1",
+     "replayed_status": 200, "reproduced": True, "replay_key": "kf1",
+     "demonstrated_impact": "{\"id\": \"1\", \"username\": \"alice\", "
+                            "\"role\": \"user\"}"},
+    {"schema": "bugwolf/exploit-demonstration/v1",
+     "finding_id": "f-crash-1", "thread_id": "t-fuzz-crash-1",
+     "bug_class": "fuzz_crash", "endpoint": crash_url,
+     "replayed_status": 500, "reproduced": True, "replay_key": "kf1",
+     "demonstrated_impact": "ingest parser failure"},
+    {"schema": "bugwolf/exploit-demonstration/v1",
+     "kind": "bypass-approval", "candidate_id": "bc-gw-1",
+     "technique": "header-based path access", "approved_by": "operator",
+     "finding_id": "t-fuzz-blocked-1", "thread_id": "t-fuzz-blocked-1",
+     "bug_class": "fuzz_blocked",
+     "endpoint": f"https://api.{t}/v1/gateway",
+     "replayed_status": 200, "reproduced": True, "replay_key": "kf1",
+     "demonstrated_impact": "{\"id\": \"gw-1\", \"role\": \"admin\"}"},
+]
+(sessions / "exploits.jsonl").write_text(
+    "\n".join(json.dumps(r) for r in exploit_records) + "\n")
+PYEOF
 
 # Run the eval FROM THE BUNDLE against the campaign workspace.
 EVAL_FILE="$WORK/eval.json"

@@ -4,6 +4,9 @@
 The analyzer turns source/config signals into findings and defense plans. It
 does not call models, send prompts, connect to MCP servers, open URLs, replay
 OAuth tokens, execute tools, or evaluate jailbreak payloads against a service.
+
+Usage:
+  python3 tools/ai_defense.py --path src/agent.py --output-dir ai-defense-review
 """
 
 from __future__ import annotations

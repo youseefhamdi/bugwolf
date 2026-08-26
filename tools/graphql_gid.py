@@ -24,6 +24,9 @@ validation plans (Account A owns a disposable fixture; Account B replays
 A's *owned* gid). Harvested ids from other users' artifacts are never used
 in validation. Offline by default; the only network step — fetching the
 introspection itself — stays behind ``schema_extractor.py --fetch`` gates.
+
+Usage:
+  python3 tools/graphql_gid.py --target T --introspection recon/T/introspection.json --artifacts recon/T/js recon/T/queries.txt --output-dir recon/T/graphql-gid --json
 """
 
 from __future__ import annotations

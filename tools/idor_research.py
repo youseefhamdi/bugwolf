@@ -14,6 +14,10 @@ style chains), and Android PendingIntent notification hijack.
 It never enumerates users, requests victim data, replays sessions, or
 performs state changes. Plans require two cooperating authorized test
 accounts and disposable fixtures.
+
+Usage:
+  python3 tools/idor_research.py --target T --endpoints-file recon/T/urls.txt --json
+  python3 tools/idor_research.py --target T --bfla --openapi openapi.json --role-sets roles.json --json
 """
 
 from __future__ import annotations

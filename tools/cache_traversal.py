@@ -27,6 +27,10 @@ This track has two modes, matching the project's planner/runner split:
    existing file, and escape above the web root is left as a lab file check.
 
 All requests run through the execution controller as READ actions.
+
+Usage:
+  python3 tools/cache_traversal.py --target T --spec w3tc-page-cache --urls-file recon/T/urls.txt --output-dir recon/T/cache-traversal
+  python3 tools/cache_traversal.py --target T --spec w3tc-page-cache --urls-file U --base-url https://lab --scope-file S --confirm-active --json
 """
 
 from __future__ import annotations

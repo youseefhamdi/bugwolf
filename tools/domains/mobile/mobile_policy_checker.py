@@ -60,12 +60,12 @@ def _repo_root() -> Path:
 _CODE_ROOT = _repo_root()
 if str(_CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(_CODE_ROOT))
-from tools.runtime_paths import workspace_root
+from tools.runtime_paths import target_slug, workspace_root
 
 try:
-    from tools.core.signal_bus import SignalBus
+    from tools.core.signal_bus import SignalBus, publish_or_warn
 except ImportError:  # direct script execution
-    from tools.core.signal_bus import SignalBus
+    from tools.core.signal_bus import SignalBus, publish_or_warn
 
 SCHEMA = "bugwolf/mobile-policy-checker/v1"
 
@@ -304,8 +304,8 @@ def write_result(result: PolicyCheckResult, *, project_root: Optional[str] = Non
         root = Path(base_dir)
     else:
         root = workspace_root(project_root)
-    target_slug = re.sub(r"[^\w.-]+", "_", result.target) or "default"
-    out_dir = root / "recon" / target_slug / "discovery"
+    target_dir = target_slug(result.target)
+    out_dir = root / "recon" / target_dir / "discovery"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "mobile-policy-check.json"
     out.write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True))
@@ -351,18 +351,13 @@ def main() -> int:
                        base_dir=args.base_dir)
 
     high = [f for f in result.findings if f.severity == "high"]
-    if high:
-        try:
-            bus = SignalBus(args.target,
-                            project_root=args.project_root or args.base_dir)
-            for finding in high:
-                bus.publish("MOBILE_CANDIDATE", source="mobile_policy_checker",
-                            payload={"check": finding.check,
-                                     "component": finding.component,
-                                     "detail": finding.detail})
-        except Exception as exc:  # advisory, never a gate
-            print(f"[!] signal publish skipped: {type(exc).__name__}: {exc}",
-                  file=sys.stderr)
+    for finding in high:
+        publish_or_warn(args.target, "MOBILE_CANDIDATE",
+                        source="mobile_policy_checker",
+                        payload={"check": finding.check,
+                                 "component": finding.component,
+                                 "detail": finding.detail},
+                        project_root=args.project_root, base_dir=args.base_dir)
 
     if args.json:
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))

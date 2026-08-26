@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 try:
-    from tools.runtime_paths import CODE_ROOT, workspace_root
+    from tools.runtime_paths import CODE_ROOT, target_slug, workspace_root
 except ImportError:  # direct script execution
     from runtime_paths import CODE_ROOT, workspace_root
 
@@ -408,8 +408,7 @@ def save_cache(target: str, mode: str, words: List[str],
     path, so fuzz phases always read the freshest list for a target.
     """
     root = cache_root or (ROOT / "research")
-    safe = re.sub(r"[^\w.\-]+", "_", (target or "default"))
-    d = root / safe / "wordlists"
+    d = root / target_slug(target) / "wordlists"
     d.mkdir(parents=True, exist_ok=True)
     fname = d / f"{mode}.txt"
     fname.write_text("\n".join(words) + ("\n" if words else ""))

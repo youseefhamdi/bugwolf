@@ -45,12 +45,12 @@ def _repo_root() -> Path:
 _CODE_ROOT = _repo_root()
 if str(_CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(_CODE_ROOT))
-from tools.runtime_paths import workspace_root
+from tools.runtime_paths import target_slug, workspace_root
 
 try:
-    from tools.core.signal_bus import SignalBus, AUTH_CANDIDATE
+    from tools.core.signal_bus import SignalBus, AUTH_CANDIDATE, publish_or_warn
 except ImportError:  # direct script execution
-    from tools.core.signal_bus import SignalBus, AUTH_CANDIDATE
+    from tools.core.signal_bus import SignalBus, AUTH_CANDIDATE, publish_or_warn
 
 SCHEMA = "bugwolf/jwt-forgery/v1"
 
@@ -226,8 +226,8 @@ def write_analysis(analysis: JwtAnalysis, *, project_root: Optional[str] = None,
         root = Path(base_dir)
     else:
         root = workspace_root(project_root)
-    target_slug = re.sub(r"[^\w.-]+", "_", analysis.target) or "default"
-    out_dir = root / "research" / target_slug / "auth"
+    target_dir = target_slug(analysis.target)
+    out_dir = root / "research" / target_dir / "auth"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "jwt-forgery-plans.json"
     out_path.write_text(json.dumps(analysis.to_dict(), indent=2) + "\n",
@@ -255,7 +255,7 @@ def main() -> int:
         path = Path(args.tokens_file)
         if not path.is_file():
             path = workspace_root(args.project_root) / "recon" / \
-                re.sub(r"[^\w.-]+", "_", args.target) / "jwts.txt"
+                target_slug(args.target) / "jwts.txt"
         if path.is_file():
             tokens.extend(line.strip() for line in path.read_text().splitlines()
                           if line.strip())
@@ -273,16 +273,14 @@ def main() -> int:
     out_path = write_analysis(analysis, project_root=args.project_root)
 
     if findings:
-        try:
-            bus = SignalBus(args.target, project_root=args.project_root)
-            for finding in findings:
-                bus.publish(AUTH_CANDIDATE, source="jwt_forgery",
-                            payload={"token_hash": finding.token_hash,
-                                     "alg": finding.alg,
-                                     "plan_classes": [p["class"]
-                                                      for p in finding.plans]})
-        except Exception:
-            pass  # event bus is advisory
+        for finding in findings:
+            publish_or_warn(
+                args.target, AUTH_CANDIDATE, source="jwt_forgery",
+                payload={"token_hash": finding.token_hash,
+                         "alg": finding.alg,
+                         "plan_classes": [p["class"]
+                                          for p in finding.plans]},
+                project_root=args.project_root)
 
     output = {
         "schema": SCHEMA,

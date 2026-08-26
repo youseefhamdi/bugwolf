@@ -27,7 +27,7 @@ from enum import Enum
 from collections import defaultdict
 
 try:
-    from tools.runtime_paths import CODE_ROOT, workspace_root
+    from tools.runtime_paths import CODE_ROOT, target_slug, workspace_root
 except ImportError:  # direct script execution
     from runtime_paths import CODE_ROOT, workspace_root
 
@@ -225,8 +225,7 @@ class CapabilityRegistry:
 
     def __init__(self, target: str):
         self.target = target
-        safe = target.replace("/", "_").replace(":", "_").replace("*", "WILDCARD")
-        self._dir = REGISTRY_DIR / safe
+        self._dir = REGISTRY_DIR / target_slug(target)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._caps_file = self._dir / "capabilities.json"
         self._chains_file = self._dir / "chains.json"

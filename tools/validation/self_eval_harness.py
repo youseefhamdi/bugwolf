@@ -55,12 +55,12 @@ def _repo_root() -> Path:
 _CODE_ROOT = _repo_root()
 if str(_CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(_CODE_ROOT))
-from tools.runtime_paths import workspace_root
+from tools.runtime_paths import target_slug, workspace_root
 
 try:
-    from tools.core.signal_bus import SignalBus
+    from tools.core.signal_bus import SignalBus, publish_or_warn
 except ImportError:  # direct script execution
-    from tools.core.signal_bus import SignalBus
+    from tools.core.signal_bus import SignalBus, publish_or_warn
 
 SCHEMA = "bugwolf/self-eval-harness/v1"
 
@@ -141,7 +141,7 @@ def evaluate(target: str, *, project_root: Optional[str] = None,
         root = Path(base_dir)
     else:
         root = workspace_root(project_root)
-    slug = re.sub(r"[^\w.-]+", "_", target or "default") or "default"
+    slug = target_slug(target)
     recon = root / "recon" / slug
     research = root / "research" / slug
     state = root / "state"
@@ -333,6 +333,291 @@ def evaluate(target: str, *, project_root: Optional[str] = None,
     )
     report.tasks.append(t6)
 
+    # ---- Task 7: test-time compute (pass@k) + model routing (U4/U5) ------
+    campaigns = state / "campaigns" / slug
+    threads: List[Dict[str, Any]] = []
+    if campaigns.is_dir():
+        for tf in sorted(campaigns.glob("threads/*.json")):
+            try:
+                data = json.loads(tf.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if isinstance(data, dict):
+                threads.append(data)
+    variants = [t for t in threads
+                if int(t.get("pass_variant", 0) or 0) >= 1]
+    groups: Dict[str, int] = {}
+    for t in threads:
+        grp = str(t.get("pass_group") or "")
+        if grp:
+            groups[grp] = groups.get(grp, 0) + 1
+    shared_group = any(count >= 2 for count in groups.values())
+    routing: List[str] = []
+    audit_path = campaigns / "audit.jsonl"
+    if _nonempty(audit_path):
+        try:
+            for line in audit_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                rec = json.loads(line)
+                if rec.get("event") == "unit_routed":
+                    data = rec.get("data") or {}
+                    tier = data.get("model_tier")
+                    if tier:
+                        routing.append(str(tier))
+        except (json.JSONDecodeError, OSError):
+            pass
+    tiers = set(routing)
+    t7 = EvalTask(
+        task_id="test-time-compute-routing",
+        title="pass@k variants and model routing exercised (U4/U5)",
+        setting="synthetic-lab",
+        handed_to_agent="campaign dispatched with --pass-at-k/--deep-dive "
+                        "and advisory model-routing hints",
+        who_confirms="deterministic",
+        milestones=[
+            Milestone("variants-spawned",
+                      "at least one deep-dive variant thread "
+                      "(pass_variant >= 1)", bool(variants)),
+            Milestone("variant-groups",
+                      "variant threads share a pass_group (>= 2 members)",
+                      shared_group),
+            Milestone("routing-recorded",
+                      "unit_routed audit records carry a model tier",
+                      bool(routing)),
+            Milestone("routing-diverse",
+                      "at least two distinct model tiers were routed",
+                      len(tiers) >= 2),
+        ],
+    )
+    report.tasks.append(t7)
+
+    # ---- Task 8: live execution loop (Phase 3) ---------------------------
+    # Probe evidence is host-keyed (state/sessions/<host>/probes.jsonl), so
+    # aggregate every host the campaign actually probed.
+    probe_records: List[Dict[str, Any]] = []
+    sessions_dir = state / "sessions"
+    if sessions_dir.is_dir():
+        for probes_file in sorted(sessions_dir.glob("*/probes.jsonl")):
+            if not _nonempty(probes_file):
+                continue
+            try:
+                for line in probes_file.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        probe_records.append(json.loads(line))
+            except (json.JSONDecodeError, OSError):
+                continue
+
+    def _probe_verdict(rec: Dict[str, Any]) -> str:
+        """Deterministic verdict for a persisted probe record.
+
+        Mirrors ``tools.core.live_executor.classify_probe`` so the eval
+        scores the same verdicts the live loop itself produced (a generic
+        header fingerprint like ``unexpected-server-header`` is not a
+        signal; only strong anomalies and bug-class confirmations are).
+        """
+        if rec.get("transport_error") or rec.get("timed_out"):
+            return "error"
+        if rec.get("blocked") or rec.get("waf_detected"):
+            return "blocked"
+        signals = rec.get("signals") or []
+        if any(s.startswith(("error-body", "server-error", "timing-anomaly",
+                             "large-response", "rate-limited"))
+               for s in signals):
+            return "signal"
+        bc = str((rec.get("spec") or {}).get("bug_class") or "").lower()
+        if bc in ("idor", "auth_bypass", "mass_assignment") \
+                and rec.get("status") in (200, 201):
+            return "signal"
+        return "clean"
+
+    verdicts = {_probe_verdict(r) for r in probe_records}
+    reproducible = [
+        r for r in probe_records
+        if (r.get("evidence") or {}).get("request")
+        and (r.get("evidence") or {}).get("replay_key")
+    ]
+    t8 = EvalTask(
+        task_id="live-execution-loop",
+        title="Live execution loop probed, adapted, and recorded evidence",
+        setting="live-bounty",
+        handed_to_agent="campaign run with --live-run: real HTTP probes against "
+                        "the target with recorded request/response evidence",
+        who_confirms="deterministic",
+        milestones=[
+            Milestone("probes-recorded",
+                      "probe evidence persisted (state/sessions/*/probes.jsonl)",
+                      bool(probe_records)),
+            Milestone("probe-count", "at least 3 live probes recorded",
+                      len(probe_records) >= 3),
+            Milestone("adaptation",
+                      "probes produced more than one verdict (the loop adapted "
+                      "to signal/clean/blocked/error, not a single canned reply)",
+                      len(verdicts) >= 2),
+            Milestone("reproducible-evidence",
+                      "probes carry replayable request/response evidence "
+                      "(replay_key)", bool(reproducible)),
+        ],
+    )
+    report.tasks.append(t8)
+
+    # ---- Task 9: fuzz-to-thread cycle (Phase 3) ---------------------------
+    # Fuzz runs persist under state/fuzz/<target>/runs.jsonl; the threads
+    # spawned from their crash/timeout/anomaly evidence live in the campaign
+    # thread set (bug_class fuzz_*), and the loop re-probes each one with the
+    # crashing URL so the crash reproduces.
+    fuzz_runs: List[Dict[str, Any]] = []
+    fuzz_dir = state / "fuzz" / slug
+    if fuzz_dir.is_dir():
+        for run_file in sorted(fuzz_dir.glob("runs.jsonl")):
+            if not _nonempty(run_file):
+                continue
+            try:
+                for line in run_file.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        fuzz_runs.append(json.loads(line))
+            except (json.JSONDecodeError, OSError):
+                continue
+    ran_with_mutations = any(int(r.get("mutations_run") or 0) >= 1
+                             for r in fuzz_runs)
+    fuzz_signals = [
+        obs for run in fuzz_runs for obs in (run.get("observations") or [])
+        if obs.get("state") in ("crash", "timeout", "anomaly", "blocked")
+    ]
+    fuzz_threads = [t for t in threads
+                    if str(t.get("bug_class") or "").startswith("fuzz_")]
+    keys = {(str(t.get("endpoint") or ""), str(t.get("bug_class") or ""))
+            for t in fuzz_threads}
+    deduped = len(keys) == len(fuzz_threads)
+
+    def _reproduced(t: Dict[str, Any]) -> bool:
+        """A spawned fuzz thread reproduced when it COMPLETED with recorded
+        fuzz evidence and its confirmed behavior names the 5xx crash."""
+        if t.get("state") != "complete":
+            return False
+        if not (t.get("live_evidence") or {}).get("replay_key"):
+            return False
+        behavior = str(t.get("confirmed_behavior") or "")
+        return any(s in behavior for s in ("500", "502", "503", "504"))
+
+    reproduced = [t for t in fuzz_threads if _reproduced(t)]
+    crash_threads = [t for t in fuzz_threads
+                     if str(t.get("bug_class") or "") == "fuzz_crash"]
+    # Crash reproduction is only measurable when crashes were found; a
+    # blocked/timeout-only cycle (bypass spawns, nothing to 5xx-reproduce)
+    # passes the rate vacuously.
+    rate_ok = (len(crash_threads) > 0
+               and len(reproduced) * 2 >= len(crash_threads)) \
+        or (len(fuzz_threads) > 0 and not crash_threads)
+    t9 = EvalTask(
+        task_id="fuzz-to-thread-cycle",
+        title="Fuzz signals spawned threads that reproduced, deduped",
+        setting="live-bounty",
+        handed_to_agent="--live-run with --fuzz-budget N: coverage-aware fuzz "
+                        "pass; every crash/timeout/anomaly spawns a thread "
+                        "targeting that endpoint with recorded evidence",
+        who_confirms="deterministic",
+        milestones=[
+            Milestone("fuzz-ran",
+                      "fuzz runs persisted with mutations executed "
+                      "(state/fuzz/<target>/runs.jsonl)", ran_with_mutations),
+            Milestone("signals-recorded",
+                      "fuzz runs recorded crash/timeout/anomaly/blocked "
+                      "observations", bool(fuzz_signals)),
+            Milestone("spawn-count",
+                      "fuzz evidence spawned research threads (bug_class "
+                      "fuzz_*, incl. fuzz_blocked bypass threads)",
+                      bool(fuzz_threads)),
+            Milestone("reproduction-rate",
+                      "at least half of the spawned fuzz_crash threads "
+                      "reproduced the crash (COMPLETE + recorded evidence + "
+                      "5xx in confirmed behavior); vacuous for "
+                      "blocked/timeout-only cycles", rate_ok),
+            Milestone("dedup",
+                      "spawned fuzz threads are unique per (endpoint, fuzz "
+                      "state)", deduped),
+        ],
+    )
+    report.tasks.append(t9)
+
+    # ---- Task 10: exploitation phase (Phase 3) ---------------------------
+    # The live loop replays every gate-CONFIRMED finding's recorded request
+    # via execute_exploit; the impact demonstrations land in
+    # state/sessions/<target>/exploits.jsonl.
+    exploit_records: List[Dict[str, Any]] = []
+    exploits_file = state / "sessions" / slug / "exploits.jsonl"
+    if _nonempty(exploits_file):
+        try:
+            for line in exploits_file.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    exploit_records.append(json.loads(line))
+        except (json.JSONDecodeError, OSError):
+            pass
+    reproduced = [r for r in exploit_records if r.get("reproduced")]
+    rate_ok = len(exploit_records) > 0 \
+        and len(reproduced) * 2 >= len(exploit_records)
+    impact = [r for r in exploit_records
+              if str(r.get("demonstrated_impact") or "").strip()]
+    # Bypass-approval exploitation: a fuzz_blocked thread is only exploitable
+    # after an OPERATOR approves a quarantined failure-learning candidate.
+    # The milestone holds when an approved candidate exists AND at least one
+    # bypass-approval exploit record (the approved payload replayed against
+    # the blocked endpoint) got through the defense with demonstrated impact.
+    approved_candidates: List[Dict[str, Any]] = []
+    learning_file = research / "learning" / "failure-bypass-candidates.json"
+    if _nonempty(learning_file):
+        try:
+            learning = json.loads(learning_file.read_text(encoding="utf-8"))
+            approved_candidates = [
+                c for c in learning.get("candidates", [])
+                if c.get("status") == "approved"
+            ]
+        except (json.JSONDecodeError, OSError):
+            pass
+    bypass_exploits = [r for r in exploit_records
+                       if r.get("kind") == "bypass-approval"]
+    fuzz_blocked_threads = [t for t in threads
+                            if str(t.get("bug_class") or "") == "fuzz_blocked"]
+    # Vacuous pass when no bypass thread ever arose (nothing to approve);
+    # otherwise the milestone holds only with an approval + reproduced
+    # bypass exploit carrying demonstrated impact.
+    bypass_ok = (len(fuzz_blocked_threads) == 0) or (
+        len(approved_candidates) >= 1
+        and any(r.get("reproduced") for r in bypass_exploits)
+        and any(str(r.get("demonstrated_impact") or "").strip()
+                for r in bypass_exploits))
+    t10 = EvalTask(
+        task_id="exploitation-phase",
+        title="Gate-CONFIRMED findings exploited with recorded impact",
+        setting="live-bounty",
+        handed_to_agent="--live-run with exploitation enabled (default): "
+                        "every gate-CONFIRMED finding's recorded request is "
+                        "replayed via execute_exploit; fuzz_blocked bypass "
+                        "threads are exploited once the operator approves a "
+                        "quarantined failure-learning candidate",
+        who_confirms="deterministic",
+        milestones=[
+            Milestone("exploits-recorded",
+                      "impact demonstrations persisted "
+                      "(state/sessions/<target>/exploits.jsonl)",
+                      bool(exploit_records)),
+            Milestone("reproduction-rate",
+                      "at least half of the recorded exploits reproduced "
+                      "(same input, second recorded response)", rate_ok),
+            Milestone("impact-recorded",
+                      "at least one exploit record captures "
+                      "demonstrated_impact (the data the replay actually "
+                      "returned)", bool(impact)),
+            Milestone("bypass-approval-exploited",
+                      "a fuzz_blocked thread was exploited after the operator "
+                      "approved a quarantined bypass candidate: approved "
+                      "candidate in the failure-learning ledger + reproduced "
+                      "bypass-approval exploit with demonstrated_impact",
+                      bypass_ok),
+        ],
+    )
+    report.tasks.append(t10)
+
     return report
 
 
@@ -363,15 +648,11 @@ def main() -> int:
     out = write_report(report, project_root=args.project_root,
                        base_dir=args.base_dir)
 
-    try:
-        bus = SignalBus(args.target,
-                        project_root=args.project_root or args.base_dir)
-        bus.publish("EVAL_COMPLETE", source="self_eval_harness",
+    publish_or_warn(args.target, "EVAL_COMPLETE",
+                    source="self_eval_harness",
                     payload={"score_pct": report.to_dict()["score_pct"],
-                             "target": args.target})
-    except Exception as exc:  # advisory, never a gate
-        print(f"[!] signal publish skipped: {type(exc).__name__}: {exc}",
-              file=sys.stderr)
+                             "target": args.target},
+                    project_root=args.project_root, base_dir=args.base_dir)
 
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))

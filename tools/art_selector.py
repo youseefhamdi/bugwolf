@@ -38,6 +38,9 @@ ART4SQLi token space instead.
 
 Everything here is offline-only and deterministic (a fixed ``seed`` replaces
 the paper's RNG, and ``mutation_id`` hashes drive candidate-set draws).
+
+Usage:
+  python3 tools/art_selector.py --input mutations.jsonl --budget 100 --fixed-size 10 --json
 """
 
 from __future__ import annotations

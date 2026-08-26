@@ -29,7 +29,7 @@ from dataclasses import dataclass, field, asdict
 from collections import defaultdict
 
 try:
-    from tools.runtime_paths import CODE_ROOT, workspace_root
+    from tools.runtime_paths import CODE_ROOT, target_slug, workspace_root
 except ImportError:  # direct script execution
     from runtime_paths import CODE_ROOT, workspace_root
 
@@ -128,8 +128,7 @@ class TrustMap:
 
     def __init__(self, target: str):
         self.target = target
-        safe = target.replace("/", "_").replace(":", "_").replace("*", "WILDCARD")
-        self._dir = TRUST_MAP_DIR / safe
+        self._dir = TRUST_MAP_DIR / target_slug(target)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._nodes_file = self._dir / "nodes.json"
         self._edges_file = self._dir / "edges.json"

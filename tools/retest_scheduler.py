@@ -46,9 +46,9 @@ except ImportError:  # direct script execution
     )
 
 try:
-    from tools.runtime_paths import CODE_ROOT, workspace_root
+    from tools.runtime_paths import CODE_ROOT, target_slug, workspace_root
 except ImportError:  # direct script execution
-    from runtime_paths import CODE_ROOT, workspace_root
+    from runtime_paths import CODE_ROOT, target_slug, workspace_root
 
 ROOT = workspace_root()
 sys.path.insert(0, str(CODE_ROOT))
@@ -58,7 +58,7 @@ RETEST_DIR = ROOT / "state" / "retest"
 
 def _target_key(target: str) -> str:
     """Use one validated filename key for all scheduler state."""
-    return safe_target_name(target).replace(":", "_")
+    return target_slug(target)
 
 
 class _PublicRedirectHandler(HTTPRedirectHandler):
@@ -135,7 +135,7 @@ def fetch_scope_hash(scope_urls: List[str]) -> str:
 
 def check_scope_changes(target: str, config: WatchConfig) -> List[RetestJob]:
     """Compare current scope hash to stored hash. If changed, create retest jobs."""
-    safe_target_name(target)
+
     if not config.scope_file:
         raise AuthorizationError("scope monitoring requires an authorized scope file")
     require_authorized_target(target, config.scope_file, active=False)
@@ -217,7 +217,7 @@ def fetch_recent_cves(keywords: List[str], days_back: int = 7) -> List[Dict]:
 
 def check_cves(target: str, config: WatchConfig) -> List[RetestJob]:
     """Check for new CVEs matching the target's tech stack."""
-    safe_target_name(target)
+
     cve_file = RETEST_DIR / f"{_target_key(target)}-cve-checkpoint.json"
     last_check = None
     if cve_file.exists():
@@ -292,7 +292,7 @@ def check_dependency_changes(target: str, config: WatchConfig) -> List[RetestJob
 
 def create_periodic_job(target: str, config: WatchConfig) -> List[RetestJob]:
     """Create a periodic retest job if enough time has passed."""
-    safe_target_name(target)
+
     periodic_file = RETEST_DIR / f"{_target_key(target)}-last-periodic.txt"
 
     should_run = True
@@ -321,7 +321,7 @@ def create_periodic_job(target: str, config: WatchConfig) -> List[RetestJob]:
 # ---------------------------------------------------------------------------
 
 def load_config(target: str) -> WatchConfig:
-    safe_target_name(target)
+
     cfg_file = RETEST_DIR / f"{_target_key(target)}-watch.json"
     if cfg_file.exists():
         data = json.loads(cfg_file.read_text())
@@ -330,7 +330,7 @@ def load_config(target: str) -> WatchConfig:
 
 
 def save_config(target: str, config: WatchConfig):
-    safe_target_name(target)
+
     RETEST_DIR.mkdir(parents=True, exist_ok=True)
     cfg_file = RETEST_DIR / f"{_target_key(target)}-watch.json"
     cfg_file.write_text(json.dumps(asdict(config), indent=2))
@@ -378,7 +378,7 @@ def execute_job(job: RetestJob, scope_file: Optional[str] = None) -> Dict:
     try:
         selected_scope = scope_file or job.scope_file
         require_authorized_target(job.target, selected_scope, active=False)
-        safe_target_name(job.target)
+        target_slug(job.target)
     except AuthorizationError as exc:
         return {"success": False, "authorization_denied": True,
                 "error": f"Authorization denied: {exc}"}

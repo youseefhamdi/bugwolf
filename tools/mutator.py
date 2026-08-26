@@ -8,6 +8,9 @@ discovery scheduler's job, and only through the authorization controller.
 
 The mutator is deliberately differential-first: every mutation changes
 exactly one variable so an observation can always be attributed.
+
+Usage:
+  python3 tools/mutator.py --target T --recon-dir recon/T --output recon/T/discovery/mutations.jsonl --json
 """
 
 from __future__ import annotations

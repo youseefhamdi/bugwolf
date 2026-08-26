@@ -46,7 +46,7 @@ def _repo_root() -> Path:
 _CODE_ROOT = _repo_root()
 if str(_CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(_CODE_ROOT))
-from tools.runtime_paths import workspace_root
+from tools.runtime_paths import target_slug, workspace_root
 
 try:
     from tools.core.signal_bus import SignalBus, WAF_BLOCKED
@@ -214,7 +214,7 @@ def load_stack_fingerprint(target: str, *, project_root: Optional[str] = None,
         root = Path(base_dir)
     else:
         root = workspace_root(project_root)
-    path = root / "recon" / (re.sub(r"[^\w.-]+", "_", target) or "default") / \
+    path = root / "recon" / (target_slug(target) or "default") / \
         "tech-fingerprint.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -278,8 +278,8 @@ def write_payloads(payload_set: WafPayloadSet, *, project_root: Optional[str] = 
         root = Path(base_dir)
     else:
         root = workspace_root(project_root)
-    target_slug = re.sub(r"[^\w.-]+", "_", payload_set.target) or "default"
-    out_dir = root / "research" / target_slug / "bypass"
+    target_dir = target_slug(payload_set.target)
+    out_dir = root / "research" / target_dir / "bypass"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"waf-payloads-{_slugify(payload_set.stack)}.json"
     out_path.write_text(json.dumps(payload_set.to_dict(), indent=2) + "\n",

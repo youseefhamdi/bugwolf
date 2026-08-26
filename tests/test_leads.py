@@ -322,5 +322,87 @@ class TestPromotion(LeadTestCase):
         self.assertEqual(lead.state, "FINDING")
 
 
+from tools.leads import (
+    derive_data_unlock_classes, chain_hypotheses_from_exploit,
+)
+
+
+class TestExploitChainHypotheses(unittest.TestCase):
+    """Exploit feedback: demonstrated impact → new chain hypotheses."""
+
+    LAB_USER = ('{"id": "1", "username": "alice",'
+                ' "email": "alice@vulnbank.local",'
+                ' "role": "user", "balance": 100}')
+
+    def test_financial_fields_unlock_business_logic(self):
+        classes = derive_data_unlock_classes(
+            '{"balance": 100, "amount": 5}')
+        self.assertIn("business-logic", [c for c, _ in classes])
+
+    def test_credentials_unlock_account_takeover(self):
+        classes = derive_data_unlock_classes(
+            '{"password": "hunter2", "token": "eyJ..."}')
+        names = [c for c, _ in classes]
+        self.assertIn("account-takeover", names)
+        self.assertIn("api-key-exposure", names)
+
+    def test_role_fields_unlock_privilege_escalation(self):
+        classes = derive_data_unlock_classes(
+            '{"role": "admin", "is_admin": true}')
+        names = [c for c, _ in classes]
+        self.assertIn("privilege-escalation-web", names)
+
+    def test_pii_unlocks_mass_data_breach(self):
+        classes = derive_data_unlock_classes(
+            '{"email": "x@y.z", "ssn": "123-45-6789"}')
+        names = [c for c, _ in classes]
+        self.assertIn("mass-data-breach", names)
+
+    def test_empty_impact_falls_back_to_source_class_edges(self):
+        classes = derive_data_unlock_classes("", source_class="idor")
+        names = [c for c, _ in classes]
+        # idor feeds mass-assignment / privilege-escalation-web / info-disclosure.
+        self.assertIn("mass-assignment", names)
+        self.assertIn("privilege-escalation-web", names)
+
+    def test_deterministic_and_capped(self):
+        first = chain_hypotheses_from_exploit(
+            self.LAB_USER, {"finding_id": "f1", "bug_class": "idor",
+                            "endpoint": "/api/users/1", "severity": "high"})
+        second = chain_hypotheses_from_exploit(
+            self.LAB_USER, {"finding_id": "f1", "bug_class": "idor",
+                            "endpoint": "/api/users/1", "severity": "high"})
+        self.assertEqual([r["lead_id"] for r in first],
+                         [r["lead_id"] for r in second])
+        self.assertLessEqual(len(first), 3)
+        self.assertGreaterEqual(len(first), 1)
+
+    def test_records_are_chain_orchestrator_consumable(self):
+        records = chain_hypotheses_from_exploit(
+            self.LAB_USER, {"finding_id": "f1", "bug_class": "idor",
+                            "endpoint": "/api/users/1", "method": "GET",
+                            "severity": "high", "target": "t9.example.com"})
+        for record in records:
+            self.assertEqual(record["schema"],
+                             "bugwolf/exploit-chain-hypothesis/v1")
+            self.assertTrue(record["lead_id"])
+            self.assertTrue(record["bug_class"])
+            self.assertEqual(record["evidence_state"], "hypothesis")
+            self.assertEqual(record["state"], "OPEN")
+            self.assertEqual(record["source"], "exploit-feedback")
+            self.assertEqual(record["chain_partners"], ["f1"])
+            self.assertIn("balance", record["impact_trace"])
+        # The lab record carries role/email/balance -> the three unlocks.
+        names = {r["bug_class"] for r in records}
+        self.assertIn("business-logic", names)
+        self.assertIn("privilege-escalation-web", names)
+        self.assertIn("mass-data-breach", names)
+
+    def test_no_impact_and_unknown_class_yields_nothing(self):
+        records = chain_hypotheses_from_exploit(
+            "", {"finding_id": "f1", "bug_class": "no-such-class"})
+        self.assertEqual(records, [])
+
+
 if __name__ == "__main__":
     unittest.main()

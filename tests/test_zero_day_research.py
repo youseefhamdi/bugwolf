@@ -70,8 +70,10 @@ class TestExecutionController(unittest.TestCase):
                                          lambda: self.fail("dry run executed"))
         self.assertIsNone(result)
         self.assertFalse(receipt.executed)
-        # UNCENSORED: DESTRUCTIVE action always authorized
-        controller.authorize(ActionClass.DESTRUCTIVE, "https://example.com/api")
+        # Operational allowlist: destructive is outside the enabled action set,
+        # so the controller refuses it with an explicit budget/action denial.
+        with self.assertRaises(ExecutionDenied):
+            controller.authorize(ActionClass.DESTRUCTIVE, "https://example.com/api")
 
     def test_out_of_scope_always_permitted(self):
         policy = ExecutionPolicy(
@@ -114,14 +116,17 @@ class TestExecutionController(unittest.TestCase):
         p3 = ExecutionPolicy(target="example.com", scope_file=str(self.scope), min_interval_seconds=-0.5)
         self.assertEqual(p3.min_interval_seconds, -0.5)
 
-    def test_all_actions_always_permitted(self):
-        """UNCENSORED: any action class always authorized regardless of allowed_actions."""
+    def test_action_allowlist_is_operationally_enforced_without_scope_gates(self):
+        """The allowlist is an operational budget, not an authorization gate:
+        URL/scope are never checked, but a disabled action class is refused."""
         policy = ExecutionPolicy(
             target="example.com", scope_file=str(self.scope),
             allowed_actions={ActionClass.READ},
         )
         controller = ActiveExecutionController(policy)
-        controller.authorize(ActionClass.ACTIVE, "https://example.com/api")  # uncensored: always passes
+        controller.authorize(ActionClass.READ, "https://evil.test/api")  # no scope gate
+        with self.assertRaises(ExecutionDenied):
+            controller.authorize(ActionClass.ACTIVE, "https://evil.test/api")
 
     def test_dry_run_does_not_execute_operation_and_returns_none_result(self):
         """When dry_run=True, run() must not call the operation and must return None."""
@@ -669,6 +674,283 @@ class TestResearchEngine(unittest.TestCase):
             self.assertNotIn("zero-day", result.title.lower())
         finally:
             shutil.rmtree(Path("state/research") / target, ignore_errors=True)
+
+
+class TestNovelClassModes(unittest.TestCase):
+    """Phase 3: diff-analysis, anomaly detection, state-machine probing."""
+
+    def setUp(self):
+        self.target = "novel-class-" + uuid.uuid4().hex[:10]
+        self.engine = ZeroDayResearchEngine(self.target)
+        self.addCleanup(
+            lambda: shutil.rmtree(Path("state/research") / self.target,
+                                  ignore_errors=True))
+
+    def test_diff_analysis_flags_divergent_endpoint(self):
+        snaps = [
+            {"endpoint": "/api/users/1", "status": 200, "body": "alice"},
+            {"endpoint": "/api/users/1", "status": 403, "body": "denied"},
+            {"endpoint": "/api/users/2", "status": 200, "body": "bob"},
+            {"endpoint": "/api/users/2", "status": 200, "body": "bob"},
+        ]
+        found = self.engine.diff_analysis_mode(snaps)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].bug_class, "behavior_differential")
+        self.assertIn("/api/users/1", found[0].location)
+
+    def test_diff_analysis_ignores_identical_endpoints(self):
+        snaps = [
+            {"endpoint": "/a", "status": 200, "body": "x"},
+            {"endpoint": "/a", "status": 200, "body": "x"},
+        ]
+        self.assertEqual(self.engine.diff_analysis_mode(snaps), [])
+
+    def test_diff_analysis_with_live_probe(self):
+        class FakeProbe:
+            status = 500
+            response_body = "boom"
+        found = self.engine.diff_analysis_mode(
+            [{"endpoint": "/x", "status": 200, "body": "old"},
+             {"endpoint": "/x", "status": 200, "body": "old"}],
+            probe=lambda ep: FakeProbe())
+        self.assertEqual(len(found), 1)  # live probe diverged from recorded
+
+    def test_anomaly_detection_flags_status_and_timing(self):
+        found = self.engine.anomaly_detection_mode([
+            {"endpoint": "/a", "status": 200, "elapsed_ms": 50.0},
+            {"endpoint": "/a", "status": 500, "elapsed_ms": 3000.0,
+             "headers": {"Server": "nginx"},
+             "body": "Traceback (most recent call last)"},
+        ])
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].bug_class, "anomaly")
+        reasons = " ".join(found[0].metadata["reasons"])
+        self.assertIn("status 500", reasons)
+        self.assertIn("timing", reasons)
+        self.assertIn("unexpected header server", reasons)
+        self.assertIn("error-pattern", reasons)
+
+    def test_anomaly_detection_ignores_baseline_normal(self):
+        found = self.engine.anomaly_detection_mode([
+            {"endpoint": "/a", "status": 200, "elapsed_ms": 10.0},
+        ])
+        self.assertEqual(found, [])
+
+    def test_anomaly_mode_consumes_explicit_fuzz_signal_reason(self):
+        # A fuzz observation with no status/timing delta still surfaces when
+        # it carries the deterministic fuzz classifier's signal.
+        found = self.engine.anomaly_detection_mode([
+            {"endpoint": "/a", "status": 200, "elapsed_ms": 10.0,
+             "signal": "server error 500 on probe input"},
+        ])
+        self.assertEqual(len(found), 1)
+        reasons = " ".join(found[0].metadata["reasons"])
+        self.assertIn("server error 500", reasons)
+
+    def test_fuzz_signals_feed_anomaly_and_diff_modes(self):
+        fuzz_obs = [
+            {"mutation_id": "m1", "kind": "injection",
+             "url": "https://api.test/v1/users?q='", "method": "GET",
+             "status": 500, "elapsed_ms": 30.0, "state": "crash",
+             "signal": "server error 500 on probe input",
+             "evidence": {"replay_key": "k1",
+                          "response": {"status": 500, "body": "boom",
+                                       "headers": {}}}},
+            {"mutation_id": "m2", "kind": "boundary",
+             "url": "https://api.test/v1/login", "method": "POST",
+             "status": 0, "elapsed_ms": 2500.0, "state": "timeout",
+             "signal": "probe timed out (elapsed=2500ms)",
+             "evidence": {"replay_key": "k2",
+                          "response": {"status": 0, "body": "",
+                                       "headers": {}}}},
+        ]
+        found = self.engine.hunt_fuzz_signals(fuzz_obs)
+        classes = {c.bug_class for c in found}
+        # crash + timeout -> anomaly candidates; crash -> behavior delta.
+        self.assertIn("anomaly", classes)
+        self.assertIn("behavior_differential", classes)
+        self.assertGreaterEqual(len(found), 3)
+        for candidate in found:
+            fuzz = candidate.metadata.get("fuzz") or {}
+            self.assertTrue(fuzz.get("replay_key"), candidate.title)
+            self.assertIn("fuzz", candidate.metadata["mode"])
+        # A crash is harder evidence than a bare header fingerprint.
+        crash_anomalies = [c for c in found
+                           if c.metadata["mode"] == "fuzz_anomaly"
+                           and c.metadata["fuzz"]["state"] == "crash"]
+        self.assertTrue(crash_anomalies)
+        self.assertEqual(crash_anomalies[0].confidence, 0.7)
+
+    def test_fuzz_signals_ignore_clean_observations(self):
+        found = self.engine.hunt_fuzz_signals([
+            {"url": "/x", "status": 200, "state": "clean",
+             "signal": "", "evidence": {}},
+        ])
+        self.assertEqual(found, [])
+
+    def test_fuzz_signals_accept_dataclass_shapes(self):
+        # Real FuzzObservation records (tools.core.fuzz_bridge) are dataclass
+        # instances — the feed must duck-type them, not just dicts.
+        from types import SimpleNamespace
+        obs = SimpleNamespace(
+            mutation_id="m9", kind="boundary", url="https://api.test/v1/x",
+            method="GET", status=503, elapsed_ms=20.0, state="crash",
+            signal="server error 503 on probe input",
+            evidence={"replay_key": "k9",
+                      "response": {"status": 503, "body": "down",
+                                   "headers": {}}})
+        found = self.engine.hunt_fuzz_signals([obs])
+        self.assertGreaterEqual(len(found), 2)  # anomaly + behavior delta
+        for candidate in found:
+            self.assertEqual(candidate.metadata["fuzz"]["replay_key"], "k9")
+
+    def test_fuzz_signal_feed_is_deterministic(self):
+        fuzz_obs = [
+            {"mutation_id": "m1", "kind": "injection",
+             "url": "https://api.test/v1/users", "method": "GET",
+             "status": 500, "elapsed_ms": 20.0, "state": "crash",
+             "signal": "server error 500 on probe input",
+             "evidence": {"replay_key": "k1",
+                          "response": {"status": 500, "body": "boom",
+                                       "headers": {}}}},
+        ]
+        a = self.engine.hunt_fuzz_signals(fuzz_obs)
+        b = self.engine.hunt_fuzz_signals(fuzz_obs)
+        self.assertEqual(
+            [(c.title, c.metadata["mode"], c.metadata["fuzz"]["replay_key"])
+             for c in a],
+            [(c.title, c.metadata["mode"], c.metadata["fuzz"]["replay_key"])
+             for c in b])
+
+    def _exploit_impact(self, **overrides):
+        impact = {
+            "finding_id": "f1", "thread_id": "t1", "bug_class": "idor",
+            "endpoint": "/api/users/1", "replayed_status": 200,
+            "reproduced": True, "replay_key": "rk1", "severity": "high",
+            "demonstrated_impact": ('{"id": "1", "username": "alice",'
+                                     ' "role": "user", "balance": 100}'),
+            "chain_hypotheses": [
+                {"bug_class": "privilege-escalation-web", "lead_id": "L1",
+                 "reason": "exposed role/privilege fields unlock privilege "
+                            "escalation"},
+                {"bug_class": "business-logic", "lead_id": "L2",
+                 "reason": "exposed financial fields unlock value "
+                            "manipulation"},
+            ],
+        }
+        impact.update(overrides)
+        return impact
+
+    def test_exploit_feedback_generates_reveal_and_unlock_candidates(self):
+        found = self.engine.hunt_exploit_feedback([self._exploit_impact()])
+        modes = {c.metadata["mode"] for c in found}
+        self.assertIn("exploit_impact", modes)
+        self.assertIn("exploit_unlock", modes)
+        # 1 impact-reveal anomaly + 2 unlock candidates.
+        self.assertEqual(len(found), 3)
+        for candidate in found:
+            self.assertEqual(candidate.metadata["source"],
+                             "exploit-feedback")
+            self.assertEqual(candidate.metadata["exploit"]["finding_id"],
+                             "f1")
+            self.assertEqual(candidate.metadata["exploit"]["replay_key"],
+                             "rk1")
+            self.assertEqual(candidate.confidence, 0.8)
+        unlocks = [c for c in found
+                   if c.metadata["mode"] == "exploit_unlock"]
+        self.assertEqual(
+            {c.bug_class for c in unlocks},
+            {"privilege-escalation-web", "business-logic"})
+        # Impact demonstrated -> impact-bounded -> severity bumped (high->crit).
+        for candidate in unlocks:
+            self.assertEqual(candidate.status.value, "impact_bounded")
+            self.assertEqual(candidate.severity, "critical")
+            self.assertIn("balance", candidate.impact_trace)
+
+    def test_exploit_feedback_refines_novelty_to_human_review(self):
+        # The demonstrated impact proves the impact half: registering the
+        # feed promotes the unlock candidates through the novelty pipeline
+        # (IMPACT_BOUNDED -> NOVELTY_PENDING) with impact evidence, ready
+        # for human review — the refinement the feedback is for.
+        registered = self.engine.register(
+            self.engine.hunt_exploit_feedback([self._exploit_impact()]))
+        unlocks = [c for c in registered
+                   if c.metadata["mode"] == "exploit_unlock"]
+        self.assertTrue(unlocks)
+        for candidate in unlocks:
+            self.assertEqual(candidate.status.value, "novelty_pending")
+            self.assertEqual(candidate.novelty.value, "potentially_novel")
+            self.assertTrue(candidate.has_impact_evidence())
+            self.assertTrue(candidate.can_enter_human_review(),
+                            candidate.title)
+
+    def test_exploit_feedback_skips_unreproduced_and_empty_impact(self):
+        # No reproduced impact with demonstrated data -> no candidates.
+        self.assertEqual(
+            self.engine.hunt_exploit_feedback([
+                self._exploit_impact(reproduced=False),
+                self._exploit_impact(demonstrated_impact=""),
+                self._exploit_impact(endpoint=""),
+            ]), [])
+        # A reproduced impact with data but no derived hypotheses still
+        # yields the impact-reveal anomaly (the unlock list is optional).
+        found = self.engine.hunt_exploit_feedback(
+            [self._exploit_impact(chain_hypotheses=[])])
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].metadata["mode"], "exploit_impact")
+
+    def test_exploit_feedback_dedups_passk_variants(self):
+        # Three pass@k variants of the same finding replay the same endpoint:
+        # one impact-reveal + one candidate per distinct unlock class, not
+        # nine near-identical candidates.
+        variants = [self._exploit_impact(finding_id=f"f{i}")
+                    for i in range(3)]
+        found = self.engine.hunt_exploit_feedback(variants)
+        self.assertEqual(len(found), 3)
+        self.assertEqual(
+            len([c for c in found if c.metadata["mode"] == "exploit_impact"]),
+            1)
+
+    def test_exploit_feedback_is_deterministic(self):
+        impact = self._exploit_impact()
+        a = self.engine.hunt_exploit_feedback([impact])
+        b = self.engine.hunt_exploit_feedback([impact])
+        self.assertEqual(
+            [(c.title, c.metadata["mode"], c.bug_class, c.severity)
+             for c in a],
+            [(c.title, c.metadata["mode"], c.bug_class, c.severity)
+             for c in b])
+
+    def test_state_machine_flags_skipped_step_when_reachable(self):
+        workflow = [
+            {"step": "login", "endpoint": "/login"},
+            {"step": "verify", "endpoint": "/verify"},
+            {"step": "transfer", "endpoint": "/transfer"},
+        ]
+        reached = {"login", "verify", "transfer"}
+        found = self.engine.state_machine_probing(
+            workflow, probe=lambda step: type("P", (), {"status": 200})()
+            if step.get("step") in reached else type("P", (), {"status": 403})())
+        # skip/reorder/repeat all succeed -> candidates generated
+        self.assertGreaterEqual(len(found), 1)
+        self.assertTrue(all(c.bug_class == "business_logic" for c in found))
+        kinds = {c.metadata["kind"] for c in found}
+        self.assertTrue(kinds & {"skip", "reorder", "repeat"})
+
+    def test_state_machine_no_candidates_when_steps_blocked(self):
+        workflow = [{"step": "login", "endpoint": "/login"}]
+        found = self.engine.state_machine_probing(
+            workflow, probe=lambda step: type("P", (), {"status": 403})())
+        self.assertEqual(found, [])
+
+    def test_modes_are_deterministic(self):
+        snaps = [
+            {"endpoint": "/api/users/1", "status": 200, "body": "alice"},
+            {"endpoint": "/api/users/1", "status": 403, "body": "denied"},
+        ]
+        a = self.engine.diff_analysis_mode(snaps)
+        b = self.engine.diff_analysis_mode(snaps)
+        self.assertEqual([c.title for c in a], [c.title for c in b])
 
 
 if __name__ == "__main__":

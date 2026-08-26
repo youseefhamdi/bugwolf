@@ -45,6 +45,7 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sys
@@ -61,10 +62,11 @@ from tools.runtime_paths import workspace_root
 
 from tools.campaign import (
     AssetRecord, AssetStatus, AssetType, CampaignManager, CampaignState,
-    Priority, ResumePoint, ThreadState, safe_target_name,
+    Priority, ResumePoint, ThreatHypothesis, ThreadState,
 )
+from tools.runtime_paths import target_slug
 from tools.asset_discovery import AssetDiscoveryEngine, build_research_unit
-from tools.research_thread import ThreadBuilder
+from tools.research_thread import ThreadBuilder, attach_deterministic_artifacts
 from tools.stage_controller import WorkflowController, WorkflowError
 from tools.research_loop import (
     run_mandatory_research, verify_sequence, ResearchFreshnessError,
@@ -136,16 +138,18 @@ class CampaignOrchestrator:
                  max_concurrent_threads: int = 8,
                  mode: str = "web",
                  modes: Optional[List[str]] = None,
-                 llm_advisor: bool = False):
+                 llm_advisor: bool = False,
+                 pass_at_k: int = 1):
         self.project = workspace_root()
-        self.target = safe_target_name(target).replace(":", "_")[:200]
+        self.target = target_slug(target)
         self.mode = mode or "web"
         self.modes = [m.strip() for m in (modes or self.mode.split(",")) if m.strip()] \
             or ["web"]
         self.llm_advisor = llm_advisor
+        self.pass_at_k = max(1, int(pass_at_k or 1))
         self.campaign = CampaignManager(target)
         self.discovery = AssetDiscoveryEngine(target)
-        self.threads = ThreadBuilder(target)
+        self.threads = ThreadBuilder(target, pass_at_k=self.pass_at_k)
         self.workflow = WorkflowController(target, mode=self.mode)
         self.budget_hours = budget_hours
         self.max_concurrent_threads = max_concurrent_threads
@@ -461,6 +465,31 @@ class CampaignOrchestrator:
 
     # -- Phase: Asset Discovery --------------------------------------------
 
+    def _enrich_unit(self, unit: Dict[str, Any], *, bug_class: str = "") -> Dict[str, Any]:
+        """Attach U2 deterministic artifacts + U5 model-routing hints.
+
+        Both are advisory context; the dispatch format and the strict
+        workflow are untouched.
+        """
+        attach_deterministic_artifacts(
+            unit, self.target, project_root=str(self.project),
+            bug_class=bug_class)
+        try:
+            from tools.core.model_router import attach_hint
+            attach_hint(unit)
+            routing = (unit.get("context") or {}).get("model_routing") or {}
+            if routing:
+                self.campaign.log_event("unit_routed", {
+                    "unit_id": str(unit.get("unit_id") or unit.get("id")
+                                   or unit.get("objective", "unit"))[:80],
+                    "model_tier": routing.get("tier"),
+                    "model_preference": routing.get("model_preference"),
+                    "complexity": routing.get("complexity"),
+                })
+        except Exception:
+            pass  # routing is advisory, never a dispatch gate
+        return unit
+
     def get_discovery_unit(self) -> Dict[str, Any]:
         """Next discovery round — round-capped, source-aware, never count-based."""
         state = self.campaign.load()
@@ -481,7 +510,7 @@ class CampaignOrchestrator:
             "If no source yields a new asset, run --discovery-complete",
         ]
         unit["campaign_phase"] = CampaignPhase.DISCOVERING
-        return unit
+        return self._enrich_unit(unit)
 
     def register_discovered_assets(self,
                                     discoveries: List[Dict[str, Any]]) -> int:
@@ -575,7 +604,7 @@ class CampaignOrchestrator:
             ],
         )
         unit["campaign_phase"] = CampaignPhase.RECON
-        return unit
+        return self._enrich_unit(unit, bug_class="recon")
 
     def register_recon(self, asset_id: str, *, endpoints: Optional[List[str]] = None,
                        tech: Optional[List[str]] = None,
@@ -804,10 +833,13 @@ class CampaignOrchestrator:
         self._auto_advance_workflow()
 
         # 1. Active threads across the campaign, deterministic priority order.
+        # pass@k variants of one threat are adjacent (pass_variant before
+        # thread_id) so the deep-dive group dispatches together.
         active = sorted(
             (t for t in self.campaign.list_threads()
              if not t.is_terminal and t.state != ThreadState.BLOCKED),
-            key=lambda t: (_priority_rank(t.priority), t.thread_id))
+            key=lambda t: (_priority_rank(t.priority),
+                           getattr(t, "pass_variant", 0), t.thread_id))
         if active:
             unit = self.threads.get_next_research_unit(active[0])
             unit["campaign_phase"] = CampaignPhase.RESEARCHING
@@ -850,7 +882,8 @@ class CampaignOrchestrator:
                 active = sorted(
                     (t for t in self.campaign.list_threads(asset_id=asset.asset_id)
                      if not t.is_terminal and t.state != ThreadState.BLOCKED),
-                    key=lambda t: (_priority_rank(t.priority), t.thread_id))
+                    key=lambda t: (_priority_rank(t.priority),
+                                   getattr(t, "pass_variant", 0), t.thread_id))
                 if active:
                     unit = self.threads.get_next_research_unit(active[0])
                     unit["campaign_phase"] = CampaignPhase.RESEARCHING
@@ -931,10 +964,788 @@ class CampaignOrchestrator:
                                     endpoint=endpoint,
                                     suggested_approaches=suggested_approaches)
         thread = self.campaign.get_thread(thread_id)
-        # Event-driven chain reaction: a completed thread is a finding.
+        # Event-driven chain reaction: a completed thread is a finding — but
+        # it first runs through the F0.5 strict gate (U3) so only
+        # report-eligible findings are promoted to the findings ledger and
+        # broadcast; low-confidence findings are quarantined instead.
         if thread and getattr(thread, "state", None) == ThreadState.COMPLETE:
+            self._apply_strict_gate(thread)
             self._publish_finding(thread)
         return thread
+
+    # -- Fuzz-bridge integration (Phase 3) --------------------------------
+
+    def _fuzz_mutations(self, base_url: str) -> List[Any]:
+        """Deterministic fuzz mutation set from the campaign's own surface.
+
+        Builds Mutation objects (tools.mutator) per registered asset endpoint
+        with the fuzz catalog's boundary/injection values — the same shape
+        the discovery scheduler consumes, so the fuzz pass is coverage-aware
+        and deterministic (stable ordering, bounded set).  Absolute endpoint
+        URLs are used as-is; relative paths join against ``base_url``.
+        """
+        from tools.mutator import Mutation, RiskClass
+
+        mutations: List[Any] = []
+        seen: set = set()
+        base = (base_url or "").rstrip("/")
+        for asset in self.campaign.list_assets():
+            endpoints = list(getattr(asset, "endpoints", []) or [])
+            if not endpoints:
+                continue
+            for ep in endpoints:
+                url = ep if ep.startswith(("http://", "https://")) \
+                    else f"{base}{ep}"
+                # Deterministic fuzz catalog per endpoint (bounded).
+                for kind, value in (("boundary", "0"),
+                                    ("boundary", "-1"),
+                                    ("boundary", "999999999999999999"),
+                                    ("injection", "' OR '1'='1"),
+                                    ("injection", "1 AND SLEEP(1)--"),
+                                    ("mass_assignment", {"role": "admin"})):
+                    key = (url, kind, str(value))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    op_id = hashlib.sha256(
+                        f"{asset.asset_id}:{url}:{kind}".encode()
+                    ).hexdigest()[:12]
+                    if kind == "mass_assignment":
+                        path = url
+                        mutated = value
+                        method = "POST"
+                        variable = ""
+                    else:
+                        # Embed the fuzz value in the query so the crash is
+                        # reproducible: the spawned thread re-probes the SAME
+                        # URL and must re-trigger the crash (recorded in its
+                        # evidence) — a body-only fuzz value would vanish
+                        # when the loop re-probes with the generic probe set.
+                        from urllib.parse import quote
+                        sep = "&" if "?" in url else "?"
+                        path = f"{url}{sep}q={quote(str(value), safe='')}"
+                        mutated = None
+                        method = "GET"
+                        variable = "q"
+                    mutations.append(Mutation(
+                        mutation_id=hashlib.sha256(
+                            f"{asset.asset_id}:{url}:{kind}:{value}".encode()
+                        ).hexdigest()[:16],
+                        operation_id=op_id,
+                        method=method,
+                        path=path,
+                        kind=kind,
+                        variable=variable,
+                        mutated=mutated,
+                        bug_class=(kind if kind != "boundary"
+                                   else "input_validation"),
+                        risk=RiskClass.READ,
+                    ))
+        return mutations
+
+    def _fuzz_and_spawn_threads(self, *, base_url: str = "",
+                                budget: int = 0,
+                                transport=None,
+                                project_root: Optional[str] = None) -> Dict[str, Any]:
+        """Run one fuzz pass; spawn a research thread per crash/anomaly.
+
+        Executes the fuzz bridge over the campaign surface and converts every
+        crash / timeout / anomaly / **blocked** observation into a **new
+        research thread** targeting that endpoint.  Each spawned thread
+        carries the recorded fuzz evidence (``live_evidence``) so the F0.5
+        reproducible gate sees real proof, and its objective names the fuzz
+        signal — the loop then probes the spawned thread like any other unit.
+        Blocked (403/WAF) observations additionally run through
+        ``failure_learning``: the blocker is recorded and bypass candidates
+        are quarantined (``research/<target>/learning/
+        failure-bypass-candidates.json``), and the spawned thread's research
+        plan is to **bypass** the defense using those candidates.
+
+        Novel-class feed: the same fuzz signals are also routed into the
+        zero-day hunter (``ZeroDayResearchEngine.hunt_fuzz_signals``) so the
+        anomaly and diff-analysis modes consume them — every signal becomes
+        an anomaly candidate and every crash a baseline-vs-mutation behavior
+        differential, stamped with the fuzz provenance (mutation_id,
+        replay_key) and persisted under
+        ``research/<target>/zero-day/fuzz-signals.jsonl``. Advisory: a feed
+        failure never gates the fuzz pass.
+
+        Dedup: a thread is only spawned when no active thread already targets
+        the same endpoint with the same fuzz state (repeat fuzz passes on a
+        stubborn surface never pile up threads).
+        """
+        from tools.core.fuzz_bridge import run_fuzzing_campaign
+
+        mutations = self._fuzz_mutations(base_url)
+        if not mutations:
+            return {"probes": 0, "signals": 0, "blocked": 0,
+                    "spawned": 0, "novel": 0}
+        fuzz = run_fuzzing_campaign(
+            self.target, base_url=base_url, mutations=mutations[: max(1, budget)],
+            transport=transport, project_root=project_root, publish=False)
+
+        spawned = 0
+        active = {(t.endpoint, t.bug_class)
+                  for t in self.campaign.list_threads() if not t.is_terminal}
+        assets = self.campaign.list_assets()
+        asset_by_id = {a.asset_id: a for a in assets}
+        default_asset = next(iter(assets), None)
+
+        for obs in fuzz.observations:
+            if obs.state not in ("crash", "timeout", "anomaly", "blocked"):
+                continue
+            endpoint = obs.url
+            bug_class = f"fuzz_{obs.state}"
+            if (endpoint, bug_class) in active:
+                continue
+            # Attach the threat to the asset that owns this endpoint.
+            asset = None
+            for a in assets:
+                if endpoint in (getattr(a, "endpoints", []) or []):
+                    asset = a
+                    break
+            asset = asset or default_asset
+            if asset is None:
+                continue
+            # Re-activate the asset so the newly spawned thread dispatches:
+            # the queue drained because the asset was exhausted, and a
+            # spawned thread must bring it back into deep research.
+            if asset.status == AssetStatus.EXHAUSTED:
+                asset.status = AssetStatus.DEEP_RESEARCH
+                asset.completed_at = ""
+                self.campaign.update_asset(asset)
+            if obs.state == "blocked":
+                # Adaptive learning: record the blocker and quarantine bypass
+                # candidates so the spawned thread hunts a bypass (not a
+                # crash).  Advisory — a learning failure never gates the spawn.
+                blocker = obs.signal or f"blocked ({obs.status}) on {endpoint}"
+                try:
+                    from tools.intelligence.failure_learning import (
+                        learn, write_report as fl_write)
+                    report = learn(self.target, [{
+                        "blocker": blocker,
+                        "defense": str((getattr(obs, "evidence", None) or {})
+                                       .get("waf") or "unknown"),
+                        "bug_class": "web",
+                    }], project_root=project_root)
+                    if report.candidates:
+                        fl_write(report, project_root=project_root)
+                except Exception:
+                    pass  # advisory
+                # The rationale becomes the thread objective, so the bypass
+                # intent must live here (research_plan alone is not carried).
+                rationale = (f"fuzz blocked on {endpoint}: {obs.signal} — "
+                             "bypass the defense with the quarantined "
+                             "failure-learning candidates")
+                research_plan = (
+                    "Bypass the blocking defense using the quarantined "
+                    "failure-learning candidates, then demonstrate impact.")
+            else:
+                rationale = f"fuzz {obs.state} on {endpoint}: {obs.signal}"
+                research_plan = ("Reproduce the fuzz signal with a live "
+                                 "probe and demonstrate impact.")
+            threat = ThreatHypothesis(
+                threat_id=hashlib.sha256(
+                    f"{asset.asset_id}:{endpoint}:{obs.state}".encode()
+                ).hexdigest()[:12],
+                type=bug_class,
+                confidence="high",
+                rationale=rationale,
+                target_endpoints=[endpoint],
+                research_plan=research_plan,
+            )
+            thread = self.campaign.spawn_thread(asset, threat)
+            # Carry the recorded fuzz evidence so the reproducible gate has
+            # real proof and the probe objective names the signal.
+            if getattr(obs, "evidence", None):
+                thread.live_evidence = obs.evidence
+            thread.confirmed_behavior = obs.signal
+            thread.endpoint = endpoint
+            thread.bug_class = bug_class
+            self.campaign.save_thread(thread)
+            active.add((endpoint, bug_class))
+            spawned += 1
+
+        # Feed the fuzz signals into the novel-class hunter (zero-day anomaly
+        # + diff modes): crash/timeout/anomaly evidence becomes candidates
+        # registered for novelty assessment and persisted for the operator.
+        novel = 0
+        try:
+            from tools.research_model import NoveltyLabel
+            from tools.zero_day import ZeroDayResearchEngine
+            zengine = ZeroDayResearchEngine(self.target)
+            registered = zengine.register(
+                zengine.hunt_fuzz_signals(fuzz.observations))
+            novel = len([c for c in registered
+                         if c.novelty != NoveltyLabel.EXACT_DUPLICATE])
+            if registered:
+                out_dir = self.project / "research" / self.target / "zero-day"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                with (out_dir / "fuzz-signals.jsonl").open(
+                        "a", encoding="utf-8") as stream:
+                    for candidate in registered:
+                        stream.write(json.dumps(
+                            candidate.to_dict(), sort_keys=True,
+                            default=str) + "\n")
+        except Exception as exc:
+            logger.warning("fuzz -> novel-class feed skipped: %s", exc)
+        return {"probes": fuzz.mutations_run,
+                "signals": (fuzz.crashes + fuzz.timeouts + fuzz.anomalies
+                             + fuzz.blocked),
+                "blocked": fuzz.blocked,
+                "spawned": spawned, "novel": novel}
+
+    def live_feedback_loop(self, *, base_url: str = "",
+                           max_units: int = 20,
+                           require_reproducible: bool = True,
+                           transport=None,
+                           fuzz_budget: int = 0,
+                           run_exploits: bool = True,
+                           project_root: Optional[str] = None) -> Dict[str, Any]:
+        """Run the live execution harness loop: probe -> observe -> adapt.
+
+        For each dispatched research unit:
+          1. Execute its probe set against the live target
+             (``tools/core/live_executor.execute_probe``) — real HTTP,
+             real responses, recorded evidence.
+          2. Classify the result (clean / signal / blocked / error) and
+             register the observation back onto the thread with the real
+             probe evidence.
+          3. Adapt:
+             * blocked (403/WAF)  -> ``failure_learning`` records the
+               blocker + quarantined bypass candidates; thread transitions
+               to BLOCKED for an operator decision.
+             * signal             -> thread moves SIGNAL_FOUND -> COMPLETE
+               with confirmed behavior; the F0.5 gate runs (with the
+               recorded evidence; ``require_reproducible`` forces the
+               reproducible-evidence gate).
+             * clean              -> thread REFUTED (definitively not
+               vulnerable for this probe set).
+             * error (timeout/refused) -> observation only, no state change.
+
+        Fuzz-bridge integration: when ``fuzz_budget > 0`` and the research
+        queue empties, one coverage-aware fuzz campaign runs against the
+        live surface (``tools/core/fuzz_bridge``); every crash / timeout /
+        anomaly observation **spawns a new research thread** targeting that
+        endpoint with the recorded fuzz evidence attached, so the loop keeps
+        probing the surface the deterministic fuzzer flagged.  The same
+        signals are fed into the zero-day novel-class hunter
+        (``ZeroDayResearchEngine.hunt_fuzz_signals``) — anomaly and
+        diff-analysis candidates stamped with the fuzz provenance
+        (``summary["fuzz"]["novel"]``), persisted under
+        ``research/<target>/zero-day/fuzz-signals.jsonl``.  Fuzz spawns are
+        deduped per (endpoint, state) and bounded by the fuzz budget.
+
+        Returns a deterministic run summary (units/probes/outcomes/fuzz).
+        Never raises: transport failures are observations, not gates.  This
+        is the planner->hunter loop — units are executed, not handed to a
+        model.
+        """
+        from tools.core.live_executor import execute_probe, classify_probe
+        from tools.refutation import RefutationEngine
+
+        summary = {"units": 0, "probes": 0, "confirmed": 0,
+                   "refuted": 0, "blocked": 0, "errors": 0,
+                   "outcomes": {}, "fuzz": {"ran": False, "probes": 0,
+                   "signals": 0, "blocked": 0, "spawned": 0,
+                   "novel": 0},
+                   "exploits": 0, "exploits_reproduced": 0,
+                   "exploit_novel": 0}
+        base_url = (base_url or "").rstrip("/")
+
+        fuzz_ran = False
+        saw_research = False
+        for _ in range(max(1, int(max_units))):
+            unit = self.get_next_research_unit()
+            if unit is None:
+                break
+            phase = unit.get("campaign_phase")
+            if phase != "researching":
+                # Queue drained (threads resolved; orchestrator moved on to
+                # discovery/chaining/report): one fuzz pass finds new
+                # surface, spawns threads for crash evidence, and the loop
+                # keeps going so those threads are probed too.  Only fires
+                # after at least one research unit dispatched and never more
+                # than once per loop call.
+                if (fuzz_budget > 0 and not fuzz_ran and saw_research):
+                    fuzz_ran = True
+                    fuzz_summary = self._fuzz_and_spawn_threads(
+                        base_url=base_url, budget=fuzz_budget,
+                        transport=transport,
+                        project_root=project_root or str(self.project))
+                    summary["fuzz"]["ran"] = True
+                    summary["fuzz"]["probes"] += fuzz_summary.get("probes", 0)
+                    summary["fuzz"]["signals"] += fuzz_summary.get("signals", 0)
+                    summary["fuzz"]["spawned"] += fuzz_summary.get("spawned", 0)
+                    summary["fuzz"]["novel"] += fuzz_summary.get("novel", 0)
+                    summary["fuzz"]["blocked"] += fuzz_summary.get("blocked", 0)
+                    if fuzz_summary.get("spawned"):
+                        continue
+                break
+            saw_research = True
+            tid = (unit.get("context") or {}).get("thread_id")
+            if not tid:
+                # Non-probeable unit (e.g. an operator-decision blocked-thread
+                # unit that slipped through as researching): the loop cannot
+                # execute it — stop instead of crashing.
+                break
+            thread = self.campaign.get_thread(tid)
+            if thread is None or thread.is_terminal:
+                continue
+
+
+            # 1. Real probe execution.
+            target_url = base_url or unit.get("endpoint", "")
+            try:
+                probe = execute_probe(
+                    unit, target_url, transport=transport,
+                    project_root=project_root or str(self.project))
+            except Exception as exc:  # advisory: never a gate
+                logger.warning("live probe failed for %s: %s", tid, exc)
+                summary["errors"] += 1
+                continue
+            summary["units"] += 1
+            summary["probes"] += 1
+            verdict = classify_probe(probe, unit.get("bug_class", ""))
+            summary["outcomes"][verdict] = summary["outcomes"].get(verdict, 0) + 1
+
+            evidence = probe.evidence if probe.evidence else None
+            confirmed_behavior = ""
+            if verdict == "signal":
+                confirmed_behavior = (
+                    f"{unit.get('bug_class', '')} signal: "
+                    f"{probe.status} on {probe.spec.get('url', '')} "
+                    f"({'; '.join(probe.signals[:3]) or 'anomaly'})")
+
+            # 2. Register the real observation back onto the thread.
+            if verdict == "blocked":
+                summary["blocked"] += 1
+                blocker = (f"blocked by {probe.waf_name or 'defense'} "
+                           f"({probe.status}) on {probe.spec.get('url', '')}")
+                # Adaptive learning: record the blocker and quarantine
+                # bypass candidates for the operator / future attempts.
+                try:
+                    from tools.intelligence.failure_learning import learn
+                    learn(self.target, [{
+                        "blocker": blocker,
+                        "defense": probe.waf_name or "unknown",
+                        "bug_class": unit.get("bug_class", "web"),
+                    }], project_root=project_root or str(self.project))
+                except Exception:
+                    pass  # advisory
+                self.register_thread_result(
+                    tid, observation=blocker, conclusion="blocked",
+                    new_state=ThreadState.BLOCKED.value, blocker=blocker)
+            elif verdict == "signal":
+                # Attach the recorded evidence to the thread BEFORE it
+                # completes, so the F0.5 gate sees it and (for live threads)
+                # requires reproducibility for CONFIRMED.
+                if evidence:
+                    thread.live_evidence = evidence
+                    self.campaign.save_thread(thread)
+                self.register_thread_result(
+                    tid,
+                    observation=(f"{probe.status} {probe.spec.get('url', '')} "
+                                 f"signals={'; '.join(probe.signals[:3]) or 'anomaly'}"),
+                    conclusion="confirmed", new_state="complete",
+                    confirmed_behavior=confirmed_behavior)
+                summary["confirmed"] += 1
+                # Live exploitation phase: a gate-CONFIRMED finding (recorded
+                # evidence, report-eligible) is replayed to demonstrate
+                # impact — same input, recorded second response.
+                if run_exploits:
+                    fresh = self.campaign.get_thread(tid)
+                    if fresh is not None:
+                        impact = self._run_exploitation(
+                            fresh, base_url=base_url, transport=transport,
+                            project_root=project_root or str(self.project))
+                        if impact is not None:
+                            summary["exploits"] += 1
+                            if impact.get("reproduced"):
+                                summary["exploits_reproduced"] += 1
+                            # Novel-class refinement: the demonstrated
+                            # impact fed back into the zero-day hunter.
+                            summary["exploit_novel"] += int(
+                                impact.get("zero_day_novel") or 0)
+            elif verdict == "error":
+                summary["errors"] += 1
+                self.register_thread_result(
+                    tid, observation="probe transport error (timeout/refused)",
+                    conclusion="inconclusive")
+            else:  # clean
+                summary["refuted"] += 1
+                self.register_thread_result(
+                    tid, observation="no signal across live probe set",
+                    conclusion="not vulnerable", new_state="refuted")
+        return summary
+
+    @staticmethod
+    def _thread_to_finding(thread: Any) -> Dict[str, Any]:
+        """Build the finding dict the F0.5 refutation engine scores."""
+        observations = list(getattr(thread, "observations", []) or [])
+        last = observations[-1] if observations else {}
+        severity = str(getattr(thread, "priority", "medium"))
+        if hasattr(severity, "value"):
+            severity = severity.value
+        # Live-execution evidence (Phase 3): a recorded request/response
+        # block attached by the live executor is the strongest proof and
+        # enables the reproducible-evidence gate.
+        recorded_evidence = getattr(thread, "live_evidence", None)
+        evidence: Any = list(getattr(thread, "evidence_ids", []) or [])
+        if recorded_evidence:
+            evidence = recorded_evidence
+        return {
+            "finding_id": getattr(thread, "finding_id", "") or thread.thread_id,
+            "title": getattr(thread, "objective", ""),
+            "bug_class": getattr(thread, "bug_class", ""),
+            "severity": severity,
+            "endpoint": getattr(thread, "endpoint", ""),
+            # Deterministic evidence signals for confidence_score.
+            "trigger_trace": str(last.get("observation") or ""),
+            "impact_trace": getattr(thread, "confirmed_behavior", ""),
+            "evidence": evidence,
+            "confirmed_behavior": getattr(thread, "confirmed_behavior", ""),
+        }
+
+    def _apply_strict_gate(self, thread: Any) -> None:
+        """Run a completed thread's finding through the F0.5 strict gate.
+
+        Idempotent: a thread is evaluated exactly once (the first time it is
+        observed COMPLETE).  The verdict is recorded on the thread; a
+        report-eligible finding is appended to the findings ledger
+        (``state/sessions/<target>/findings.jsonl``, consumed by
+        chain_orchestrator) and counted in ``report_eligible_findings``.
+        Low-confidence findings are DEMOTED + quarantined by the refutation
+        engine and never enter the findings ledger — the F0.5 reporting gate
+        applied automatically.  Advisory: a failure leaves the thread
+        unmarked and never blocks result registration.
+        """
+        if getattr(thread, "refutation", None):
+            return  # already evaluated
+        try:
+            from tools.refutation import RefutationEngine
+        except ImportError:
+            return
+        try:
+            finding = self._thread_to_finding(thread)
+            # Live-executed threads carry recorded evidence; the gate then
+            # requires reproducible proof for CONFIRMED.  Legacy threads
+            # (evidence ids only) keep the confidence-only gate.
+            require_reproducible = bool(getattr(thread, "live_evidence", None))
+            engine = RefutationEngine(self.target, project_root=str(self.project),
+                                      require_reproducible=require_reproducible)
+            record = engine.refute(finding, model="uncensored")
+        except Exception as exc:
+            logger.warning("F0.5 strict gate skipped for %s: %s",
+                           thread.thread_id, exc)
+            return
+        thread.refutation = {
+            "finding_id": record.finding_id,
+            "final_verdict": record.final_verdict.value,
+            "confidence": record.confidence,
+            "eligible_for_report": record.eligible_for_report,
+            "quarantined": record.quarantined,
+            "survived_passes": record.survived_passes,
+            "killed_passes": record.killed_passes,
+            "evaluated_at": record.created_at,
+        }
+        self.campaign.save_thread(thread)
+        if record.eligible_for_report:
+            self._append_finding_record(thread)
+            state = self.campaign.load()
+            state.report_eligible_findings += 1
+            self.campaign.save(state)
+
+    def _append_finding_record(self, thread: Any) -> None:
+        """Append a report-eligible finding to the findings ledger.
+
+        Schema is chain_orchestrator-compatible (``state == "FINDING"``,
+        ``finding_id``/``id``, ``bug_class``, ``endpoint``, ``severity``) plus
+        the F0.5 refutation evidence.  Append-only JSONL under
+        ``state/sessions/<target>/``.
+        """
+        from tools.state import add_finding
+        severity = str(getattr(thread, "priority", "medium"))
+        if hasattr(severity, "value"):
+            severity = severity.value
+        record = {
+            "finding_id": getattr(thread, "finding_id", "") or thread.thread_id,
+            "id": getattr(thread, "finding_id", "") or thread.thread_id,
+            "thread_id": thread.thread_id,
+            "state": "FINDING",
+            "bug_class": getattr(thread, "bug_class", ""),
+            "endpoint": getattr(thread, "endpoint", ""),
+            "severity": severity,
+            "title": getattr(thread, "objective", ""),
+            "confirmed_behavior": getattr(thread, "confirmed_behavior", ""),
+            "refutation": thread.refutation,
+            "recorded_at": _now(),
+            "method": getattr(thread, "method", "GET"),
+            "evidence": getattr(thread, "live_evidence", None) or {},
+        }
+        add_finding(self.target, record, project_root=str(self.project))
+
+    def _run_exploitation(self, thread: Any, *, base_url: str = "",
+                          transport=None,
+                          project_root: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Replay a gate-CONFIRMED finding's recorded request to show impact.
+
+        Only runs for findings the F0.5 gate marked report-eligible (CONFIRMED
+        with recorded, reproducible evidence).  Re-sends the recorded request
+        via ``tools/core/live_executor.execute_exploit`` and records the
+        *second* response — the deterministic impact demonstration: the same
+        input reproduces the same outcome (``reproduced=True``) and the
+        response body is captured as evidence of what the attacker obtains.
+
+        The demonstration is persisted on the thread (``live_exploit``),
+        appended to ``state/sessions/<target>/exploits.jsonl``, and returned.
+        Advisory: a replay failure returns None and never gates the campaign.
+        """
+        from tools.core.live_executor import execute_exploit
+
+        refutation = getattr(thread, "refutation", None) or {}
+        if not refutation.get("eligible_for_report"):
+            return None  # only CONFIRMED findings get exploited
+        finding = self._thread_to_finding(thread)
+        target_url = base_url or str(getattr(thread, "endpoint", "") or "")
+        try:
+            result = execute_exploit(
+                finding, target_url, transport=transport,
+                project_root=project_root or str(self.project))
+        except Exception as exc:
+            logger.warning("exploitation replay failed for %s: %s",
+                           thread.thread_id, exc)
+            return None
+        evidence = getattr(result, "evidence", None) or {}
+        response = evidence.get("response") or {}
+        body = str(response.get("body") or "").strip()
+        impact = {
+            "schema": "bugwolf/exploit-demonstration/v1",
+            "finding_id": refutation.get("finding_id") or thread.thread_id,
+            "thread_id": thread.thread_id,
+            "bug_class": getattr(thread, "bug_class", ""),
+            "endpoint": getattr(thread, "endpoint", ""),
+            "replayed_status": getattr(result, "status", 0),
+            "reproduced": bool(evidence.get("reproduced")),
+            "replay_key": evidence.get("replay_key", ""),
+            "recorded_at": _now(),
+        }
+        # Impact demonstration: the data actually obtained by the replay
+        # (truncated for the ledger; full body lives in the probe evidence).
+        if body:
+            impact["demonstrated_impact"] = body[:500]
+        # Exploit feedback: the demonstrated impact unlocks new chain
+        # hypotheses ("what else does the data unlock").  Advisory — a
+        # feedback failure never gates the exploitation phase.
+        self._feed_exploit_to_chains(thread, impact,
+                                     project_root=project_root)
+        thread.live_exploit = impact
+        self.campaign.save_thread(thread)
+        self._append_exploit_record(impact)
+        return impact
+
+    def exploit_approved_bypass(self, thread: Any, candidate: Any, *,
+                                base_url: str = "",
+                                transport=None,
+                                project_root: Optional[str] = None
+                                ) -> Optional[Dict[str, Any]]:
+        """Exploit a fuzz_blocked thread with an operator-approved bypass.
+
+        Once an operator approves a quarantined failure-learning candidate
+        (``failure_learning.approve_candidate``), this replays the approved
+        payload live against the blocked thread's endpoint: the blocked
+        request is rebuilt from the thread's recorded evidence with the
+        bypass applied (``Name: value`` payloads become headers,
+        ``?…`` payloads append to the query, otherwise the payload rides in
+        the body for mutating methods or ``?q=`` for GET) and re-sent via
+        ``execute_exploit``.  The outcome is recorded in the exploit ledger
+        as a ``kind="bypass-approval"`` demonstration — the impact of
+        getting through the defense.
+
+        Advisory: a replay failure returns None and never gates the
+        campaign.  The thread itself stays BLOCKED (the operator decision
+        is untouched); only the ledger records the approved exploitation.
+        """
+        import re as _re
+        from tools.core.live_executor import execute_exploit
+
+        endpoint = str(getattr(thread, "endpoint", "") or "")
+        target_url = base_url or endpoint
+        if not target_url:
+            return None
+        evidence = getattr(thread, "live_evidence", None) or {}
+        request = dict(evidence.get("request") or {})
+        method = str(request.get("method") or "GET")
+        url = str(request.get("url") or target_url)
+        headers = dict(request.get("headers") or {})
+        body = request.get("body")
+        payload = str(getattr(candidate, "payload", "") or "")
+        technique = str(getattr(candidate, "technique", "") or "")
+        if not payload:
+            return None
+        header_match = _re.match(r"^\s*([A-Za-z0-9-]+)\s*:\s*(.+?)\s*$",
+                                 payload)
+        if header_match:
+            headers[header_match.group(1)] = header_match.group(2)
+        elif payload.startswith("?"):
+            url = url + payload
+        elif method in ("POST", "PUT", "PATCH"):
+            body = (str(body) + payload) if body is not None else payload
+        else:
+            from urllib.parse import quote
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}q={quote(payload, safe='')}"
+        finding = {
+            "finding_id": getattr(thread, "thread_id", ""),
+            "bug_class": "fuzz_blocked",
+            "evidence": {"request": {
+                "method": method, "url": url, "headers": headers,
+                "body": body, "technique": technique or "approved-bypass",
+                "bug_class": "fuzz_blocked",
+            }},
+        }
+        try:
+            result = execute_exploit(
+                finding, target_url, transport=transport,
+                project_root=project_root or str(self.project))
+        except Exception as exc:
+            logger.warning("approved-bypass replay failed for %s: %s",
+                           thread.thread_id, exc)
+            return None
+        evidence_out = getattr(result, "evidence", None) or {}
+        response = evidence_out.get("response") or {}
+        body_out = str(response.get("body") or "").strip()
+        impact = {
+            "schema": "bugwolf/exploit-demonstration/v1",
+            "kind": "bypass-approval",
+            "candidate_id": str(getattr(candidate, "candidate_id", "")),
+            "technique": technique,
+            "approved_by": str(getattr(candidate, "approved_by", "") or ""),
+            "finding_id": getattr(thread, "thread_id", ""),
+            "thread_id": getattr(thread, "thread_id", ""),
+            "bug_class": "fuzz_blocked",
+            "endpoint": endpoint,
+            "replayed_status": getattr(result, "status", 0),
+            # The bypass "reproduced" when the replay got through the
+            # defense (a real response that is not a block).
+            "reproduced": bool(getattr(result, "status", 0))
+            and not bool(getattr(result, "blocked", False)),
+            "replay_key": evidence_out.get("replay_key", ""),
+            "recorded_at": _now(),
+        }
+        if body_out:
+            impact["demonstrated_impact"] = body_out[:500]
+        self._append_exploit_record(impact)
+        return impact
+
+    def _append_exploit_record(self, impact: Dict[str, Any]) -> None:
+        """Append the impact demonstration to the exploit ledger (advisory)."""
+        try:
+            path = self.project / "state" / "sessions" / self.target \
+                / "exploits.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(impact, sort_keys=True) + "\n")
+                stream.flush()
+        except OSError:
+            pass  # advisory: an unwritable ledger never gates the campaign
+
+    def _feed_exploit_to_chains(self, thread: Any, impact: Dict[str, Any], *,
+                                project_root: Optional[str] = None) -> None:
+        """Feed a reproduced exploit's impact back as new chain hypotheses.
+
+        When the replay actually demonstrated impact (``reproduced`` with a
+        recorded body), the data obtained may unlock further bug classes.
+        Deterministic heuristics (``tools/leads.chain_hypotheses_from_exploit``)
+        derive the downstream hypotheses, each is persisted as an OPEN-LEAD
+        chain-pool record (``state/sessions/<target>/leads.jsonl``, the same
+        store ``chain_orchestrator.refresh_target`` reads), the chain graph is
+        rebuilt so the new leads surface in proposals, and the hypotheses ride
+        back on the impact record + a ``CHAIN_PROPOSAL`` event.
+
+        Advisory: any failure here (derivation, write, refresh, publish) is
+        logged and never gates the exploitation phase.
+        """
+        try:
+            from tools.leads import chain_hypotheses_from_exploit
+            body = impact.get("demonstrated_impact") or ""
+            if not impact.get("reproduced") or not body:
+                return
+            finding = self._thread_to_finding(thread)
+            finding["target"] = self.target
+            records = chain_hypotheses_from_exploit(body, finding)
+            if not records:
+                return
+            path = self.project / "state" / "sessions" / self.target \
+                / "leads.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as stream:
+                for record in records:
+                    stream.write(json.dumps(record, sort_keys=True) + "\n")
+                stream.flush()
+            # Rebuild the chain graph so the new leads join chain proposals.
+            from tools.chain_orchestrator import refresh_target
+            refresh_target(project_root or str(self.project), self.target)
+            impact["chain_hypotheses"] = records
+            self._publish_chain_hypotheses(records)
+            # Novel-class refinement: the demonstrated impact is also fed
+            # into the zero-day hunter so the novelty assessment of the
+            # unlocked surfaces is refined by real exploit evidence.
+            impact["zero_day_novel"] = self._feed_exploit_to_zero_day(impact)
+        except Exception as exc:
+            logger.warning("exploit->chain feedback failed for %s: %s",
+                           thread.thread_id, exc)
+
+    def _feed_exploit_to_zero_day(self, impact: Dict[str, Any]) -> int:
+        """Feed a reproduced exploit's impact into the novel-class hunter.
+
+        Routes the impact (demonstrated data + derived chain hypotheses)
+        through ``ZeroDayResearchEngine.hunt_exploit_feedback``: the impact
+        is registered for novelty assessment (unlock candidates are built
+        impact-bounded, so the engine promotes them into NOVELTY_PENDING
+        with impact evidence) and persisted under
+        ``research/<target>/zero-day/exploit-feedback.jsonl``. Returns the
+        count of non-duplicate novel-class candidates. Advisory: a feed
+        failure logs and returns 0 — never gates the exploitation phase.
+        """
+        try:
+            from tools.research_model import NoveltyLabel
+            from tools.zero_day import ZeroDayResearchEngine
+            zengine = ZeroDayResearchEngine(self.target)
+            registered = zengine.register(
+                zengine.hunt_exploit_feedback([impact]))
+            novel = len([c for c in registered
+                         if c.novelty != NoveltyLabel.EXACT_DUPLICATE])
+            if registered:
+                out_dir = self.project / "research" / self.target \
+                    / "zero-day"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                with (out_dir / "exploit-feedback.jsonl").open(
+                        "a", encoding="utf-8") as stream:
+                    for candidate in registered:
+                        stream.write(json.dumps(
+                            candidate.to_dict(), sort_keys=True,
+                            default=str) + "\n")
+            return novel
+        except Exception as exc:
+            logger.warning("exploit -> zero-day feed skipped: %s", exc)
+            return 0
+
+    def _publish_chain_hypotheses(self, records: List[Dict[str, Any]]) -> None:
+        """Publish CHAIN_PROPOSAL so chain discovery reacts to the feedback.
+
+        Advisory: a publish failure never gates the campaign.
+        """
+        if self._signal_bus is None:
+            return
+        try:
+            self._signal_bus.publish(
+                "CHAIN_PROPOSAL", source="campaign_orchestrator",
+                payload={"target": self.target, "kind": "exploit-feedback",
+                         "hypotheses": records})
+        except OSError as exc:
+            print(f"[!] signal publish skipped: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
 
     def _publish_finding(self, thread: Any) -> None:
         """Publish FINDING_DISCOVERED so chain discovery reacts immediately.
@@ -945,17 +1756,27 @@ class CampaignOrchestrator:
         if self._signal_bus is None:
             return
         try:
+            payload = {
+                "target": self.target,
+                "thread_id": thread.thread_id,
+                "bug_class": getattr(thread, "bug_class", ""),
+                "endpoint": getattr(thread, "endpoint", ""),
+                "confirmed_behavior": getattr(thread, "confirmed_behavior", ""),
+            }
+            refutation = getattr(thread, "refutation", None) or {}
+            if refutation:
+                payload["refutation_verdict"] = refutation.get("final_verdict")
+                payload["confidence"] = refutation.get("confidence")
+                payload["eligible_for_report"] = refutation.get("eligible_for_report")
             self._signal_bus.publish(
                 "FINDING_DISCOVERED", source="campaign_orchestrator",
-                payload={
-                    "target": self.target,
-                    "thread_id": thread.thread_id,
-                    "bug_class": getattr(thread, "bug_class", ""),
-                    "endpoint": getattr(thread, "endpoint", ""),
-                    "confirmed_behavior": getattr(thread, "confirmed_behavior", ""),
-                })
-        except Exception:
-            pass  # event bus is advisory
+                payload=payload)
+        except OSError as exc:
+            # Advisory: an unwritable event log must never gate the campaign.
+            print(f"[!] signal publish skipped: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+        # ValueError (unregistered event type) and other programming errors
+        # propagate loudly instead of being silently swallowed.
 
     # -- Blocked / chain / report units ------------------------------------
 
@@ -984,7 +1805,9 @@ class CampaignOrchestrator:
                 "Register the outcome via --register-result",
             ],
         )
-        unit["campaign_phase"] = CampaignPhase.RESEARCHING
+        # An operator-decision unit, not a live-probeable research unit: the
+        # live loop must not try to execute it (no thread_id in context).
+        unit["campaign_phase"] = CampaignPhase.RESEARCH
         return unit
 
     def _build_chain_unit(self) -> Dict[str, Any]:
@@ -1038,6 +1861,7 @@ class CampaignOrchestrator:
                 "discovery_complete": self.campaign.load().discovery_complete,
                 "active_threads": ctx.active_threads,
                 "findings": ctx.findings,
+                "report_eligible_findings": self.campaign.load().report_eligible_findings,
                 "zero_day_candidates": ctx.zero_day_candidates,
             },
             "workflow": ctx.workflow,
@@ -1109,14 +1933,37 @@ def main() -> int:
     parser.add_argument("--llm-advisor", action="store_true",
                         help="Enrich research units with seed-advisor probe "
                              "proposals (deterministic core still decides)")
+    parser.add_argument("--pass-at-k", type=int, default=1,
+                        help="Test-time compute scaling: spawn k diverse "
+                             "variant threads per threat (default: 1)")
+    parser.add_argument("--deep-dive", action="store_true",
+                        help="Preset for --pass-at-k 3: spawn three diverse "
+                             "variant threads per threat")
+    parser.add_argument("--live-run", action="store_true",
+                        help="Run the live execution harness loop: probe -> "
+                             "observe -> adapt (real HTTP, recorded evidence)")
+    parser.add_argument("--live-base-url", default="",
+                        help="Target base URL for --live-run (default: unit endpoint)")
+    parser.add_argument("--live-max-units", type=int, default=20,
+                        help="Max research units for --live-run")
+    parser.add_argument("--fuzz-budget", type=int, default=0,
+                        help="With --live-run: run one fuzz pass when the "
+                             "research queue drains and spawn a thread per "
+                             "crash/timeout/anomaly (0 = off)")
+    parser.add_argument("--no-exploits", action="store_true",
+                        help="With --live-run: skip the live exploitation "
+                             "phase (replay of gate-CONFIRMED findings)")
     parser.add_argument("--json", action="store_true",
                         help="Emit strict JSON output")
     args = parser.parse_args()
 
     try:
+        pass_at_k = args.pass_at_k
+        if args.deep_dive:
+            pass_at_k = max(pass_at_k, 3)
         orch = CampaignOrchestrator(
             args.target, budget_hours=args.budget_hours, mode=args.mode,
-            llm_advisor=args.llm_advisor)
+            llm_advisor=args.llm_advisor, pass_at_k=pass_at_k)
 
         if args.init:
             orch.initialize()
@@ -1178,6 +2025,14 @@ def main() -> int:
                       "state": thread.state.value,
                       "iterations": thread.iterations,
                       "confirmed_behavior": thread.confirmed_behavior}
+        elif args.live_run:
+            orch.initialize()
+            result = orch.live_feedback_loop(
+                base_url=args.live_base_url, max_units=args.live_max_units,
+                fuzz_budget=args.fuzz_budget,
+                run_exploits=not args.no_exploits,
+                project_root=str(orch.project))
+            result = {"campaign": orch.target, "live_run": result}
         elif args.run_research:
             orch.initialize()
             result = orch.run_research(

@@ -18,6 +18,11 @@ Architecture:
   evidence/                  — redacted, hash-linked evidence store
   resume.json                — exact resume point for session continuity
   audit.jsonl                — append-only, hash-linked audit trail
+
+Usage:
+  python3 tools/campaign.py --target example.com --init --json
+  python3 tools/campaign.py --target example.com --status --json
+  python3 tools/campaign.py --target example.com --add-asset https://example.com --json
 """
 
 from __future__ import annotations
@@ -35,11 +40,11 @@ from typing import Any, Dict, Iterable, List, Optional
 
 try:
     from tools.evidence import redact
-    from tools.runtime_paths import workspace_root
+    from tools.runtime_paths import target_slug, workspace_root
     from tools.safety import safe_target_name
 except ImportError:
     from evidence import redact
-    from runtime_paths import workspace_root
+    from runtime_paths import target_slug, workspace_root
     from safety import safe_target_name
 
 try:
@@ -237,6 +242,25 @@ class ThreadRecord:
     created_at: str = ""
     updated_at: str = ""
 
+    # pass@k (U4): which diverse variant this thread is (0 = primary).
+    pass_variant: int = 0
+    pass_group: str = ""   # shared threat key; variants of one threat match
+
+    # F0.5 strict-gate result (U3): verdict/confidence/eligibility recorded
+    # when the thread completes; empty until evaluated.
+    refutation: Dict[str, Any] = field(default_factory=dict)
+
+    # Live-execution evidence (Phase 3): recorded request/response block from
+    # tools/core/live_executor.py.  When present, the F0.5 gate requires
+    # reproducible evidence for CONFIRMED; absent on legacy threads.
+    live_evidence: Optional[Dict[str, Any]] = None
+
+    # Live-exploitation result (Phase 3): the recorded impact demonstration
+    # produced by re-playing the CONFIRMED finding's request via
+    # tools/core/live_executor.execute_exploit.  ``reproduced`` proves the
+    # finding is deterministic; absent on threads not yet exploited.
+    live_exploit: Optional[Dict[str, Any]] = None
+
     def __post_init__(self) -> None:
         now = datetime.now(timezone.utc).isoformat()
         if not self.created_at:
@@ -283,6 +307,8 @@ class ThreadRecord:
             "observations", "evidence_ids", "finding_id",
             "iterations", "max_iterations", "priority",
             "created_at", "updated_at",
+            "pass_variant", "pass_group", "refutation", "live_evidence",
+            "live_exploit",
         }
         raw = {k: v for k, v in data.items() if k in known}
         return cls(**raw)
@@ -332,6 +358,7 @@ class CampaignState:
     # Findings
     total_findings: int = 0
     zero_day_candidates: int = 0
+    report_eligible_findings: int = 0  # passed the F0.5 strict gate
 
     # Budget
     max_concurrent_threads: int = 8
@@ -364,6 +391,7 @@ class CampaignState:
             "updated_at", "assets_discovered", "assets_exhausted",
             "discovery_rounds", "discovery_complete",
             "total_findings", "zero_day_candidates",
+            "report_eligible_findings",
             "max_concurrent_threads", "budget_hours", "started_at",
             "resume", "manifest_hash",
         }
@@ -435,7 +463,7 @@ class CampaignManager:
     """Manage one target's persistent campaign state."""
 
     def __init__(self, target: str) -> None:
-        self.target = safe_target_name(target).replace(":", "_")[:200]
+        self.target = target_slug(target)
         self.root = CAMPAIGN_ROOT / self.target
         self.root.mkdir(parents=True, exist_ok=True)
         self.campaign_path = self.root / "campaign.json"
@@ -593,9 +621,10 @@ class CampaignManager:
 
     # -- Thread management -------------------------------------------------
 
-    def spawn_thread(self, asset: AssetRecord, threat: ThreatHypothesis) -> ThreadRecord:
+    def spawn_thread(self, asset: AssetRecord, threat: ThreatHypothesis, *,
+                     pass_variant: int = 0, pass_group: str = "") -> ThreadRecord:
         thread_id = hashlib.sha256(
-            f"{asset.asset_id}:{threat.threat_id}:{datetime.now(timezone.utc).isoformat()}".encode()
+            f"{asset.asset_id}:{threat.threat_id}:{pass_variant}:{datetime.now(timezone.utc).isoformat()}".encode()
         ).hexdigest()[:16]
 
         thread = ThreadRecord(
@@ -608,11 +637,13 @@ class CampaignManager:
             state=ThreadState.HYPOTHESIS,
             suggested_approaches=self._default_approaches(threat.type),
             priority=asset.priority,
+            pass_variant=pass_variant,
+            pass_group=pass_group or threat.type,
         )
         self.save_thread(thread)
         self._audit("thread_spawned", {
             "thread_id": thread_id, "asset_id": asset.asset_id,
-            "bug_class": threat.type,
+            "bug_class": threat.type, "pass_variant": pass_variant,
         })
         return thread
 
@@ -802,6 +833,14 @@ class CampaignManager:
             "ts": datetime.now(timezone.utc).isoformat(),
             "data": redact(data),
         })
+
+    def log_event(self, event: str, data: Dict[str, Any]) -> None:
+        """Public audit hook for dispatch-time decisions (e.g. routing).
+
+        Used by the orchestrator/thread builder to persist advisory model-
+        routing records; the self-eval harness reads them as state checks.
+        """
+        self._audit(event, data)
 
 
 # ---------------------------------------------------------------------------

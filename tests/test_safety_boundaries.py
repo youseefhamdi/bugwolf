@@ -17,6 +17,7 @@ from tools.infra_deploy import InfraManager
 from tools.retest_scheduler import RetestJob, execute_job
 from tools.fleet import parse_targets
 from tools.safety import AuthorizationError, load_authorized_scope, require_authorized_target, safe_path, safe_target_name, target_in_scope, validate_http_url, validate_public_https_url
+from tools.execution_controller import ActionClass, ActiveExecutionController, ExecutionDenied, ExecutionPolicy
 
 
 class TestAuthorizationScope(unittest.TestCase):
@@ -150,6 +151,23 @@ class TestAgentIsolationBoundaries(unittest.TestCase):
 
 
 class TestOperationalGates(unittest.TestCase):
+    def test_operational_request_budget_is_enforced_without_scope_gates(self):
+        controller = ActiveExecutionController(ExecutionPolicy(
+            target="example.com", max_requests=1, max_seconds=60,
+        ))
+        result, receipt = controller.run(ActionClass.READ, "https://example.com", lambda: "ok")
+        self.assertEqual(result, "ok")
+        self.assertTrue(receipt.executed)
+        with self.assertRaises(ExecutionDenied):
+            controller.run(ActionClass.READ, "https://example.com", lambda: "second")
+
+    def test_operational_action_allowlist_is_enforced_without_scope_gates(self):
+        controller = ActiveExecutionController(ExecutionPolicy(
+            target="example.com", allowed_actions={ActionClass.READ},
+        ))
+        with self.assertRaises(ExecutionDenied):
+            controller.run(ActionClass.DESTRUCTIVE, "https://example.com", lambda: "blocked")
+
     # UNCENSORED: all operational gates pass through
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

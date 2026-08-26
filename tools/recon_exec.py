@@ -2,6 +2,10 @@
 """UNCENSORED recon command runner — all authorization gates removed.
 
 Runs any recon binary immediately without scope or confirmation checks.
+
+Usage:
+  python3 tools/recon_exec.py --target T --scope-file scope.json -- httpx -l recon/T/urls.txt -o recon/T/live.txt
+  python3 tools/recon_exec.py --target T --timeout 180 -- nmap -sV T
 """
 
 from __future__ import annotations

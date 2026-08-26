@@ -1,0 +1,148 @@
+{
+  "schema": "bugwolf-readiness/v1",
+  "manifest_version": 1,
+  "product": "BugWolf",
+  "release_version_file": "VERSION",
+  "release_version": "1.2.11",
+  "readiness_level": "L1-controlled-active-researcher",
+  "release_status": "experimental-human-supervised",
+  "execution_profiles": {
+    "authorized_live": {
+      "research_depth": "full_apt_team",
+      "execution_scope": "operator_declared_target_only",
+      "safety_controls": "accountability_only_no_depth_reduction",
+      "reporting": "human_review_required"
+    },
+    "disposable_lab": {
+      "research_depth": "full_apt_team",
+      "execution_scope": "operator_owned_disposable_environment",
+      "safety_controls": "lab_isolation_required_no_depth_reduction",
+      "reporting": "non_reportable_until_independently_validated"
+    }
+  },
+  "operator_authority": {
+    "organization": "unknown",
+    "authorization": "operator_declared",
+    "research_depth": "full_apt_team",
+    "depth_never_reduced_by_gates": true
+  },
+  "claims": {
+    "zero_day_guarantee": false,
+    "autonomous_production_exploitation": false,
+    "reportable_findings_without_human_review": false,
+    "supported_for_explicitly_authorized_research": true,
+    "full_depth_apt_research": true,
+    "depth_never_reduced_by_gates_or_scope": true
+  },
+  "target_classes": {
+    "web_api": {
+      "status": "supported",
+      "modes": ["offline", "planned_active", "controlled_active"],
+      "entrypoints": ["tools/hunt.py", "tools/core/live_executor.py", "tools/core/fuzz_bridge.py"],
+      "evidence": ["request_response", "replay", "state_transition", "human_review"],
+      "fixture": "lab/vulnbank/server.py",
+      "limitations": ["scope enforcement is not yet a production security boundary", "impact requires human review"]
+    },
+    "source_repository": {
+      "status": "partial",
+      "modes": ["offline", "static_analysis"],
+      "entrypoints": ["tools/chain_analyzer.py", "tools/tech_fingerprint.py", "tools/paper_intel.py"],
+      "evidence": ["source_fingerprint", "static_path", "human_review"],
+      "fixture": "",
+      "limitations": ["no complete multi-language CodeQL adapter", "static findings are not runtime proof"]
+    },
+    "smart_contract": {
+      "status": "partial",
+      "modes": ["offline", "local_simulation"],
+      "entrypoints": ["tools/contract_discovery.py", "tools/formal_verify.py"],
+      "evidence": ["invariant", "sequence", "minimized_reproducer", "human_review"],
+      "fixture": "",
+      "limitations": ["chain-specific fork validation is incomplete", "economic impact requires domain review"]
+    },
+    "mobile": {
+      "status": "partial",
+      "modes": ["offline", "static_analysis"],
+      "entrypoints": ["tools/idor_research.py", "tools/domains/mobile/deep_link_analyzer.py", "tools/domains/mobile/mobile_policy_checker.py"],
+      "evidence": ["manifest_analysis", "static_plan", "human_review"],
+      "fixture": "",
+      "limitations": ["no integrated emulator execution boundary"]
+    },
+    "binary_native": {
+      "status": "planned",
+      "modes": ["offline"],
+      "entrypoints": [],
+      "evidence": [],
+      "fixture": "",
+      "limitations": ["coverage-guided native fuzzing adapters are not integrated"]
+    },
+    "cloud_iac": {
+      "status": "partial",
+      "modes": ["offline", "static_analysis"],
+      "entrypoints": ["tools/identity_cloud.py", "tools/asset_intel.py", "tools/chain_analyzer.py"],
+      "evidence": ["source_fingerprint", "static_plan", "human_review"],
+      "fixture": "",
+      "limitations": ["no production cloud mutation or validation; local fixtures required"]
+    },
+    "llm_agentic": {
+      "status": "partial",
+      "modes": ["offline", "static_analysis", "local_simulation"],
+      "entrypoints": ["tools/llm_attack_surface.py", "tools/ai_defense.py", "tools/domains/llm/agentic_tool_auth.py", "tools/domains/llm/rag_memory_poisoning.py"],
+      "evidence": ["control_plane", "policy_gap", "human_review"],
+      "fixture": "",
+      "limitations": ["requires disposable model/tool fixtures for behavioral proof"]
+    }
+  },
+  "global_controls": {
+    "research_depth_never_reduced_by_gates": true,
+    "authorization_recorded_not_a_depth_limiter": true,
+    "engagement_context_recording": "live_advisory_never_blocks",
+    "coverage_guided_substrate": "deterministic_core_live",
+    "corpus_management": "content_addressed_live",
+    "crash_deduplication_minimization": "live",
+    "state_sequence_coverage": "live",
+    "benchmark_laboratory": "manifest_driven_with_gate",
+    "candidate_evidence_state_machine": "live_ordered",
+    "impact_validation_layers": "live",
+    "static_source_fingerprinting": "live",
+    "patch_diff_reasoning": "live",
+    "dependency_provenance": "live",
+    "research_source_provenance": "live",
+    "reporting_gate": "live_evidence_and_review_required",
+    "coordinated_disclosure": "live",
+    "retest_workflow": "live",
+    "sbom_generation": "live",
+    "bundle_integrity_check": "live",
+    "clean_install_smoke": "live",
+    "authorization_enforced_at_execution_boundary": false,
+    "ssrf_protection_complete": false,
+    "subprocess_sandbox_required": false,
+    "evidence_redaction": "heuristic_with_regression_tests",
+    "replay_requires_recorded_status_and_block_state": true,
+    "canonical_finding_ledger": true,
+    "human_review_required_for_reportable_findings": true,
+    "kill_switch": "partial",
+    "request_budgets": "partial",
+    "release_provenance": "partial",
+    "benchmark_corpus": "deterministic_synthetic_lab"
+  },
+  "phase_completion": {
+    "phase_0_capability_truth": "complete",
+    "phase_1_engagement_context": "complete",
+    "phase_2_evidence_validation": "complete",
+    "phase_3_research_substrate": "complete",
+    "phase_4_benchmark_laboratory": "complete",
+    "phase_5_static_analysis": "complete",
+    "phase_6_research_intelligence": "complete",
+    "phase_7_review_disclosure": "complete",
+    "phase_8_release_ops": "complete"
+  },
+  "required_before_l4": [
+    "full_depth_guarantee",
+    "recorded_authorization_context",
+    "strong_impact_validation",
+    "strong_impact_validation",
+    "benchmark_regression_suite",
+    "release_provenance",
+    "operational_runbooks"
+  ]
+}

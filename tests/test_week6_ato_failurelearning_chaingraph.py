@@ -145,6 +145,67 @@ class TestFailureLearning(unittest.TestCase):
         self.assertEqual(a, b)
 
 
+class TestBypassApproval(unittest.TestCase):
+    """Operator approval of quarantined bypass candidates."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        report = fl.learn("acme", [{
+            "blocker": "blocked by cloudflare (403) on /x",
+            "defense": "cloudflare", "bug_class": "web",
+        }], base_dir=self.tmp.name)
+        fl.write_report(report, base_dir=self.tmp.name)
+        with open(self.tmp.name + "/research/acme/learning/"
+                  "failure-bypass-candidates.json") as f:
+            import json
+            self.ledger = json.load(f)
+
+    def test_all_quarantined_until_approved(self):
+        self.assertTrue(self.ledger["candidates"])
+        self.assertTrue(all(c["status"] == "quarantined"
+                            for c in self.ledger["candidates"]))
+        self.assertTrue(all(not c.get("approved_by")
+                            for c in self.ledger["candidates"]))
+
+    def test_approve_marks_candidate_and_persists(self):
+        target = next(c for c in self.ledger["candidates"]
+                      if c["payload"] == "X-Original-URL: /admin")
+        approved = fl.approve_candidate(
+            "acme", target["candidate_id"], operator="buffy",
+            base_dir=self.tmp.name)
+        self.assertEqual(approved.status, "approved")
+        self.assertEqual(approved.approved_by, "buffy")
+        self.assertTrue(approved.approved_at)
+        self.assertEqual(approved.candidate_id, target["candidate_id"])
+        with open(self.tmp.name + "/research/acme/learning/"
+                  "failure-bypass-candidates.json") as f:
+            import json
+            persisted = json.load(f)
+        approved_list = [c for c in persisted["candidates"]
+                         if c["status"] == "approved"]
+        self.assertEqual(len(approved_list), 1)
+        self.assertEqual(approved_list[0]["approved_by"], "buffy")
+
+    def test_approve_is_idempotent(self):
+        target = next(c for c in self.ledger["candidates"]
+                      if c["payload"] == "X-Original-URL: /admin")
+        first = fl.approve_candidate("acme", target["candidate_id"],
+                                     operator="a", base_dir=self.tmp.name)
+        second = fl.approve_candidate("acme", target["candidate_id"],
+                                      operator="b", base_dir=self.tmp.name)
+        self.assertEqual(second.approved_by, "a")  # unchanged
+        self.assertEqual(first.approved_at, second.approved_at)
+
+    def test_approve_unknown_candidate_raises(self):
+        with self.assertRaises(ValueError):
+            fl.approve_candidate("acme", "bc-none", base_dir=self.tmp.name)
+
+    def test_approve_without_ledger_raises(self):
+        with self.assertRaises(ValueError):
+            fl.approve_candidate("no-target", "bc-x", base_dir=self.tmp.name)
+
+
 class TestChainGraphAi(unittest.TestCase):
     def test_terminal_gap_proposals(self):
         report = cga.propose("acme", [

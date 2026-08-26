@@ -13,6 +13,12 @@ insecure API surface for exercising the BugWolf deep-hunt tool suite:
   POST /account/reset            — password-reset endpoint (ATO lead)
   GET  /openapi.json             — OpenAPI 3.0 spec for schema-driven tools
   GET  /tech.json                — tech fingerprint (nginx, node, graphql, waf)
+  GET  /api/ingest               — fuzz target: 500s on over-long or SQL-ish
+                                   `q` input (deterministic crash the fuzz
+                                   bridge finds and the loop reproduces)
+  GET  /api/gateway               — WAF gateway: 403s fuzz-mutated `q`
+                                   requests unless X-Original-URL bypass
+                                   header present (operator-approval surface)
 
 This is a LOCAL lab fixture for authorized testing only. It binds 127.0.0.1
 and performs no network activity.
@@ -154,6 +160,31 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "not found"})
                 return
             self._json(200, user)
+        elif path == "/api/ingest":
+            # Fuzz target: the "ingest parser" deterministically 5xxes on
+            # over-long or SQL-ish input.  This is the crash surface the fuzz
+            # bridge finds and the live loop re-probes + reproduces (E2E
+            # fuzz -> spawn -> reproduce cycle / self-eval task 9).
+            q = parse_qs(urlparse(self.path).query).get("q", [""])[0]
+            if len(q) > 64 or "' OR '1'='1" in q or "SLEEP(" in q:
+                self._json(500, {"error": "ingest parser failure"})
+                return
+            self._json(200, {"ok": True})
+        elif path == "/api/gateway":
+            # WAF gateway: blocks fuzz-mutated requests (any `q` probe) with
+            # a 403 unless the request carries the X-Original-URL bypass
+            # header (the failure-learning catalog's header-based path
+            # access technique).  This is the blocked -> operator approval ->
+            # bypass exploitation surface (self-eval task 10 milestone).
+            q = parse_qs(urlparse(self.path).query).get("q", [""])[0]
+            if "X-Original-URL" in self.headers:
+                self._json(200, {"id": "gw-1", "service": "internal-gateway",
+                                 "role": "admin", "token": "gw-secret-token"})
+                return
+            if q:
+                self._json(403, {"error": "access denied by gateway firewall"})
+                return
+            self._json(200, {"gateway": "open", "status": "ok"})
         elif path == "/graphql":
             self._json(200, {"data": {"__schema": {
                 "queryType": {"name": "Query"},

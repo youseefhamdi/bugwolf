@@ -43,7 +43,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 if str(Path(__file__).resolve().parent.parent.parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from tools.runtime_paths import workspace_root
+from tools.runtime_paths import target_slug, workspace_root
 
 # ---------------------------------------------------------------------------
 # Typed events
@@ -64,12 +64,14 @@ LLM_CANDIDATE = "LLM_CANDIDATE"
 LAB_PLANNED = "LAB_PLANNED"
 CHAIN_PROPOSAL = "CHAIN_PROPOSAL"
 EVAL_COMPLETE = "EVAL_COMPLETE"
+GRAPHQL_CANDIDATE = "GRAPHQL_CANDIDATE"
 
 EVENT_TYPES = (
     RECON_COMPLETE, FINDING_DISCOVERED, WAF_BLOCKED, STAGE_ADVANCED,
     SMUGGLING_CANDIDATE, AUTH_CANDIDATE, DISCOVERY_COMPLETE,
     RESEARCH_REFRESHED, CLOUD_CANDIDATE, MOBILE_CANDIDATE, ASSET_DELTA,
     LLM_CANDIDATE, LAB_PLANNED, CHAIN_PROPOSAL, EVAL_COMPLETE,
+    GRAPHQL_CANDIDATE,
 )
 
 # Which tools are the canonical subscribers for each event (documentation /
@@ -82,6 +84,7 @@ CANONICAL_LISTENERS: Dict[str, List[str]] = {
     STAGE_ADVANCED: ["campaign_orchestrator"],
     SMUGGLING_CANDIDATE: ["chain_orchestrator", "triage"],
     AUTH_CANDIDATE: ["triage", "chain_orchestrator"],
+    GRAPHQL_CANDIDATE: ["chain_orchestrator", "triage"],
     CLOUD_CANDIDATE: ["chain_orchestrator", "triage"],
     MOBILE_CANDIDATE: ["chain_orchestrator", "triage"],
     ASSET_DELTA: ["campaign_orchestrator", "asset_intel"],
@@ -121,11 +124,6 @@ class Event:
         return asdict(self)
 
 
-def _target_slug(target: str) -> str:
-    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in target)
-    return (safe or "default")[:200]
-
-
 # ---------------------------------------------------------------------------
 # The bus
 # ---------------------------------------------------------------------------
@@ -141,7 +139,7 @@ class SignalBus:
         root = workspace_root(project_root)
         self._events_dir = root / "state" / "signals" / "events"
         self._events_dir.mkdir(parents=True, exist_ok=True)
-        self._log = self._events_dir / f"{_target_slug(target)}.jsonl"
+        self._log = self._events_dir / f"{target_slug(target)}.jsonl"
         self._listeners: Dict[str, List[Listener]] = {}
 
     # -- subscription -------------------------------------------------------
@@ -167,7 +165,10 @@ class SignalBus:
         """Create, persist (optional), and dispatch an event to listeners.
 
         Listener failures are captured on the event and never raise — the bus
-        is advisory, not a workflow gate.
+        is advisory, not a workflow gate.  When the event was persisted and a
+        listener failed, the updated event (with ``listener_errors``) is
+        appended so the failure remains observable in the durable log instead
+        of living only in the in-memory return value.
         """
         event = Event(event_type=event_type, target=self.target, source=source,
                       payload=payload or {})
@@ -180,6 +181,9 @@ class SignalBus:
                 event.listener_errors.append(
                     f"{getattr(listener, '__name__', type(listener).__name__)}: "
                     f"{type(exc).__name__}: {exc}")
+        if event.listener_errors and persist:
+            # Durable failure record: same event id, appended after dispatch.
+            self._append(event)
         return event
 
     def _append(self, event: Event) -> None:
@@ -239,6 +243,31 @@ class SignalBus:
             "by_type": counts,
             "listeners": self.listeners(),
         }
+
+
+def publish_or_warn(target: str, event_type: str, source: str,
+                    payload: Optional[Dict[str, Any]] = None, *,
+                    project_root: Optional[str] = None,
+                    base_dir: Optional[str] = None) -> Optional[Event]:
+    """Publish an event, warning on environmental failure, raising on bugs.
+
+    The bus is advisory: an unwritable event log (``OSError``) must never
+    gate a tool, so it is reported to stderr and execution continues. But a
+    *programming* error — publishing an event type the bus does not register
+    (``ValueError``) or a malformed payload (``TypeError``) — must surface
+    loudly: silently swallowing it hides the exact bug class that left
+    ``GRAPHQL_CANDIDATE`` unpublished for a full release cycle.
+
+    Returns the persisted ``Event`` on success, ``None`` when the log could
+    not be written (environmental, advisory).
+    """
+    try:
+        bus = SignalBus(target, project_root=project_root or base_dir)
+        return bus.publish(event_type, source, payload)
+    except OSError as exc:
+        print(f"[!] signal publish skipped: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return None
 
 
 def main() -> int:

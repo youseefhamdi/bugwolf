@@ -4,6 +4,9 @@
 This module emits signals and validation/remediation plans only. It never
 creates SQLi/OOB payloads, writes files, invokes shells, generates gadget
 chains, or contacts external listeners.
+
+Usage:
+  python3 tools/chain_analyzer.py --path src/ --output-dir chain-review
 """
 
 from __future__ import annotations

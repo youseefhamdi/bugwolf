@@ -31,7 +31,7 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 
 try:
-    from tools.runtime_paths import CODE_ROOT, workspace_root
+    from tools.runtime_paths import CODE_ROOT, target_slug, workspace_root
 except ImportError:  # direct script execution
     from runtime_paths import CODE_ROOT, workspace_root
 
@@ -190,8 +190,7 @@ class ProgramFitGate:
 
     def __init__(self, target: str):
         self.target = target
-        safe = target.replace("/", "_").replace(":", "_").replace("*", "WILDCARD")
-        self._dir = PROGRAM_FIT_DIR / safe
+        self._dir = PROGRAM_FIT_DIR / target_slug(target)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._scope_file = self._dir / "scope.json"
         self._gated_file = self._dir / "gated_findings.json"

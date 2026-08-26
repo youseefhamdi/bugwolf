@@ -48,12 +48,12 @@ def _repo_root() -> Path:
 _CODE_ROOT = _repo_root()
 if str(_CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(_CODE_ROOT))
-from tools.runtime_paths import workspace_root
+from tools.runtime_paths import target_slug, workspace_root
 
 try:
-    from tools.core.signal_bus import SignalBus
+    from tools.core.signal_bus import SignalBus, publish_or_warn
 except ImportError:  # direct script execution
-    from tools.core.signal_bus import SignalBus
+    from tools.core.signal_bus import SignalBus, publish_or_warn
 
 SCHEMA = "bugwolf/oauth-flow/v1"
 
@@ -346,8 +346,8 @@ def write_analysis(analysis: OAuthAnalysis, *, project_root: Optional[str] = Non
         root = Path(base_dir)
     else:
         root = workspace_root(project_root)
-    target_slug = re.sub(r"[^\w.-]+", "_", analysis.target) or "default"
-    out_dir = root / "research" / target_slug / "auth"
+    target_dir = target_slug(analysis.target)
+    out_dir = root / "research" / target_dir / "auth"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "oauth-flow-plans.json"
     out_path.write_text(json.dumps(analysis.to_dict(), indent=2) + "\n",
@@ -408,15 +408,13 @@ def main() -> int:
     out_path = write_analysis(analysis, project_root=args.project_root)
 
     if analysis.plans:
-        try:
-            bus = SignalBus(args.target, project_root=args.project_root)
-            for plan in analysis.plans:
-                if plan.severity_hint == "high":
-                    bus.publish("AUTH_CANDIDATE", source="oauth_flow_analyzer",
-                                payload={"category": plan.category,
-                                         "description": plan.description[:300]})
-        except Exception:
-            pass  # event bus is advisory
+        for plan in analysis.plans:
+            if plan.severity_hint == "high":
+                publish_or_warn(
+                    args.target, "AUTH_CANDIDATE", source="oauth_flow_analyzer",
+                    payload={"category": plan.category,
+                             "description": plan.description[:300]},
+                    project_root=args.project_root)
 
     output = {
         "schema": SCHEMA,

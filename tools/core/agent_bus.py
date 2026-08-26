@@ -32,7 +32,7 @@ try:
 except ImportError:  # pragma: no cover - Windows fallback
     fcntl = None
 
-from tools.runtime_paths import workspace_root
+from tools.runtime_paths import target_slug, workspace_root
 
 ROOT = workspace_root()
 SIGNALS_ROOT = ROOT / "state" / "signals"
@@ -81,8 +81,7 @@ class AgentBus:
 
     def __init__(self, target: str):
         self.target = target
-        safe = safe_target_name(target).replace(":", "_")
-        self._dir = SIGNALS_ROOT / safe
+        self._dir = SIGNALS_ROOT / target_slug(target)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._inbox = self._dir / "inbox.jsonl"
         self._processed = self._dir / "processed.jsonl"

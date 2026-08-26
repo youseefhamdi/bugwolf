@@ -52,12 +52,12 @@ def _repo_root() -> Path:
 _CODE_ROOT = _repo_root()
 if str(_CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(_CODE_ROOT))
-from tools.runtime_paths import workspace_root
+from tools.runtime_paths import target_slug, workspace_root
 
 try:
-    from tools.core.signal_bus import SignalBus
+    from tools.core.signal_bus import SignalBus, publish_or_warn
 except ImportError:  # direct script execution
-    from tools.core.signal_bus import SignalBus
+    from tools.core.signal_bus import SignalBus, publish_or_warn
 try:
     from tools.deep_chain import EDGES, TERMINAL
 except ImportError:  # pragma: no cover
@@ -270,8 +270,8 @@ def write_proposal_set(report: ChainProposalSet, *,
         root = Path(base_dir)
     else:
         root = workspace_root(project_root)
-    target_slug = re.sub(r"[^\w.-]+", "_", report.target) or "default"
-    out_dir = root / "research" / target_slug / "chains"
+    target_dir = target_slug(report.target)
+    out_dir = root / "research" / target_dir / "chains"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "graph-ai-proposals.json"
     out.write_text(json.dumps(report.to_dict(), indent=2, sort_keys=True))
@@ -315,20 +315,15 @@ def main() -> int:
     out = write_proposal_set(report, project_root=args.project_root,
                              base_dir=args.base_dir)
 
-    if report.proposals:
-        try:
-            bus = SignalBus(args.target,
-                            project_root=args.project_root or args.base_dir)
-            for p in report.proposals[:8]:
-                bus.publish("CHAIN_PROPOSAL", source="chain_graph_ai",
-                            payload={"proposal_id": p.proposal_id,
-                                     "from": p.from_lead,
-                                     "to": p.to_lead,
-                                     "path": p.path,
-                                     "source": p.source})
-        except Exception as exc:  # advisory, never a gate
-            print(f"[!] signal publish skipped: {type(exc).__name__}: {exc}",
-                  file=sys.stderr)
+    for p in report.proposals[:8]:
+        publish_or_warn(args.target, "CHAIN_PROPOSAL",
+                        source="chain_graph_ai",
+                        payload={"proposal_id": p.proposal_id,
+                                 "from": p.from_lead,
+                                 "to": p.to_lead,
+                                 "path": p.path,
+                                 "source": p.source},
+                        project_root=args.project_root, base_dir=args.base_dir)
 
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))

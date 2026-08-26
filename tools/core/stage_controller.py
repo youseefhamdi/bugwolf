@@ -19,6 +19,11 @@ are the operator's responsibility, not a controller gate.
 Use ``--start`` once the target is known, then complete exactly one stage at a
 time with ``--complete``.  A research freshness failure is recorded as pending;
 it never permits the stage to be silently skipped.
+
+Usage:
+  python3 tools/stage_controller.py --target TARGET --mode web --start --json
+  python3 tools/stage_controller.py --target TARGET --status --json
+  python3 tools/stage_controller.py --target TARGET --complete validation --artifact recon/TARGET/recon-complete.json --json
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 if str(Path(__file__).resolve().parent.parent.parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from tools.runtime_paths import workspace_root
+from tools.runtime_paths import target_slug, workspace_root
 
 
 logger = logging.getLogger("bugwolf.stage_controller")
@@ -116,15 +121,6 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _target_slug(target: str) -> str:
-    value = str(target or "").strip()
-    if not value or value in {".", ".."} or "/" in value or "\\" in value:
-        raise ValueError("target must be a host or project name, not a path")
-    if not re.fullmatch(r"[A-Za-z0-9._:-]+", value):
-        raise ValueError("target contains unsupported characters")
-    return value[:200]
-
-
 def _atomic_write(path: Path, value: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
@@ -134,11 +130,11 @@ def _atomic_write(path: Path, value: Dict[str, Any]) -> None:
 
 
 def _workflow_path(project: Path, target: str) -> Path:
-    return project / ".bugwolf" / "workflows" / f"{_target_slug(target)}.json"
+    return project / ".bugwolf" / "workflows" / f"{target_slug(target)}.json"
 
 
 def _workflow_chain_path(project: Path, target: str) -> Path:
-    return project / ".bugwolf" / "workflows" / f"{_target_slug(target)}.chain.jsonl"
+    return project / ".bugwolf" / "workflows" / f"{target_slug(target)}.chain.jsonl"
 
 
 def _manifest_digest(data: Dict[str, Any]) -> str:
@@ -168,8 +164,75 @@ def _relative_or_absolute(project: Path, value: str) -> Path:
     return resolved
 
 
-def _artifact_digest(path: Path) -> str:
-    """Hash an artifact file or deterministic directory tree."""
+def _is_appendonly_artifact(name: str) -> bool:
+    """True for append-only JSONL ledgers (F0.5 quarantine + findings).
+
+    ``state/learning/<target>.jsonl`` (quarantine records) and
+    ``state/sessions/<target>/findings.jsonl`` (report-eligible findings)
+    grow by design — every quarantined/demoted finding or newly gated
+    finding appends a line.  Recording a whole-file digest would trip the
+    integrity gate on the next append, so these artifacts are hashed as a
+    (line_count, prefix_sha256) pair instead: only the recorded prefix must
+    stay byte-identical, later appends are tolerated.
+    """
+    normalized = str(name).replace("\\", "/")
+    if normalized.startswith("state/learning/") and normalized.endswith(".jsonl"):
+        return True
+    if normalized.startswith("state/sessions/") \
+            and normalized.endswith("/findings.jsonl"):
+        return True
+    return False
+
+
+def _appendonly_prefix_digest(path: Path) -> str:
+    """'lines:N:<sha256>' — hash of the bytes up to the last complete line."""
+    if not path.is_file():
+        return ""
+    raw = path.read_bytes()
+    last_nl = raw.rfind(b"\n")
+    if last_nl < 0:
+        return "lines:0:"
+    prefix = raw[:last_nl + 1]
+    lines = prefix.count(b"\n")
+    return f"lines:{lines}:{hashlib.sha256(prefix).hexdigest()}"
+
+
+def _appendonly_integrity_ok(path: Path, recorded: str) -> bool:
+    """True when the file equals the recorded prefix plus zero or more appends.
+
+    Verifies the first ``N`` complete lines are byte-identical to the
+    recorded digest; the file may only have grown since the stage completed
+    (tampering of recorded lines, truncation, or removal fails).
+    """
+    parts = str(recorded).split(":", 2)
+    if len(parts) != 3 or parts[0] != "lines":
+        return False
+    try:
+        expected_lines = int(parts[1])
+    except ValueError:
+        return False
+    expected_hash = parts[2]
+    if not path.is_file():
+        return False
+    raw = path.read_bytes()
+    offset = 0
+    for _ in range(expected_lines):
+        idx = raw.find(b"\n", offset)
+        if idx < 0:
+            return False
+        offset = idx + 1
+    return hashlib.sha256(raw[:offset]).hexdigest() == expected_hash
+
+
+def _artifact_digest(path: Path, *, name: str = "") -> str:
+    """Hash an artifact file or deterministic directory tree.
+
+    Append-only artifacts (``state/learning/*.jsonl``) are hashed as a
+    (line_count, prefix_sha256) pair so later quarantine appends never
+    invalidate the stage that recorded them.
+    """
+    if name and _is_appendonly_artifact(name):
+        return _appendonly_prefix_digest(path)
     digest = hashlib.sha256()
     if path.is_file():
         digest.update(path.read_bytes())
@@ -192,7 +255,7 @@ def _nonempty(path: Path) -> bool:
 
 
 def _paper_intelligence_sources(project: Path, target: str) -> Dict[str, Path]:
-    recon = project / "recon" / _target_slug(target)
+    recon = project / "recon" / target_slug(target)
     traffic = next((path for path in (
         recon / "https-traffic.json", recon / "https-traffic.jsonl",
         recon / "traffic.json", recon / "traffic.jsonl",
@@ -206,8 +269,8 @@ def _paper_intelligence_sources(project: Path, target: str) -> Dict[str, Path]:
         project / "agent-inventory.json", project / "agent-inventory.jsonl",
         project / "audit" / "agent-inventory.json",
         project / "audit" / "agent-inventory.jsonl",
-        project / "audit" / _target_slug(target) / "agent-inventory.json",
-        project / "audit" / _target_slug(target) / "agent-inventory.jsonl",
+        project / "audit" / target_slug(target) / "agent-inventory.json",
+        project / "audit" / target_slug(target) / "agent-inventory.jsonl",
     ) if path.is_file() and _nonempty(path)), None)
     result: Dict[str, Path] = {}
     if traffic:
@@ -230,11 +293,11 @@ def _paper_intelligence_inputs(project: Path, target: str) -> List[Path]:
 
 
 def _paper_intelligence_output(project: Path, target: str) -> Path:
-    return project / "recon" / _target_slug(target) / "paper-intelligence" / "paper-intelligence.json"
+    return project / "recon" / target_slug(target) / "paper-intelligence" / "paper-intelligence.json"
 
 
 def _paper_intelligence_map(project: Path, target: str) -> Path:
-    return project / "state" / "sessions" / _target_slug(target) / "maps" / "paper-intelligence.md"
+    return project / "state" / "sessions" / target_slug(target) / "maps" / "paper-intelligence.md"
 
 
 def _record_template(name: str) -> Dict[str, Any]:
@@ -260,7 +323,7 @@ class WorkflowController:
     def __init__(self, target: str, *, project_root: Optional[str] = None,
                  mode: str = "full", scope_file: Optional[str] = None):
         self.project = workspace_root(project_root)
-        self.target = _target_slug(target)
+        self.target = target_slug(target)
         self.mode = mode or "full"
         self.scope_file = scope_file or ""
         self.path = _workflow_path(self.project, self.target)
@@ -481,7 +544,7 @@ class WorkflowController:
             raise WorkflowError(
                 f"stage '{stage_name}' is not complete; nothing to refresh")
         stage["artifact_hashes"] = {
-            name: _artifact_digest(self.project / name)
+            name: _artifact_digest(self.project / name, name=name)
             for name in stage.get("artifacts", [])
         }
         stage.setdefault("notes", []).append(
@@ -507,6 +570,14 @@ class WorkflowController:
             if not recorded:
                 continue  # manifests created before integrity tracking
             for name, expected in recorded.items():
+                if _is_appendonly_artifact(name):
+                    # Append-only ledgers may grow; the recorded prefix must
+                    # remain intact (tampering/truncation still fails).
+                    if not _appendonly_integrity_ok(self.project / name, expected):
+                        raise WorkflowError(
+                            f"stage '{stage.get('name')}' artifact changed or "
+                            f"truncated: {name}")
+                    continue
                 actual = _artifact_digest(self.project / name)
                 if not actual or actual != expected:
                     raise WorkflowError(
@@ -606,6 +677,22 @@ class WorkflowController:
                 / f"iam-privesc-{target}.json"
             if _nonempty(capability):
                 out.append(capability)
+            return out
+        if name == "triage":
+            # F0.5 evidence ledgers (U3): the quarantine store
+            # (state/learning/<target>.jsonl — DEMOTED findings + sub-
+            # threshold candidates) and the findings ledger
+            # (state/sessions/<target>/findings.jsonl — report-eligible
+            # findings that passed the strict gate).  Both are append-only
+            # supplementary artifacts: their prefixes are hash-chained and
+            # later appends never break the integrity gate.
+            out = []
+            learning = root / "state" / "learning" / f"{target}.jsonl"
+            if _nonempty(learning):
+                out.append(learning)
+            findings = root / "state" / "sessions" / target / "findings.jsonl"
+            if _nonempty(findings):
+                out.append(findings)
             return out
         return []
 
@@ -761,7 +848,7 @@ class WorkflowController:
             self._validate_recon()
         artifact_names = self._validate_stage_artifacts(name, artifacts or [])
         artifact_hashes = {
-            artifact: _artifact_digest(self.project / artifact)
+            artifact: _artifact_digest(self.project / artifact, name=artifact)
             for artifact in artifact_names
         }
         quality = "complete"

@@ -5,6 +5,9 @@ This module converts recon/scanner signals into human-review tasks. It does
 not send requests or execute ffuf, nuclei, SQLMap, or XSStrike. The generated
 argv plans are intentionally confirmation-gated and exclude database dumping,
 credential attacks, takeover actions, and destructive workflow operations.
+
+Usage:
+  python3 tools/methodology_playbook.py --target T --urls-file recon/T/urls.txt --signals-file recon/T/nuclei.txt --output-dir recon/T/methodology --scope-file scope.json
 """
 
 from __future__ import annotations

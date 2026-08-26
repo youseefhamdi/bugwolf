@@ -10,6 +10,9 @@ structure-aware, differential experiments.
 This module is offline and deterministic: it never makes network requests and
 never invents credentials or values — it only structures what the operator
 supplies.
+
+Usage:
+  python3 tools/surface_model.py --target T --recon-dir recon/T --output recon/T/discovery/surface-model.json --json
 """
 
 from __future__ import annotations

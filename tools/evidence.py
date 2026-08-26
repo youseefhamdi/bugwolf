@@ -23,9 +23,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 try:
-    from tools.safety import safe_target_name
+    from tools.runtime_paths import target_slug
 except ImportError:
-    from safety import safe_target_name
+    from runtime_paths import target_slug
 
 try:
     import fcntl
@@ -55,12 +55,30 @@ _SECRET_VALUE_RE = re.compile(
     r"-----BEGIN [A-Z ]+ PRIVATE KEY-----.*?-----END [A-Z ]+ PRIVATE KEY-----",
     re.IGNORECASE,
 )
+_SECRET_JSON_VALUE_RE = re.compile(
+    r"([\\\"']?(?:authorization|proxy-authorization|cookie|set-cookie|"
+    r"api[-_]?key|secret|token|password|passwd|private[-_]?key|"
+    r"client[-_]?secret|session(?:[-_]?id)?|sid|jwt)[\\\"']?\\s*:\\s*"
+    r"[\\\"'])(?:[^\\\"']*)([\\\"'])",
+    re.IGNORECASE,
+)
 
 
 def redact_text(value: str) -> str:
     """Mask common credential formats while preserving useful structure."""
-    value = _SECRET_VALUE_RE.sub(lambda match: "[REDACTED]", str(value))
-    return value
+    value = str(value)
+    # Response bodies are often serialized JSON strings rather than mappings.
+    # Parse those strings so key-based redaction covers nested credentials too.
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        parsed = None
+    if isinstance(parsed, (dict, list)):
+        return json.dumps(
+            redact(parsed), ensure_ascii=False, separators=(",", ":")
+        )
+    value = _SECRET_VALUE_RE.sub(lambda match: "[REDACTED]", value)
+    return _SECRET_JSON_VALUE_RE.sub(r"\\1[REDACTED]\\2", value)
 
 
 def redact(value: Any, *, key: str = "") -> Any:
@@ -102,8 +120,7 @@ class EvidenceStore:
 
     def __init__(self, target: str):
         self.target = target
-        safe = safe_target_name(target).replace(":", "_")
-        self.root = RESEARCH_ROOT / safe / "evidence"
+        self.root = RESEARCH_ROOT / target_slug(target) / "evidence"
         self.root.mkdir(parents=True, exist_ok=True)
         self.manifest = self.root / "manifest.jsonl"
 

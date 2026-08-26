@@ -16,6 +16,10 @@ still filters every result back through the supplied scope. Bare IPs returned
 by a facet query are kept only when the query term itself is in scope (the
 Shodan facet is constrained by that term), so out-of-scope cert/hostname
 matches never reach downstream tools.
+
+Usage:
+  python3 tools/asset_intel.py --target example.com --scope-file scope.json --input-file recon/example.com/subs.txt --output-dir recon/example.com/asset-intel
+  python3 tools/asset_intel.py --target example.com --scope-file scope.json --shodan-facets --output-dir recon/example.com/asset-intel
 """
 
 from __future__ import annotations

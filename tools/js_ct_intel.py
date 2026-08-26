@@ -14,6 +14,10 @@ bounded, evidence-friendly phase:
 
 It does not validate credentials, claim takeovers, exploit findings, or submit
 reports. Outputs are hypotheses and intelligence requiring human validation.
+
+Usage:
+  python3 tools/js_ct_intel.py --target T --scope-file scope.json --output-dir recon/T --ct-only
+  python3 tools/js_ct_intel.py --target T --scope-file scope.json --urls-file recon/T/urls.txt --js-dir recon/T/js --output-dir recon/T/js-intel --js-only
 """
 
 from __future__ import annotations

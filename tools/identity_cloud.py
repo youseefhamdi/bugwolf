@@ -4,6 +4,9 @@
 This module analyzes supplied configuration, code, policy, and advisory text.
 It never performs login attempts, MFA prompts, token replay, metadata access,
 cloud API mutations, credential validation, or CVE exploitation.
+
+Usage:
+  python3 tools/identity_cloud.py --path infrastructure/ --plans --output-dir posture-review
 """
 
 from __future__ import annotations

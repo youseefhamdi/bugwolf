@@ -10,6 +10,10 @@ The scheduler owns *ordering, coverage, and the observation loop*. It never
 performs HTTP itself: a transport callable executes each mutation (already
 authorized through the execution controller) and returns an oracle-validated
 :class:`tools.observation.ObservationRecord`.
+
+Usage:
+  python3 tools/discovery_scheduler.py --target T --recon-dir recon/T --output-dir recon/T/discovery --budget 200 --min-focus medium --json
+  python3 tools/discovery_scheduler.py --target T --recon-dir recon/T --art --json
 """
 
 from __future__ import annotations

@@ -52,15 +52,16 @@ Usage:
 """
 
 import json
+import re
 import sys
 import hashlib
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 from dataclasses import dataclass, field, asdict
 
 try:
-    from tools.runtime_paths import CODE_ROOT, workspace_root
+    from tools.runtime_paths import CODE_ROOT, target_slug, workspace_root
 except ImportError:  # direct script execution
     from runtime_paths import CODE_ROOT, workspace_root
 
@@ -71,6 +72,11 @@ from tools.state import (
     STATE_ROOT, atomic_append, atomic_write, log_journal,
     add_finding, get_findings,
 )
+
+try:
+    from tools.deep_chain import EDGES
+except ImportError:  # direct script execution
+    from deep_chain import EDGES
 
 LEAD_DIR = STATE_ROOT / "sessions"
 
@@ -154,8 +160,7 @@ class Lead:
 # ---------------------------------------------------------------------------
 
 def _leads_file(target: str) -> Path:
-    safe = target.replace("/", "_").replace(":", "_").replace("*", "WILDCARD")
-    return LEAD_DIR / safe / "leads.jsonl"
+    return LEAD_DIR / target_slug(target) / "leads.jsonl"
 
 
 def _append_snapshot(lead: Lead):
@@ -535,6 +540,110 @@ def _chainable(lead: Lead, finding: Dict) -> bool:
         if (a_matches and b_matches) or (b_matches and a_matches):
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Exploit-feedback chain hypotheses
+# ---------------------------------------------------------------------------
+# When a CONFIRMED finding is exploited live, the demonstrated impact (the
+# data the replay actually returned) may unlock *further* bug classes.  The
+# deterministic heuristics below read the impact body and emit the downstream
+# chain hypotheses the pool should hunt next — "what else does this data
+# unlock".  Pure functions: no I/O, no persistence, deterministic input→output.
+
+# (regex on the demonstrated-impact text, downstream bug class, rationale)
+IMPACT_UNLOCK_RULES: Tuple[Tuple[str, str, str], ...] = (
+    (r"password|passwd|credential", "account-takeover",
+     "exposed credentials unlock account takeover / impersonation"),
+    (r"authorization|bearer|api[_-]?key|secret|token", "api-key-exposure",
+     "exposed tokens/secrets unlock credential theft"),
+    (r"role|is[_ ]?admin|privilege|permission|sudo", "privilege-escalation-web",
+     "exposed role/privilege fields unlock privilege escalation"),
+    (r"balance|amount|price|currency|payment|funds|wallet", "business-logic",
+     "exposed financial fields unlock value-manipulation business logic"),
+    (r"email|ssn|phone|address|date[_ ]?of[_ ]?birth|credit.?card|id[_ ]?card",
+     "mass-data-breach", "exposed PII unlocks mass data breach"),
+    (r"session|oauth|sso", "account-takeover",
+     "exposed session state unlocks account takeover"),
+    (r"sql|shell|command|exec\(|system\(|eval\(", "rce",
+     "exposed execution surface unlocks remote code execution"),
+)
+
+
+def derive_data_unlock_classes(impact_text: str, source_class: str = "",
+                               max_classes: int = 3) -> List[Tuple[str, str]]:
+    """Which downstream bug classes does the demonstrated impact unlock?
+
+    Deterministic: scans the impact text with the unlock rules (deduped,
+    ordered by rule priority).  If nothing textual matches, falls back to the
+    source finding's own escalation targets on the deep-chain ``EDGES`` graph
+    (``idor`` data unlocks whatever ``idor`` feeds).  Never returns more than
+    ``max_classes``.
+    """
+    text = str(impact_text or "").lower()
+    classes: List[Tuple[str, str]] = []
+    seen = set()
+    for pattern, cls, reason in IMPACT_UNLOCK_RULES:
+        if re.search(pattern, text) and cls not in seen:
+            seen.add(cls)
+            classes.append((cls, reason))
+    if not classes and source_class in EDGES:
+        for target in EDGES[source_class]:
+            if target in seen:
+                continue
+            seen.add(target)
+            classes.append((target, f"{source_class} data unlocks {target} escalation"))
+            if len(classes) >= max_classes:
+                break
+    return classes[:max_classes]
+
+
+def chain_hypotheses_from_exploit(impact_text: str, source_finding: Dict = None,
+                                  *, max_classes: int = 3) -> List[Dict]:
+    """Build OPEN-LEAD chain-hypothesis records from a demonstrated exploit.
+
+    Each record is a chain-pool lead the ``chain_orchestrator`` can consume
+    (``bug_class`` + ``evidence_state`` are read directly), stamped with the
+    source finding as a chain partner and the demonstrated impact as the
+    impact trace.  Pure: returns dicts, performs no I/O.
+    """
+    source = source_finding or {}
+    source_class = str(source.get("bug_class") or "")
+    finding_id = str(source.get("finding_id") or "")
+    endpoint = str(source.get("endpoint") or "")
+    method = str(source.get("method") or "GET")
+    severity = str(source.get("severity") or "low")
+    now = datetime.now(timezone.utc).isoformat()
+    records: List[Dict] = []
+    for cls, reason in derive_data_unlock_classes(
+            impact_text, source_class, max_classes=max_classes):
+        # Stable id: same finding + endpoint + class + impact -> same lead,
+        # so replayed exploitation cannot duplicate hypotheses.
+        raw = (f"exploit-feedback|{finding_id}|{cls}|{endpoint}|"
+               f"{str(impact_text or '').strip()[:200]}")
+        records.append({
+            "schema": "bugwolf/exploit-chain-hypothesis/v1",
+            "lead_id": hashlib.sha256(raw.encode()).hexdigest()[:16],
+            "target": str(source.get("target") or ""),
+            "title": (f"Exploit feedback: {cls} unlocked by demonstrated impact "
+                      f"of {finding_id or 'finding'}"),
+            "bug_class": cls,
+            "state": "OPEN",
+            "evidence_state": "hypothesis",
+            "endpoint": endpoint,
+            "method": method,
+            "severity": severity,
+            "reason": reason,
+            "trigger_trace": (
+                f"Impact of {finding_id or 'finding'} exposes data that can "
+                f"reach {cls}; hypothesis only until the link is evidenced"),
+            "impact_trace": str(impact_text or "")[:500],
+            "chain_partners": [finding_id] if finding_id else [],
+            "source": "exploit-feedback",
+            "created_at": now,
+            "updated_at": now,
+        })
+    return records
 
 
 # ---------------------------------------------------------------------------

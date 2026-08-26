@@ -167,6 +167,35 @@ standalone runs opt in with `--chains`:
 python3 tools/zero_day.py --target T --surface web_api --path A --chains --json
 ```
 
+The **Carlini Loop track** (`tools/carlini_loop.py`) applies the 2026 per-file
+brute-force discovery pattern (Carlini Loop / nano-analyzer / NOVA — see
+`ENHANCEMENT_PLAN.md`) to a local project: it enumerates source files
+(bounded, extension-filtered, noise-excluded), builds a deterministic
+per-file security briefing (imports, functions, entry points, line-anchored
+dangerous sinks), and either emits one research unit per file for the
+harness to execute with CTF framing, runs a model-free offline sink-catalog
+scan, or intakes harness findings back through the normal
+`ZeroDayResearchEngine` (novelty dedup + evidence + chain synthesis):
+
+```bash
+# 1. Emit per-file research units for the harness (no network)
+python3 tools/carlini_loop.py --target local-project --path . \
+  --emit-units research/local-project/carlini-loop/units.jsonl --json
+
+# 2. Offline deterministic floor (no model needed)
+python3 tools/carlini_loop.py --target local-project --path . \
+  --offline --surface web_api --json
+
+# 3. Intake harness findings and register through novelty/evidence
+python3 tools/carlini_loop.py --target local-project \
+  --register-result research/local-project/carlini-loop/intake.jsonl --json
+```
+
+Repeated intake is idempotent (stable candidate ids are filtered before
+registration, near-matches come back as `likely_variant`), candidates stay
+HYPOTHESIS until trigger+impact evidence exists, and nothing is labeled a
+zero-day without human review.
+
 Every real `hunt.py`, `recon_engine.sh`, and `zero_day.py` run now invokes the deep-research coordinator sequentially: `pre-hunt → post-recon → post-maps → bypass`, then `post-findings → escalation → pre-report`. Each checkpoint is persisted under `research/<target>/` and summarized in `research/<target>/sequence.json`; `latest_ready: false` explicitly means live-search data was unavailable. Configure `SERPER_API_KEY` or an HTTPS `RESEARCH_SEARCH_API_URL` plus `RESEARCH_SEARCH_API_KEY` when current web results are required. Use `python3 tools/research_loop.py --sequential --phase full --target T --mode web --execute --json` to run the same sequence manually.
 
 After each hunt, recon, and potentially-novel journey, newly observed techniques and blocker patterns are added to a quarantined local memory at `state/learning/<target>.jsonl`. Repeated records are deduplicated; only explicitly reviewed records can be reused in future target-specific wordlists. The plugin never self-modifies executable source or auto-approves untrusted research:
@@ -326,6 +355,41 @@ Host-confusion probes also target the application's own internal vhost candidate
 The surface model also ensures a `GET /sitemap.xml` operation with `offset`/`page`/`limit`/`sort`/`order`/`filter` parameters, and the mutator plans `blind_sqli` time-based detection for those pagination/sort surfaces (`SLEEP`/`PG_SLEEP`/`WAITFOR DELAY`). Those strings are detection *plans*, never auto-fired — live execution still requires the gated controller.
 
 The same coverage loop drives smart-contract state-space exploration via `tools/contract_discovery.py`: bounded sequence/boundary/role/reentrancy mutation plans, a deterministic in-memory invariant executor, and automatic minimization of violating sequences to minimal reproducers. See [`references/discovery-core.md`](references/discovery-core.md) — smart-contract extension.
+
+## Live Execution Harness Loop (Phase 3)
+
+BugWolf is now a *hunter*, not just a planner: research units are executed as
+real HTTP probes with recorded, replayable evidence.
+
+```bash
+# Drive the full campaign with live probing: unit -> probe -> observe -> adapt
+python3 tools/core/campaign_orchestrator.py --target example.com --live-run \
+  --base-url https://example.com --max-units 30
+
+# Fuzz a surface with scheduler-ordered mutations; crash/timeout/anomaly
+# evidence is published into research threads as FINDING_DISCOVERED events
+python3 tools/core/fuzz_bridge.py --target example.com \
+  --base-url https://example.com --recon-dir recon/example.com --budget 100
+
+# Novel-class hunting beyond the fixed bug-class templates
+tools/zero_day.py --mode diff-analysis   # behavior deltas across versions
+#   --mode anomaly-detection             # status/timing/header/error anomalies
+#   --mode state-machine                 # workflow skip/repeat/reorder
+```
+
+- `tools/core/live_executor.py` — deterministic probe planning + execution
+  (baseline + technique probes), WAF detection, bounded retries, and a
+  reproducible-evidence block (`replay_key`) per probe. Probes persist to
+  `state/sessions/<target>/probes.jsonl`.
+- `live_feedback_loop()` adapts: blocked (403/WAF) → `failure_learning`
+  bypass quarantine; signal → F0.5 gate with recorded evidence
+  (`require_reproducible` forces CONFIRMED to need replayable proof);
+  clean → REFUTED; transport errors are observations, never gates.
+- `tools/refutation.py` — `verify_reproducibility()` replays a finding's
+  recorded request via the live executor for deterministic reproduction.
+- Integration tests boot the VulnBank lab in-process and assert the real
+  probe → observation → adaptation cycle (`tests/test_live_feedback_loop.py`,
+  `tests/test_e2e_deep_dive_campaign.py`).
 
 ---
 
@@ -623,6 +687,8 @@ Every finding passes four gates before it's confirmed:
 4. **Impact** — is there material harm to an identifiable victim?
 
 Fail any gate → rejected or demoted to a lead for manual review.
+
+**F0.5 precision-first reporting (default):** findings are scored deterministically from their evidence (reproducible trigger trace, impact trace, evidence refs, endpoint, confirmed behavior). Findings below the confidence threshold are **DEMOTED** and quarantined to `state/learning/<target>.jsonl` for operator review instead of reaching the final report — uncensored *execution* is untouched, only uncensored *reporting* ends. Legacy auto-confirm is preserved with `--no-strict` (`python3 tools/refutation.py --target T --no-strict`).
 
 ---
 

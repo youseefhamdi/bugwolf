@@ -19,26 +19,158 @@ Thread state machine:
 The plugin NEVER tells the harness how to do research. It tells the harness
 WHAT to research, provides TOOLS, and tracks PROGRESS. The harness is the
 researcher.
+
+Usage:
+  python3 tools/research_thread.py --target T --generate-threats --json
+  python3 tools/research_thread.py --target T --spawn-threads --json
+  python3 tools/research_thread.py --target T --advance-asset --status --json
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+try:
+    from tools.runtime_paths import target_slug, workspace_root
+except ImportError:  # direct script execution
+    from runtime_paths import target_slug, workspace_root
+
 from tools.campaign import (
     CampaignManager, ThreadRecord, ThreadState, ThreatHypothesis,
     AssetRecord, AssetStatus, Priority,
-    safe_target_name,
 )
 from tools.asset_discovery import build_research_unit
 
 SCHEMA = "bugwolf-research-thread-v1"
+
+
+# ---------------------------------------------------------------------------
+# Elicitation gap bridge (U2): resolve deterministic artifacts into unit context
+# ---------------------------------------------------------------------------
+
+# Deterministic artifact families per stage, mirroring the stage controller's
+# supplementary-artifact catalog.  Keys are stable category labels; values are
+# (relative-path pattern) pairs.  Patterns use ``{target}`` for the target slug
+# and ``*`` for a stack/host suffix.
+DETERMINISTIC_ARTIFACT_PATTERNS: Dict[str, List[str]] = {
+    "waf_payloads": [
+        "research/{target}/bypass/waf-payloads-*.json",
+    ],
+    "smuggling_plan": [
+        "recon/{target}/discovery/smuggling-plan.jsonl",
+    ],
+    "jwt_plans": [
+        "research/{target}/auth/jwt-forgery-plans.json",
+    ],
+    "oauth_plans": [
+        "research/{target}/auth/oauth-flow-plans.json",
+    ],
+    "graphql_plans": [
+        "recon/{target}/discovery/graphql-plans.json",
+    ],
+    "bopla_matrix": [
+        "recon/{target}/discovery/bopla-matrix.json",
+    ],
+    "ato_plans": [
+        "recon/{target}/discovery/ato-chain-plans.json",
+    ],
+    "contract_plans": [
+        "research/{target}/contracts/triage-verdicts.json",
+        "research/{target}/contracts/price-manipulation-plans.json",
+    ],
+    "llm_plans": [
+        "research/{target}/llm/agentic-tool-auth-plans.json",
+        "research/{target}/llm/rag-poisoning-plans.json",
+    ],
+    "advisor_proposals": [
+        "research/{target}/advisor/seed-proposals.json",
+    ],
+    "deep_link_plans": [
+        "recon/{target}/discovery/deep-link-plans.json",
+    ],
+    "mobile_policy": [
+        "recon/{target}/discovery/mobile-policy-check.json",
+    ],
+    "iam_privesc": [
+        "state/capability/iam-privesc-{target}.json",
+    ],
+    "learning_bypass": [
+        "research/{target}/learning/failure-bypass-candidates.json",
+    ],
+}
+
+
+def resolve_deterministic_artifacts(
+    target: str, *, project_root: Optional[str] = None,
+    base_dir: Optional[str] = None, bug_class: str = "",
+) -> Dict[str, Any]:
+    """Resolve existing deterministic artifacts into a unit context block.
+
+    Returns ``{"artifact_paths": [...], "deterministic_evidence": {...}}``
+    with only artifacts that actually exist (empty list when none do).  This
+    is the bridge between the harness's free-text ``suggested_approaches``
+    (LLM intent) and the deterministic payload/probe artifacts (execution
+    details) produced by the domain tools.
+
+    ``bug_class`` narrows the evidence block to the relevant families
+    (e.g. ``sqli`` keeps ``waf_payloads`` + ``smuggling_plan``).
+    """
+    if base_dir:
+        root = Path(base_dir)
+    else:
+        root = workspace_root(project_root)
+    slug = target_slug(target)
+    evidence: Dict[str, List[str]] = {}
+    for category, patterns in DETERMINISTIC_ARTIFACT_PATTERNS.items():
+        hits: List[str] = []
+        for pattern in patterns:
+            rel = pattern.format(target=slug)
+            for path in sorted(root.glob(rel)):
+                try:
+                    rel_path = str(path.relative_to(root))
+                except ValueError:
+                    rel_path = str(path)
+                hits.append(rel_path)
+        if hits:
+            evidence[category] = hits
+    flat = sorted(path for paths in evidence.values() for path in paths)
+    return {
+        "artifact_paths": flat,
+        "deterministic_evidence": evidence,
+        "bug_class_filter": bug_class or "all",
+    }
+
+
+def attach_deterministic_artifacts(
+    unit: Dict[str, Any], target: str, *,
+    project_root: Optional[str] = None, base_dir: Optional[str] = None,
+    bug_class: str = "",
+) -> Dict[str, Any]:
+    """Merge resolved artifact paths into ``unit["context"]`` (advisory).
+
+    The unit's dispatch format is untouched; the artifacts are pure context
+    the harness may use to ground its execution in deterministic payloads.
+    """
+    if not isinstance(unit, dict):
+        return unit
+    context = unit.setdefault("context", {})
+    if not isinstance(context, dict):
+        context = {}
+        unit["context"] = context
+    resolved = resolve_deterministic_artifacts(
+        target, project_root=project_root, base_dir=base_dir,
+        bug_class=bug_class)
+    context["deterministic_evidence"] = resolved["deterministic_evidence"]
+    context["artifact_paths"] = resolved["artifact_paths"]
+    context["bug_class_filter"] = resolved["bug_class_filter"]
+    return unit
 
 # ---------------------------------------------------------------------------
 # Threat model templates — what threats exist for each asset type
@@ -262,12 +394,27 @@ ESCALATION_TECHNIQUES: Dict[str, List[str]] = {
 # Thread Builder
 # ---------------------------------------------------------------------------
 
+# pass@k (U4): diverse system-prompt families cycled across variant threads.
+# Deterministic and bounded; each variant attacks the same threat from a
+# different angle so the best pass wins without changing what the core
+# considers valid.
+PASS_SYSTEM_PROMPTS: tuple = (
+    "You are BugWolf's primary researcher: be thorough and skeptical; "
+    "confirm with reproducible evidence before escalating.",
+    "You are BugWolf's variant analyst: attack from a different angle; "
+    "prefer differential and baseline comparisons over payload volume.",
+    "You are BugWolf's escalation specialist: once a signal appears, "
+    "maximize impact systematically and record every step.",
+)
+
+
 class ThreadBuilder:
     """Build research threads from threats and dispatch them to the harness."""
 
-    def __init__(self, target: str):
-        self.target = safe_target_name(target).replace(":", "_")[:200]
+    def __init__(self, target: str, *, pass_at_k: int = 1):
+        self.target = target_slug(target)
         self.campaign = CampaignManager(target)
+        self.pass_at_k = max(1, int(pass_at_k or 1))
 
     # -- Threat generation from asset type templates -----------------------
 
@@ -297,21 +444,35 @@ class ThreadBuilder:
             threats.append(threat)
         return threats
 
-    def build_threads_for_asset(self, asset: AssetRecord) -> List[ThreadRecord]:
-        """Generate threats and spawn research threads for an asset."""
+    def build_threads_for_asset(self, asset: AssetRecord, *,
+                                pass_at_k: Optional[int] = None) -> List[ThreadRecord]:
+        """Generate threats and spawn research threads for an asset.
+
+        With ``pass_at_k`` > 1, every threat spawns ``k`` variant threads
+        (pass_variant 0..k-1) that share a ``pass_group`` and attack the same
+        hypothesis from different system-prompt angles — the test-time
+        compute scaling of U4.  Deduplication is per (bug_class, variant) so
+        a second deep-dive pass adds variants without re-spawning the
+        primary threads.
+        """
+        pass_at_k = max(1, int(pass_at_k or self.pass_at_k))
         threats = self.generate_threats(asset)
 
-        # Check for existing threads to avoid duplicates
-        existing_bug_classes = {
-            t.bug_class for t in self.campaign.list_threads(asset_id=asset.asset_id)
+        # Check for existing threads to avoid duplicates (variant-aware).
+        existing = {
+            (t.bug_class, t.pass_variant)
+            for t in self.campaign.list_threads(asset_id=asset.asset_id)
         }
 
         threads = []
         for threat in threats:
-            if threat.type in existing_bug_classes:
-                continue
-            thread = self.campaign.spawn_thread(asset, threat)
-            threads.append(thread)
+            for variant in range(pass_at_k):
+                if (threat.type, variant) in existing:
+                    continue
+                thread = self.campaign.spawn_thread(
+                    asset, threat, pass_variant=variant,
+                    pass_group=threat.type)
+                threads.append(thread)
 
         # Save threats to asset
         self.campaign.save_threats(asset.asset_id, threats)
@@ -356,6 +517,14 @@ class ThreadBuilder:
         # Build suggested approaches based on state + bug class
         approaches = self._approaches_for_state(thread)
 
+        # pass@k (U4): label the variant and diversify the approaches so each
+        # pass explores different ground.  Deterministic rotation.
+        variant = max(0, int(getattr(thread, "pass_variant", 0) or 0))
+        if variant and approaches:
+            rotated = approaches[variant % len(approaches):] \
+                + approaches[:variant % len(approaches)]
+            approaches = rotated
+
         unit = build_research_unit(
             objective=objective,
             asset_hostname=context.get("asset", ""),
@@ -364,9 +533,34 @@ class ThreadBuilder:
             context=context,
             success_criteria=criteria,
             max_iterations=min(50, thread.max_iterations - thread.iterations),
+            variant=variant,
+            pass_index=variant,
+            system_prompt=PASS_SYSTEM_PROMPTS[
+                variant % len(PASS_SYSTEM_PROMPTS)],
         )
         if approaches:
             unit["suggested_approaches"] = approaches
+        # Elicitation bridge (U2): ground the free-text approaches in the
+        # deterministic artifacts (payload families, probe plans, forgery
+        # plans) that already exist for this target.
+        attach_deterministic_artifacts(
+            unit, self.target,
+            project_root=str(workspace_root()),
+            bug_class=thread.bug_class)
+        # Model routing (U5): advisory model_preference for the harness.
+        try:
+            from tools.core.model_router import attach_hint
+            attach_hint(unit)
+            routing = (unit.get("context") or {}).get("model_routing") or {}
+            if routing:
+                self.campaign.log_event("unit_routed", {
+                    "unit_id": thread.thread_id,
+                    "model_tier": routing.get("tier"),
+                    "model_preference": routing.get("model_preference"),
+                    "complexity": routing.get("complexity"),
+                })
+        except Exception:
+            pass  # routing is advisory, never a dispatch gate
 
         return unit
 
@@ -609,16 +803,19 @@ class ThreadBuilder:
 
     # -- Asset lifecycle ---------------------------------------------------
 
-    def start_asset_research(self, asset: AssetRecord) -> List[ThreadRecord]:
+    def start_asset_research(self, asset: AssetRecord, *,
+                             pass_at_k: Optional[int] = None) -> List[ThreadRecord]:
         """Begin the deep research phase for an asset."""
-        threads = self.build_threads_for_asset(asset)
+        pass_at_k = max(1, int(pass_at_k or self.pass_at_k))
+        threads = self.build_threads_for_asset(asset, pass_at_k=pass_at_k)
 
-        # Ensure we don't go over the concurrent thread limit
+        # Ensure we don't go over the concurrent thread limit: cap the total
+        # so the highest-priority threats keep their full variant sets.
         state = self.campaign.load()
         max_threads = state.max_concurrent_threads
-        if len(threads) > max_threads:
+        if len(threads) > max_threads * pass_at_k:
             # Prioritize: spawn only the highest-priority ones first
-            threads = threads[:max_threads]
+            threads = threads[:max_threads * pass_at_k]
 
         asset.status = AssetStatus.DEEP_RESEARCH
         if not asset.started_at:

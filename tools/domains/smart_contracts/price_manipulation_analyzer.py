@@ -56,12 +56,12 @@ def _repo_root() -> Path:
 _CODE_ROOT = _repo_root()
 if str(_CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(_CODE_ROOT))
-from tools.runtime_paths import workspace_root
+from tools.runtime_paths import target_slug, workspace_root
 
 try:
-    from tools.core.signal_bus import SignalBus
+    from tools.core.signal_bus import SignalBus, publish_or_warn
 except ImportError:  # direct script execution
-    from tools.core.signal_bus import SignalBus
+    from tools.core.signal_bus import SignalBus, publish_or_warn
 
 SCHEMA = "bugwolf/price-manipulation-analyzer/v1"
 
@@ -279,8 +279,8 @@ def write_analysis(analysis: PriceManipulationAnalysis, *,
         root = Path(base_dir)
     else:
         root = workspace_root(project_root)
-    target_slug = re.sub(r"[^\w.-]+", "_", analysis.target) or "default"
-    out_dir = root / "research" / target_slug / "contracts"
+    target_dir = target_slug(analysis.target)
+    out_dir = root / "research" / target_dir / "contracts"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "price-manipulation-plans.json"
     out.write_text(json.dumps(analysis.to_dict(), indent=2, sort_keys=True))
@@ -316,18 +316,13 @@ def main() -> int:
                          base_dir=args.base_dir)
 
     high = [p for p in analysis.plans if p.severity == "high"]
-    if high:
-        try:
-            bus = SignalBus(args.target,
-                            project_root=args.project_root or args.base_dir)
-            for plan in high:
-                bus.publish("LLM_CANDIDATE", source="price_manipulation_analyzer",
-                            payload={"dependency": plan.dependency,
-                                     "title": plan.title,
-                                     "severity": plan.severity})
-        except Exception as exc:  # advisory, never a gate
-            print(f"[!] signal publish skipped: {type(exc).__name__}: {exc}",
-                  file=sys.stderr)
+    for plan in high:
+        publish_or_warn(args.target, "LLM_CANDIDATE",
+                        source="price_manipulation_analyzer",
+                        payload={"dependency": plan.dependency,
+                                 "title": plan.title,
+                                 "severity": plan.severity},
+                        project_root=args.project_root, base_dir=args.base_dir)
 
     if args.json:
         print(json.dumps(analysis.to_dict(), indent=2, sort_keys=True))

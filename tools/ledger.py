@@ -33,7 +33,7 @@ from dataclasses import dataclass, field, asdict
 from collections import defaultdict
 
 try:
-    from tools.runtime_paths import CODE_ROOT, workspace_root
+    from tools.runtime_paths import CODE_ROOT, target_slug, workspace_root
     from tools.safety import safe_target_name
 except ImportError:  # direct script execution
     from runtime_paths import CODE_ROOT, workspace_root
@@ -151,7 +151,7 @@ class LedgerVerifier:
     def __init__(self, target: str):
         safe_target_name(target)
         self.target = target
-        safe = target.replace("/", "_").replace(":", "_").replace("*", "WILDCARD")
+        safe = target_slug(target)
         self._dir = LEDGER_DIR / safe
         self._dir.mkdir(parents=True, exist_ok=True)
 

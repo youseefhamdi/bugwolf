@@ -48,12 +48,12 @@ def _repo_root() -> Path:
 _CODE_ROOT = _repo_root()
 if str(_CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(_CODE_ROOT))
-from tools.runtime_paths import workspace_root
+from tools.runtime_paths import target_slug, workspace_root
 
 try:
-    from tools.core.signal_bus import SignalBus
+    from tools.core.signal_bus import SignalBus, publish_or_warn
 except ImportError:  # direct script execution
-    from tools.core.signal_bus import SignalBus
+    from tools.core.signal_bus import SignalBus, publish_or_warn
 
 SCHEMA = "bugwolf/graphql-analyzer/v1"
 GRAPHQL_CANDIDATE = "GRAPHQL_CANDIDATE"  # published via signal bus
@@ -382,8 +382,8 @@ def write_analysis(analysis: GraphqlAnalysis, *, project_root: Optional[str] = N
         root = Path(base_dir)
     else:
         root = workspace_root(project_root)
-    target_slug = re.sub(r"[^\w.-]+", "_", analysis.target) or "default"
-    out_dir = root / "recon" / target_slug / "discovery"
+    target_dir = target_slug(analysis.target)
+    out_dir = root / "recon" / target_dir / "discovery"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "graphql-plans.json"
     out_path.write_text(json.dumps(analysis.to_dict(), indent=2) + "\n",
@@ -422,16 +422,15 @@ def main() -> int:
     out_path = write_analysis(analysis, project_root=args.project_root)
 
     if analysis.plans:
-        try:
-            bus = SignalBus(args.target, project_root=args.project_root)
-            for plan in analysis.plans:
-                if plan.severity_hint == "high":
-                    bus.publish(GRAPHQL_CANDIDATE, source="graphql_batch_analyzer",
-                                payload={"category": plan.category,
-                                         "endpoint": analysis.endpoint,
-                                         "description": plan.description[:300]})
-        except Exception:
-            pass  # event bus is advisory
+        for plan in analysis.plans:
+            if plan.severity_hint == "high":
+                publish_or_warn(
+                    args.target, GRAPHQL_CANDIDATE,
+                    source="graphql_batch_analyzer",
+                    payload={"category": plan.category,
+                             "endpoint": analysis.endpoint,
+                             "description": plan.description[:300]},
+                    project_root=args.project_root)
 
     output = {
         "schema": SCHEMA,

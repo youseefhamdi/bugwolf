@@ -10,6 +10,8 @@ Covers:
   * tools.domains.auth.jwt_forgery — static analysis + forgery plan classes
 """
 
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -113,6 +115,31 @@ class TestSignalBus(unittest.TestCase):
         self.assertEqual(len(event.listener_errors), 1)
         self.assertIn("listener exploded", event.listener_errors[0])
 
+    def test_listener_failure_is_persisted_for_late_observers(self):
+        """A failing listener appends the updated event so the durable log
+        records the failure, not just the in-memory return value."""
+        bus = self._bus()
+
+        def boom(event):
+            raise RuntimeError("listener exploded")
+
+        bus.subscribe(RECON_COMPLETE, boom)
+        event = bus.publish(RECON_COMPLETE, source="test")
+        self.assertEqual(len(event.listener_errors), 1)
+        # The failure is durable: a later bus instance sees it.
+        late = self._bus()
+        records = late.events(RECON_COMPLETE)
+        self.assertGreaterEqual(len(records), 1)
+        self.assertTrue(any("listener exploded" in error
+                            for record in records
+                            for error in record.listener_errors))
+
+    def test_successful_dispatch_does_not_duplicate_durable_event(self):
+        bus = self._bus()
+        bus.subscribe(RECON_COMPLETE, lambda e: None)
+        bus.publish(RECON_COMPLETE, source="test")
+        self.assertEqual(len(bus.events(RECON_COMPLETE)), 1)
+
     def test_stats_counts_by_type(self):
         bus = self._bus()
         bus.publish(WAF_BLOCKED, source="hunt", payload={"defense": "X"})
@@ -127,6 +154,54 @@ class TestSignalBus(unittest.TestCase):
         for name in ("RECON_COMPLETE", "FINDING_DISCOVERED", "WAF_BLOCKED",
                      "STAGE_ADVANCED", "SMUGGLING_CANDIDATE", "AUTH_CANDIDATE"):
             self.assertIn(name, EVENT_TYPES)
+
+    def test_graphql_candidate_event_registered_and_persisted(self):
+        # graphql_batch_analyzer publishes GRAPHQL_CANDIDATE; it must be a
+        # registered type so the event survives the bus's validation gate.
+        from tools.core.signal_bus import GRAPHQL_CANDIDATE
+        self.assertIn(GRAPHQL_CANDIDATE, EVENT_TYPES)
+        bus = self._bus()
+        bus.publish(GRAPHQL_CANDIDATE, source="graphql_batch_analyzer",
+                    payload={"category": "batching", "endpoint": "/graphql"})
+        ev = bus.events(GRAPHQL_CANDIDATE)
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0].payload["category"], "batching")
+
+    def test_publish_or_warn_persists_and_returns_event(self):
+        from tools.core.signal_bus import publish_or_warn
+        event = publish_or_warn("acme", SMUGGLING_CANDIDATE,
+                                source="http_smuggling_detector",
+                                payload={"technique": "CL.TE"},
+                                project_root=str(self.root))
+        self.assertIsNotNone(event)
+        self.assertEqual(event.event_type, SMUGGLING_CANDIDATE)
+        self.assertEqual(len(self._bus().events(SMUGGLING_CANDIDATE)), 1)
+
+    def test_publish_or_warn_raises_on_unregistered_type(self):
+        # Programming error (unregistered event type) must fail loudly, not
+        # be swallowed by the old `except Exception: pass` pattern.
+        from tools.core.signal_bus import publish_or_warn
+        with self.assertRaises(ValueError):
+            publish_or_warn("acme", "GRAPHQL_CANDIDATE_TYPO",
+                            source="graphql_batch_analyzer",
+                            payload={}, project_root=str(self.root))
+
+    def test_publish_or_warn_tolerates_unwritable_log(self):
+        # Environmental failure (unwritable events dir) is advisory: warn to
+        # stderr and return None, never gate the tool.
+        from tools.core.signal_bus import publish_or_warn
+        import os
+        if hasattr(os, "getuid") and os.getuid() == 0:
+            self.skipTest("root ignores file permissions")
+        read_only = Path(self.root) / "state" / "signals" / "events"
+        read_only.mkdir(parents=True, exist_ok=True)
+        os.chmod(read_only, 0o555)
+        self.addCleanup(os.chmod, read_only, 0o755)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            result = publish_or_warn("acme", AUTH_CANDIDATE, source="jwt_forgery",
+                                     payload={}, project_root=str(self.root))
+        self.assertIsNone(result)
+        self.assertIn("signal publish skipped", err.getvalue())
 
 
 class TestHierarchicalSubCheckpoints(unittest.TestCase):
@@ -340,6 +415,27 @@ class TestChainDiscoveryEventReaction(unittest.TestCase):
             event = bus.publish(FINDING_DISCOVERED, source="test",
                                 payload={"target": "ghost"})
             self.assertEqual(event.listener_errors, [])
+
+    def test_chain_refresh_failure_is_recorded_on_the_event(self):
+        """A failed chain refresh is visible in the event's durable log."""
+        from tools.chain_orchestrator import make_finding_discovered_listener
+        from tools.core.signal_bus import SignalBus, FINDING_DISCOVERED
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            listener = make_finding_discovered_listener(
+                "acme", project_root=str(root))
+            bus = SignalBus("acme", project_root=str(root))
+            bus.subscribe(FINDING_DISCOVERED, listener)
+            with mock.patch("tools.chain_orchestrator.refresh_target",
+                            side_effect=RuntimeError("synthetic chain refresh failure")):
+                event = bus.publish(FINDING_DISCOVERED, source="test",
+                                    payload={"target": "acme"})
+            self.assertTrue(event.listener_errors)
+            self.assertIn("synthetic chain refresh failure", event.listener_errors[0])
+            self.assertIn("chain_refresh", event.listener_errors[0])
+            self.assertTrue(any("synthetic chain refresh failure" in item
+                                for item in event.payload.get("chain_refresh_errors", [])))
 
 
 class TestJwtForgery(unittest.TestCase):

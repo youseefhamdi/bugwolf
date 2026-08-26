@@ -46,12 +46,14 @@ def _repo_root() -> Path:
 _CODE_ROOT = _repo_root()
 if str(_CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(_CODE_ROOT))
-from tools.runtime_paths import workspace_root
+from tools.runtime_paths import target_slug, workspace_root
 
 try:
-    from tools.core.signal_bus import SignalBus, SMUGGLING_CANDIDATE
+    from tools.core.signal_bus import (SignalBus, SMUGGLING_CANDIDATE,
+                                       publish_or_warn)
 except ImportError:  # direct script execution
-    from tools.core.signal_bus import SignalBus, SMUGGLING_CANDIDATE
+    from tools.core.signal_bus import (SignalBus, SMUGGLING_CANDIDATE,
+                                       publish_or_warn)
 
 SCHEMA = "bugwolf/smuggling-plan/v1"
 
@@ -367,8 +369,8 @@ def write_plan(plan: SmugglingPlan, *, project_root: Optional[str] = None,
         root = Path(base_dir)
     else:
         root = workspace_root(project_root)
-    target_slug = re.sub(r"[^\w.-]+", "_", plan.target) or "default"
-    out_dir = root / "recon" / target_slug / "discovery"
+    target_dir = target_slug(plan.target)
+    out_dir = root / "recon" / target_dir / "discovery"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "smuggling-plan.jsonl"
     with open(out_path, "a", encoding="utf-8") as stream:
@@ -403,7 +405,7 @@ def main() -> int:
         path = Path(args.urls_file)
         if not path.is_file():
             path = workspace_root(args.project_root) / "recon" / \
-                re.sub(r"[^\w.-]+", "_", args.target) / "urls.txt"
+                target_slug(args.target) / "urls.txt"
         if path.is_file():
             urls.extend(line.strip() for line in path.read_text().splitlines()
                         if line.strip())
@@ -432,16 +434,15 @@ def main() -> int:
             if verdict["positive"]:
                 positives.append({**probe.to_dict(), "verdict": verdict})
         if positives:
-            try:
-                bus = SignalBus(args.target, project_root=args.project_root)
-                for positive in positives:
-                    bus.publish(SMUGGLING_CANDIDATE, source="http_smuggling_detector",
-                                payload={"technique": positive["technique"],
-                                         "url": positive["url"],
-                                         "confidence": positive["verdict"]["confidence"],
-                                         "rationale": positive["verdict"]["rationale"]})
-            except Exception:
-                pass  # event bus is advisory
+            for positive in positives:
+                publish_or_warn(
+                    args.target, SMUGGLING_CANDIDATE,
+                    source="http_smuggling_detector",
+                    payload={"technique": positive["technique"],
+                             "url": positive["url"],
+                             "confidence": positive["verdict"]["confidence"],
+                             "rationale": positive["verdict"]["rationale"]},
+                    project_root=args.project_root)
 
     out_path = write_plan(plan, project_root=args.project_root)
     output = {

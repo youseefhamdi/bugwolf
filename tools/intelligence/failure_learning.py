@@ -59,12 +59,12 @@ def _repo_root() -> Path:
 _CODE_ROOT = _repo_root()
 if str(_CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(_CODE_ROOT))
-from tools.runtime_paths import workspace_root
+from tools.runtime_paths import target_slug, workspace_root
 
 try:
-    from tools.core.signal_bus import SignalBus
+    from tools.core.signal_bus import SignalBus, publish_or_warn
 except ImportError:  # direct script execution
-    from tools.core.signal_bus import SignalBus
+    from tools.core.signal_bus import SignalBus, publish_or_warn
 try:
     from tools.adaptive_learning import AdaptiveMemory
 except ImportError:  # pragma: no cover
@@ -161,6 +161,8 @@ class BypassCandidate:
     technique: str
     provenance: str
     status: str = "quarantined"     # operator review required before reuse
+    approved_by: str = ""           # operator identity once approved
+    approved_at: str = ""           # approval timestamp
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -257,12 +259,86 @@ def write_report(report: LearningReport, *, project_root: Optional[str] = None,
         root = Path(base_dir)
     else:
         root = workspace_root(project_root)
-    target_slug = re.sub(r"[^\w.-]+", "_", report.target) or "default"
-    out_dir = root / "research" / target_slug / "learning"
+    target_dir = target_slug(report.target)
+    out_dir = root / "research" / target_dir / "learning"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "failure-bypass-candidates.json"
     out.write_text(json.dumps(report.to_dict(), indent=2, sort_keys=True))
     return out
+
+
+def _load_report(target: str, *, project_root: Optional[str] = None,
+                 base_dir: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Load the persisted learning report (failure-bypass-candidates.json)."""
+    if base_dir:
+        root = Path(base_dir)
+    else:
+        root = workspace_root(project_root)
+    target_dir = target_slug(target)
+    out = root / "research" / target_dir / "learning" \
+        / "failure-bypass-candidates.json"
+    if not out.is_file():
+        return None
+    try:
+        data = json.loads(out.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    data.setdefault("candidates", [])
+    data["_path"] = str(out)
+    return data
+
+
+def approve_candidate(target: str, candidate_id: str, *,
+                      operator: str = "operator",
+                      project_root: Optional[str] = None,
+                      base_dir: Optional[str] = None) -> BypassCandidate:
+    """Operator approval: mark a quarantined bypass candidate approved.
+
+    The deterministic learning step quarantines every generated candidate
+    (``status="quarantined"``) — operator review is required before any
+    candidate may be replayed against the target.  This is that gate: it
+    loads ``research/<target>/learning/failure-bypass-candidates.json``,
+    stamps the candidate ``approved`` with the operator + timestamp, and
+    persists the report back.  Returns the updated ``BypassCandidate``
+    (status ``approved``).  Raises ``ValueError`` when the candidate is not
+    in the quarantine ledger; re-approving an already-approved candidate is
+    idempotent (returns it unchanged).
+    """
+    data = _load_report(target, project_root=project_root, base_dir=base_dir)
+    if data is None:
+        raise ValueError(
+            f"no bypass-candidate ledger for target '{target}' — run the "
+            "fuzz/blocked loop first")
+    found = None
+    for candidate in data["candidates"]:
+        if str(candidate.get("candidate_id") or "") == str(candidate_id):
+            found = candidate
+            break
+    if found is None:
+        raise ValueError(f"candidate '{candidate_id}' not in the quarantine "
+                         f"ledger for '{target}'")
+    if not found.get("status") == "approved":
+        found["status"] = "approved"
+        found["approved_by"] = str(operator)
+        found["approved_at"] = datetime.now(timezone.utc).isoformat()
+    path = Path(data["_path"])
+    path.write_text(json.dumps(
+        {k: v for k, v in data.items() if k != "_path"},
+        indent=2, sort_keys=True))
+    return BypassCandidate(
+        candidate_id=str(found.get("candidate_id") or ""),
+        blocker=str(found.get("blocker") or ""),
+        defense=str(found.get("defense") or ""),
+        bug_class=str(found.get("bug_class") or "web"),
+        payload=str(found.get("payload") or ""),
+        technique=str(found.get("technique") or ""),
+        provenance=str(found.get("provenance") or ""),
+        status=str(found.get("status") or "approved"),
+        approved_by=str(found.get("approved_by") or ""),
+        approved_at=str(found.get("approved_at") or ""),
+    )
 
 
 def make_blocked_listener(target: str, project_root: Optional[str] = None,
@@ -314,15 +390,11 @@ def main() -> int:
                        base_dir=args.base_dir)
 
     if report.candidates:
-        try:
-            bus = SignalBus(args.target,
-                            project_root=args.project_root or args.base_dir)
-            bus.publish("RESEARCH_REFRESHED", source="failure_learning",
+        publish_or_warn(args.target, "RESEARCH_REFRESHED",
+                        source="failure_learning",
                         payload={"candidate_count": len(report.candidates),
-                                 "target": args.target})
-        except Exception as exc:  # advisory, never a gate
-            print(f"[!] signal publish skipped: {type(exc).__name__}: {exc}",
-                  file=sys.stderr)
+                                 "target": args.target},
+                        project_root=args.project_root, base_dir=args.base_dir)
 
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))

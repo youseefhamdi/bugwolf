@@ -212,6 +212,91 @@ class TestRefreshArtifactHashesIntegritySkip(unittest.TestCase):
             self.controller.complete("maps")
 
 
+class TestEvalTask7ComputeRouting(unittest.TestCase):
+    """Task 7: pass@k variant threads + model-routing audit records."""
+
+    TASK = "test-time-compute-routing"
+
+    def _task(self, project):
+        report = evalh.evaluate(TARGET, base_dir=str(project))
+        return {t.task_id: t for t in report.tasks}[self.TASK]
+
+    def test_variants_and_diverse_routing_score(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            campaign = project / "state" / "campaigns" / TARGET
+            threads = campaign / "threads"
+            threads.mkdir(parents=True)
+            for variant in (0, 1, 2):
+                (threads / f"t-{variant}.json").write_text(json.dumps({
+                    "thread_id": f"t-{variant}", "bug_class": "sqli",
+                    "pass_variant": variant, "pass_group": "sqli",
+                    "state": "hypothesis"}))
+            with (campaign / "audit.jsonl").open("a") as f:
+                for tier in ("local_slm", "frontier"):
+                    f.write(json.dumps({"event": "unit_routed",
+                                        "data": {"unit_id": "u",
+                                                 "model_tier": tier}}) + "\n")
+            task = self._task(project)
+            self.assertTrue(task.passed)
+            self.assertEqual(task.to_dict()["milestones_passed"], 4)
+
+    def test_variants_without_routing_scores_partial(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            campaign = project / "state" / "campaigns" / TARGET
+            threads = campaign / "threads"
+            threads.mkdir(parents=True)
+            for variant in (0, 1):
+                (threads / f"t-{variant}.json").write_text(json.dumps({
+                    "pass_variant": variant, "pass_group": "sqli"}))
+            task = self._task(project)
+            # Variant milestones pass; routing milestones fail.
+            self.assertEqual(task.to_dict()["milestones_passed"], 2)
+            self.assertFalse(task.passed)
+
+    def test_routing_records_persisted_by_dispatch(self):
+        """Real dispatch audits unit_routed records (orchestrator + threads)."""
+        import os
+        import tools.campaign as campaign_mod
+        from tools.campaign_orchestrator import CampaignOrchestrator
+        from tools.research_thread import ThreadBuilder
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            env = os.environ.get("BUGWOLF_PROJECT_ROOT")
+            os.environ["BUGWOLF_PROJECT_ROOT"] = str(project)
+            old_roots = (campaign_mod.ROOT, campaign_mod.CAMPAIGN_ROOT)
+            campaign_mod.ROOT = project
+            campaign_mod.CAMPAIGN_ROOT = project / "state" / "campaigns"
+            try:
+                orch = CampaignOrchestrator("routed.test", mode="web")
+                orch.initialize()
+                unit = {"objective": "Synthesize an attack chain",
+                        "bug_class": "chain", "context": {},
+                        "max_iterations": 50}
+                orch._enrich_unit(unit)
+                builder = ThreadBuilder("routed.test")
+                builder.campaign.initialize()
+                asset = builder.campaign.add_asset(
+                    "api.routed.test", "web_api", priority="high")
+                threads = builder.build_threads_for_asset(asset)
+                if threads:
+                    builder.get_next_research_unit(threads[0])
+                audit = project / "state" / "campaigns" \
+                    / "routed.test" / "audit.jsonl"
+                self.assertTrue(audit.is_file())
+                events = [json.loads(line)["event"]
+                          for line in audit.read_text().splitlines()]
+                self.assertIn("unit_routed", events)
+            finally:
+                if env is None:
+                    os.environ.pop("BUGWOLF_PROJECT_ROOT", None)
+                else:
+                    os.environ["BUGWOLF_PROJECT_ROOT"] = env
+                campaign_mod.ROOT, campaign_mod.CAMPAIGN_ROOT = old_roots
+
+
 class TestEvalHarnessDeterminism(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -224,7 +309,7 @@ class TestEvalHarnessDeterminism(unittest.TestCase):
     def test_empty_workspace_scores_zero_not_error(self):
         report = evalh.evaluate("nope.example", base_dir=str(self.project))
         data = report.to_dict()
-        self.assertEqual(data["task_count"], 6)
+        self.assertEqual(data["task_count"], 10)
         self.assertEqual(data["tasks_passed"], 0)
         self.assertEqual(data["score_pct"], 0.0)
 
@@ -234,7 +319,7 @@ class TestEvalHarnessDeterminism(unittest.TestCase):
         self.assertTrue(out.is_file())
         data = json.loads(out.read_text(encoding="utf-8"))
         self.assertEqual(data["schema"], evalh.SCHEMA)
-        self.assertEqual(data["task_count"], 6)
+        self.assertEqual(data["task_count"], 10)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,9 @@ Safety model (unchanged): the planner never sends requests. Live replay runs
 only behind ``--confirm-active`` + a scope file, routed through the execution
 controller, and reports *signals* — never zero-day claims. Forged header values
 are trust *hypotheses*, and IP/URI values are plans, not executed payloads.
+
+Usage:
+  python3 tools/header_trust.py --target T --recon-dir recon/T --base-url https://target --output recon/T/header-trust-plan.json --json
 """
 
 from __future__ import annotations

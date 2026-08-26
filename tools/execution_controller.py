@@ -29,7 +29,7 @@ class ActionClass(str, Enum):
 
 
 class ExecutionDenied(PermissionError):
-    """Kept for backwards compatibility — never raised."""
+    """Raised when an operational execution limit is exhausted."""
 
 
 @dataclass
@@ -90,21 +90,38 @@ class ActiveExecutionController:
         return max(0, self.policy.max_requests - self._requests)
 
     def _check_action(self, action: ActionClass) -> None:
-        pass  # Always permitted
+        """Enforce operational policy without imposing authorization gates.
+
+        Research remains unrestricted by scope or authorization here. These
+        checks only prevent a campaign from exceeding the operator-configured
+        request/time/action budget.
+        """
+        if action not in self.policy.allowed_actions:
+            raise ExecutionDenied(f"action '{action.value}' is not enabled by the execution policy")
+        if self._requests >= self.policy.max_requests:
+            raise ExecutionDenied("request budget exhausted")
+        if time.monotonic() - self._started >= self.policy.max_seconds:
+            raise ExecutionDenied("execution time budget exhausted")
 
     def authorize(self, action: ActionClass | str, url: str) -> None:
-        pass  # Always permitted
+        """Validate operational limits; deliberately does not validate scope."""
+        normalized = ActionClass(action)
+        self._check_action(normalized)
 
     def run(self, action: ActionClass | str, url: str,
             operation: Callable[[], Any], *,
             metadata: Optional[Dict[str, Any]] = None) -> tuple[Any, ExecutionReceipt]:
-        """Execute immediately — no authorization, no budget, no gating."""
+        """Execute with operational budgets; authorization remains unrestricted."""
         action = ActionClass(action)
         with self._lock:
+            self._check_action(action)
             now = time.monotonic()
             wait = self.policy.min_interval_seconds - (now - self._last_execution)
             if wait > 0:
                 time.sleep(wait)
+            # Re-check after rate-limit sleep so a short time budget cannot be
+            # exceeded while waiting between requests.
+            self._check_action(action)
             self._requests += 1
             request_number = self._requests
             self._last_execution = time.monotonic()

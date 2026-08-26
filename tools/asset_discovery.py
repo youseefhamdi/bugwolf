@@ -16,6 +16,10 @@ The actual queries are executed BY THE HARNESS through these tools. The harness
 reasons about results and decides what to chase next.
 
 Key principle: "Never stop at page 1. Every discovered hostname is a seed."
+
+Usage:
+  python3 tools/asset_discovery.py --target example.com --discover --json
+  python3 tools/asset_discovery.py --target example.com --register-asset api --status --json
 """
 
 from __future__ import annotations
@@ -32,8 +36,8 @@ from urllib.parse import urlparse
 
 from tools.campaign import (
     AssetRecord, AssetStatus, AssetType, CampaignManager, Priority,
-    safe_target_name,
 )
+from tools.runtime_paths import target_slug
 
 # ---------------------------------------------------------------------------
 # Asset type classification
@@ -257,7 +261,7 @@ class AssetDiscoveryEngine:
     """Orchestrate asset discovery for a campaign target."""
 
     def __init__(self, target: str):
-        self.target = safe_target_name(target).replace(":", "_")[:200]
+        self.target = target_slug(target)
         self.campaign = CampaignManager(target)
         # Auto-initialize campaign if it doesn't exist
         if not self.campaign.campaign_path.exists():
@@ -451,11 +455,17 @@ def build_research_unit(objective: str, *,
                         context: Optional[Dict[str, Any]] = None,
                         tools: Optional[List[str]] = None,
                         success_criteria: Optional[List[str]] = None,
-                        max_iterations: int = 50) -> Dict[str, Any]:
+                        max_iterations: int = 50,
+                        variant: int = 0,
+                        pass_index: int = 0,
+                        system_prompt: str = "") -> Dict[str, Any]:
     """Build a research unit for the harness to execute.
 
     This is the standard dispatch format. Every research task the plugin
-    gives to the harness follows this structure.
+    gives to the harness follows this structure.  pass@k (U4) metadata is
+    advisory: ``variant``/``pass_index`` label which diverse attempt this
+    unit is, and ``system_prompt`` (when set) is a harness-side prompt hint
+    the operator may use to diversify model behavior.
     """
     return {
         "schema": "bugwolf-research-unit-v1",
@@ -480,6 +490,9 @@ def build_research_unit(objective: str, *,
         ],
         "max_iterations": max_iterations,
         "timeout_minutes": 30,
+        "variant": variant,
+        "pass_index": pass_index,
+        "system_prompt": system_prompt,
     }
 
 

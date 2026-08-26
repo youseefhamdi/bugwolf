@@ -6,6 +6,9 @@ a local workstation, VPS, or container/VM and, only after explicit local
 confirmation, records basic OS/resource information. It never performs network
 reconnaissance, reads environment variables, contacts metadata services, or
 walks user files.
+
+Usage:
+  python3 tools/environment_profile.py --location unknown --json
 """
 
 from __future__ import annotations

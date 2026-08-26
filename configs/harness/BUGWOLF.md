@@ -65,6 +65,53 @@ bundled references, memory, or model knowledge “latest”. Configure
 `SERPER_API_KEY` or an HTTPS `RESEARCH_SEARCH_API_URL` with
 `RESEARCH_SEARCH_API_KEY` for current search results.
 
+## F0.5 precision-first reporting (strict by default)
+
+"Uncensored execution" ≠ "uncensored reporting". `tools/refutation.py`
+scores every finding deterministically from its evidence (reproducible trigger
+trace, impact trace, evidence refs, endpoint, confirmed behavior). Findings
+below the confidence threshold are DEMOTED and quarantined as candidate
+records under `state/learning/<target>.jsonl` for operator review — they never
+reach the final report. Legacy UNCENSORED auto-confirm is preserved behind
+`--no-strict`. The gate is a *reporting* gate: no scope/network/execution gate
+is reintroduced anywhere.
+
+## Model routing, fast-path, and pass@k (advisory, never gating)
+
+- `tools/core/model_router.py` labels every research unit with an advisory
+  `model_preference` (deterministic / slm-fast / frontier-reasoning) so the
+  harness picks the cheapest adequate model. An unavailable model degrades to
+  the next tier — routing never blocks a unit.
+- `research_loop.py` exposes a non-blocking `on_checkpoint` fast-path hook:
+  handlers may spawn parallel deep-dive research after each checkpoint
+  without altering the mandatory 7 or `latest_ready` semantics.
+- `campaign_orchestrator.py --pass-at-k <k>` / `--deep-dive` spawns `k`
+  diverse variant threads per threat with rotated system prompts; the best
+  pass wins. Deterministic dispatch order is preserved.
+- Every dispatched research unit carries `context["deterministic_evidence"]`
+  + `artifact_paths` pointing at the concrete WAF payloads, smuggling plans,
+  JWT/OAuth plans already produced for the target.
+- **Live Execution Harness Loop**: `live_feedback_loop()` (`--live-run`)
+  drives unit → live probe (`tools/core/live_executor.py`) → observation →
+  adapt. Probes are real HTTP with recorded request/response evidence
+  (`replay_key`) persisted to `state/sessions/<target>/probes.jsonl`;
+  blocked → `failure_learning` bypass quarantine, signal → F0.5 gate with
+  `require_reproducible` (CONFIRMED needs recorded, replayable proof),
+  clean → REFUTED, transport errors are observations (never gates).
+  `tools/core/fuzz_bridge.py` feeds scheduler-ordered fuzz campaigns' crash/
+  timeout/anomaly evidence into research threads via `FINDING_DISCOVERED`;
+  with `--fuzz-budget N` the live loop runs one fuzz pass when the queue
+  drains and **spawns a research thread per crash/anomaly** (deduped per
+  endpoint+state), and the spawned thread's probe replays the crashing URL
+  so the crash is reproduced with recorded evidence.
+  `tools/zero_day.py` hunts beyond templates: `diff_analysis_mode`,
+  `anomaly_detection_mode`, `state_machine_probing`.
+  **Live exploitation**: every gate-CONFIRMED finding (recorded, replayable
+  evidence) is replayed via `execute_exploit` to demonstrate impact — the
+  second response and extracted data (`demonstrated_impact`) are recorded on
+  the thread (`live_exploit`) and in
+  `state/sessions/<target>/exploits.jsonl`. Opt out with `--no-exploits`.
+
 ## No silent drift
 
 - Do not replace BugWolf’s ordered workflow with a personal checklist.

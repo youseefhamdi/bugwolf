@@ -14,6 +14,9 @@ searches share one coverage/ordering discipline.
 
 Execution is an in-memory simulation over caller-supplied transition and
 invariant predicates — no chain, fork, transaction, or model call happens here.
+
+Usage:
+  python3 tools/contract_discovery.py --spec contract.abi.json --target example-contract --budget 200 --json
 """
 
 from __future__ import annotations

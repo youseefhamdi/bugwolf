@@ -7,6 +7,10 @@ with evidence can approve a record for reuse on later journeys. The store is
 append-only JSONL, target-isolated, redacted, and deterministic to inspect.
 
 No network, subprocess, payload execution, or source-code mutation occurs here.
+
+Usage:
+  python3 tools/adaptive_learning.py --target T --list --status candidate --json
+  python3 tools/adaptive_learning.py --target T --review-id ID --decision approve --reviewer operator --evidence "confirmed on an authorized disposable fixture" --json
 """
 
 from __future__ import annotations
@@ -97,7 +101,11 @@ def _source_refs(values: Iterable[Any]) -> List[str]:
 
 
 def _slug(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._:-]+", "_", str(value or "")).strip("._")[:160] or "default"
+    try:
+        from tools.runtime_paths import target_slug
+    except ImportError:
+        from runtime_paths import target_slug
+    return target_slug(value, max_length=160)
 
 
 def _canonical(value: str) -> str:

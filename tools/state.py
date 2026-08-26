@@ -34,14 +34,14 @@ except ImportError:  # pragma: no cover - Windows fallback
     fcntl = None
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Any
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields
 
 try:
-    from tools.runtime_paths import workspace_root
+    from tools.runtime_paths import target_slug, workspace_root
     from tools.safety import safe_target_name
     from tools.evidence import redact, redact_text
 except ImportError:  # direct script execution
-    from runtime_paths import workspace_root
+    from runtime_paths import target_slug, workspace_root
     from safety import safe_target_name
     from evidence import redact, redact_text
 
@@ -87,6 +87,8 @@ class Finding:
     session_id: str = ""
     chain_parent: Optional[str] = None  # finding_id of bug A if this is bug B in chain
     status: str = "open"  # open, reported, resolved, dup, n/a
+    evidence: Any = field(default_factory=dict)
+    confirmed_behavior: str = ""
 
     def __post_init__(self):
         if not self.found_at:
@@ -174,15 +176,15 @@ def ensure_private_gitignore():
 # State operations
 # ---------------------------------------------------------------------------
 
-def _state_dir(target: str) -> Path:
-    """Get a repository-contained state directory for a validated target."""
-    safe = safe_target_name(target).replace(":", "_")[:200]
-    return STATE_ROOT / "sessions" / safe
+def _state_dir(target: str, project_root: Optional[str | Path] = None) -> Path:
+    """Get a repository-contained state directory for a target."""
+    root = workspace_root(project_root) if project_root is not None else ROOT
+    return root / "state" / "sessions" / target_slug(target)
 
 
-def load_state(target: str) -> SessionState:
+def load_state(target: str, project_root: Optional[str | Path] = None) -> SessionState:
     """Load or create session state for a target."""
-    d = _state_dir(target)
+    d = _state_dir(target, project_root)
     sf = d / "state.json"
 
     if sf.exists():
@@ -192,16 +194,18 @@ def load_state(target: str) -> SessionState:
     return SessionState(target=target)
 
 
-def save_state(target: str, state: SessionState):
+def save_state(target: str, state: SessionState,
+               project_root: Optional[str | Path] = None):
     """Persist session state atomically."""
     state.updated_at = datetime.now(timezone.utc).isoformat()
-    d = _state_dir(target)
+    d = _state_dir(target, project_root)
     atomic_write(d / "state.json", json.dumps(asdict(state), indent=2))
 
 
-def log_journal(target: str, event: str, data: Dict = None):
+def log_journal(target: str, event: str, data: Dict = None,
+                project_root: Optional[str | Path] = None):
     """Append a hash-linked journal entry under an exclusive file lock."""
-    path = _state_dir(target) / "journal.jsonl"
+    path = _state_dir(target, project_root) / "journal.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a+") as f:
         if fcntl:
@@ -237,9 +241,28 @@ def log_journal(target: str, event: str, data: Dict = None):
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
+def _endpoint_was_tested(state_dir: Path, url: str, method: str) -> bool:
+    """Return whether this target/method endpoint already has a record."""
+    path = state_dir / "endpoints.jsonl"
+    if not path.exists():
+        return False
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            existing = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (existing.get("url") == url and
+                existing.get("method", "GET") == method):
+            return True
+    return False
+
+
 def mark_tested(target: str, url: str, method: str = "GET",
                 status: int = 0, content: str = "",
-                session_id: str = "", notes: str = ""):
+                session_id: str = "", notes: str = "",
+                project_root: Optional[str | Path] = None):
     """Record that an endpoint was tested."""
     entry = EndpointEntry(
         url=redact_text(str(url))[:4000], method=method, status=status,
@@ -247,15 +270,18 @@ def mark_tested(target: str, url: str, method: str = "GET",
         content_length=len(content),
         session_id=redact_text(str(session_id))[:100], notes=redact_text(str(notes))[:2000],
     )
-    atomic_append(_state_dir(target) / "endpoints.jsonl", json.dumps(asdict(entry)))
+    state_dir = _state_dir(target, project_root)
+    stored_url = entry.url
+    if not _endpoint_was_tested(state_dir, stored_url, method):
+        atomic_append(state_dir / "endpoints.jsonl", json.dumps(asdict(entry)))
 
-    state = load_state(target)
-    state.endpoints_tested = _jsonl_count(_state_dir(target) / "endpoints.jsonl")
-    save_state(target, state)
+    state = load_state(target, project_root)
+    state.endpoints_tested = _jsonl_count(state_dir / "endpoints.jsonl")
+    save_state(target, state, project_root)
 
 
 def mark_dead_end(target: str, url: str, method: str = "GET",
-                  reason: str = ""):
+                  reason: str = "", project_root: Optional[str | Path] = None):
     """Record that an endpoint yielded nothing."""
     entry = {
         "url": redact_text(str(url))[:4000],
@@ -263,14 +289,16 @@ def mark_dead_end(target: str, url: str, method: str = "GET",
         "reason": redact_text(str(reason))[:2000],
         "ts": datetime.now(timezone.utc).isoformat(),
     }
-    atomic_append(_state_dir(target) / "dead_ends.jsonl", json.dumps(entry))
+    state_dir = _state_dir(target, project_root)
+    atomic_append(state_dir / "dead_ends.jsonl", json.dumps(entry))
 
-    state = load_state(target)
-    state.dead_ends = _jsonl_count(_state_dir(target) / "dead_ends.jsonl")
-    save_state(target, state)
+    state = load_state(target, project_root)
+    state.dead_ends = _jsonl_count(state_dir / "dead_ends.jsonl")
+    save_state(target, state, project_root)
 
 
-def add_finding(target: str, finding: Dict) -> str:
+def add_finding(target: str, finding: Dict,
+                project_root: Optional[str | Path] = None) -> str:
     """Add a finding and synchronously run the mandatory post-finding trigger.
 
     The finding append and state counter remain durable even if a downstream
@@ -278,18 +306,46 @@ def add_finding(target: str, finding: Dict) -> str:
     explicit error receipt/repair task; callers must not treat the handoff as
     complete merely because this function returned the finding id.
     """
-    f = Finding(**redact(finding))
+    safe_finding = redact(finding)
+    known = {item.name for item in fields(Finding)}
+    core = {key: value for key, value in safe_finding.items() if key in known}
+    f = Finding(**core)
     record = asdict(f)
-    atomic_append(_state_dir(target) / "findings.jsonl", json.dumps(record))
+    # Preserve campaign/refutation metadata while keeping the canonical schema.
+    for key in ("id", "thread_id", "state", "refutation", "recorded_at"):
+        if key in safe_finding:
+            record[key] = safe_finding[key]
+    if "evidence" in safe_finding:
+        record["evidence"] = safe_finding["evidence"]
+    if "confirmed_behavior" in safe_finding:
+        record["confirmed_behavior"] = safe_finding["confirmed_behavior"]
 
-    state = load_state(target)
-    state.findings_count = _jsonl_count(_state_dir(target) / "findings.jsonl")
-    save_state(target, state)
+    state_dir = _state_dir(target, project_root)
+    if record.get("endpoint"):
+        evidence = record.get("evidence") or {}
+        response = evidence.get("response") if isinstance(evidence, dict) else {}
+        response = response if isinstance(response, dict) else {}
+        mark_tested(
+            target, record["endpoint"], record.get("method", "GET"),
+            status=int(response.get("status") or 0),
+            content=str(response.get("body") or ""),
+            notes="finding evidence recorded",
+            project_root=project_root,
+        )
+    atomic_append(state_dir / "findings.jsonl", json.dumps(record))
 
-    log_journal(target, "finding_added", {"finding_id": f.finding_id, "title": f.title})
+    state = load_state(target, project_root)
+    state.findings_count = _jsonl_count(state_dir / "findings.jsonl")
+    save_state(target, state, project_root)
+
+    log_journal(target, "finding_added", {"finding_id": f.finding_id, "title": f.title},
+                project_root=project_root)
     try:
         from tools.post_finding_trigger import trigger_after_finding
-        trigger_after_finding(target, record, project_root=ROOT)
+        trigger_after_finding(
+            target, record,
+            project_root=workspace_root(project_root) if project_root is not None else ROOT,
+        )
     except Exception as exc:
         # Persistence must never erase evidence, but a hard-trigger failure is
         # itself an explicit blocked event. Write a minimal receipt/repair item
@@ -297,28 +353,32 @@ def add_finding(target: str, finding: Dict) -> str:
         error = f"{type(exc).__name__}: {str(exc)[:300]}"
         try:
             from tools.post_finding_trigger import record_trigger_failure
-            record_trigger_failure(target, record, error, project_root=ROOT)
+            record_trigger_failure(
+                target, record, error,
+                project_root=workspace_root(project_root) if project_root is not None else ROOT,
+            )
         except Exception as receipt_exc:
             error = f"{error}; receipt: {type(receipt_exc).__name__}: {str(receipt_exc)[:200]}"
         log_journal(target, "post_finding_trigger_error", {
             "finding_id": f.finding_id,
             "error": error,
-        })
+        }, project_root=project_root)
     return f.finding_id
 
 
-def get_findings(target: str) -> List[Dict]:
+def get_findings(target: str, project_root: Optional[str | Path] = None) -> List[Dict]:
     """Load all findings for a target."""
-    f = _state_dir(target) / "findings.jsonl"
+    f = _state_dir(target, project_root) / "findings.jsonl"
     if not f.exists():
         return []
     return [json.loads(l) for l in f.read_text().splitlines() if l.strip()]
 
 
-def get_untested_endpoints(target: str, all_endpoints: List[str]) -> List[str]:
+def get_untested_endpoints(target: str, all_endpoints: List[str],
+                          project_root: Optional[str | Path] = None) -> List[str]:
     """Filter a list of endpoints to only those not yet tested."""
     tested = set()
-    ef = _state_dir(target) / "endpoints.jsonl"
+    ef = _state_dir(target, project_root) / "endpoints.jsonl"
     if ef.exists():
         for line in ef.read_text().splitlines():
             if line.strip():
@@ -328,9 +388,9 @@ def get_untested_endpoints(target: str, all_endpoints: List[str]) -> List[str]:
             if ep not in tested and f"GET:{ep}" not in tested]
 
 
-def get_state_summary(target: str) -> Dict:
+def get_state_summary(target: str, project_root: Optional[str | Path] = None) -> Dict:
     """Get a human-readable summary of state for a target."""
-    state = load_state(target)
+    state = load_state(target, project_root)
     return {
         "target": target,
         "created": state.created_at,

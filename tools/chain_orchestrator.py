@@ -10,6 +10,9 @@ It consumes redacted findings and open-lead snapshots, produces a bounded
 chain graph, and persists a hash-linked orchestration history per target. It is
 offline by default and never executes a request, creates an exploit, contacts a
 third party, or treats a chain hypothesis as a confirmed finding.
+
+Usage:
+  python3 tools/chain_orchestrator.py --target T --findings-file state/sessions/T/findings.jsonl --leads-file state/sessions/T/leads.jsonl --json
 """
 
 from __future__ import annotations
@@ -26,12 +29,12 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 try:
     from tools.deep_chain import EDGES, TERMINAL, SEV_RANK
     from tools.evidence import redact
-    from tools.runtime_paths import workspace_root
+    from tools.runtime_paths import target_slug, workspace_root
     from tools.safety import safe_path, safe_target_name
 except ImportError:  # direct script execution
     from deep_chain import EDGES, TERMINAL, SEV_RANK
     from evidence import redact
-    from runtime_paths import workspace_root
+    from runtime_paths import target_slug, workspace_root
     from safety import safe_path, safe_target_name
 
 
@@ -415,8 +418,7 @@ def orchestrate(findings: Iterable[Dict[str, Any]], leads: Iterable[Dict[str, An
 
 
 def _default_input(project: Path, target: str, filename: str) -> Path:
-    safe = safe_target_name(target).replace(":", "_")
-    return project / "state" / "sessions" / safe / filename
+    return project / "state" / "sessions" / target_slug(target) / filename
 
 
 def refresh_target(project: str | Path, target: str, *,
@@ -466,16 +468,25 @@ def make_finding_discovered_listener(
                 project_root or str(workspace_root()),
                 payload.get("target") or target,
                 max_hops=max_hops, max_chains=max_chains)
-        except Exception:
+        except Exception as exc:
             # Chain refresh is opportunistic; a failed refresh must never
-            # gate the finding pipeline.
-            return
+            # gate the finding pipeline.  The failure is recorded on the
+            # event so it stays visible in the durable signal-bus log
+            # instead of disappearing silently.
+            detail = f"{type(exc).__name__}: {str(exc)[:300]}"
+            try:
+                errors = getattr(event, "listener_errors", None)
+                if isinstance(errors, list):
+                    errors.append(f"chain_refresh: {detail}")
+            except Exception:
+                pass
+            if hasattr(event, "payload") and isinstance(event.payload, dict):
+                event.payload.setdefault("chain_refresh_errors", []).append(detail)
     return on_finding_discovered
 
 
 def _persist(project: Path, target: str, result: Dict[str, Any]) -> Dict[str, str]:
-    safe = safe_target_name(target).replace(":", "_")
-    directory = project / CHAIN_DIR_NAME / safe
+    directory = project / CHAIN_DIR_NAME / target_slug(target)
     directory.mkdir(parents=True, exist_ok=True)
     output = directory / "orchestration.json"
     history = directory / "orchestration.jsonl"

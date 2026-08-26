@@ -5,6 +5,9 @@ The module consumes operator-supplied logs or exports. It does not collect
 telemetry, execute LOLBAS commands, dump memory, access credentials, query
 AD, or move laterally. Results are detection hypotheses requiring analyst
 validation and environment-specific tuning.
+
+Usage:
+  python3 tools/defensive_detection.py --path exported-security.log --rules --output-dir defensive-review
 """
 
 from __future__ import annotations
