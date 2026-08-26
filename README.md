@@ -25,6 +25,31 @@
 
 ---
 
+## APT Commander — Strict Workflow, Uncensored Execution
+
+BugWolf is architected as an **APT Commander**: a strict workflow layer that
+enforces **depth and methodology**, sitting on top of an execution layer that is
+deliberately **uncensored** for operational freedom.
+
+- **The workflow enforces depth, not authorization.** The 12-stage pipeline
+  (`setup → environment-preflight → authorization → passive-recon →
+  asset-intelligence → technology-fingerprint → maps → research →
+  coverage-plan → validation → triage → report`) blocks advancement only when
+  **artifacts are missing or research is stale** — never because a target or URL
+  is outside a declared scope. Every stage has a hash-chained artifact
+  prerequisite; tampered or missing artifacts stop the workflow.
+- **The 7-checkpoint research loop is mandatory.** `pre-hunt → post-recon →
+  post-maps → bypass → post-findings → escalation → pre-report` must complete
+  in order; `latest_ready: false` blocks validation and chaining, forcing deep
+  exploration instead of stopping at a surface scan.
+- **The execution layer is pass-through.** `safety.py` and
+  `execution_controller.py` accept `--scope-file`, `--confirm-active`, and
+  `--confirm-destructive` as operator declarations and never reject a target.
+  The authorization stage records the declared scope for provenance only.
+- **Authorization is the operator's responsibility.** BugWolf is for
+  authorized security research; only run it against targets you have explicit
+  permission to test.
+
 ## What It Does
 
 BugWolf runs six core security agents plus applicable domain agents in parallel. Findings are deduplicated, gate-evaluated, CVSS-scored, and formatted into a submission-ready report — only for explicitly authorized targets.
@@ -60,7 +85,7 @@ Start every session with:
 python3 tools/harness_guard.py --verify --json
 ```
 
-If the verifier reports `ready: false`, reload the contract and stop rather than improvising. The executable tools still enforce authorization and mandatory research independently of the model. No plugin can override a harness's system/developer policy, but this contract makes instruction drift detectable and recoverable across Claude Code, Freebuff/Codebuff, Codex, Cursor, Windsurf, Copilot, and similar hosts.
+If the verifier reports `ready: false`, reload the contract and stop rather than improvising. The executable tools still enforce the staged workflow and mandatory research independently of the model. No plugin can override a harness's system/developer policy, but this contract makes instruction drift detectable and recoverable across Claude Code, Freebuff/Codebuff, Codex, Cursor, Windsurf, Copilot, and similar hosts.
 
 The contract supports direct conversational commands, so operators do not
 need to know BugWolf's internal Python commands:
@@ -73,9 +98,10 @@ bugwolf --solidity review this target PROJECT
 
 The harness parses the target and mode, verifies or initializes the contract,
 starts and inspects the staged workflow, and continues through the existing
-gates. It asks only for missing environment, explicit scope, or the confirmation
-needed for the next operation; “attack” means authorized assessment and never
-permission to bypass a control. Its reasoning remains creative through boundary
+workflow gates. It asks only for a missing target or environment declaration;
+scope files and confirmations are recorded declarations that never block.
+“attack” means authorized assessment — the remaining gates are artifact,
+evidence, and human-review gates. Its reasoning remains creative through boundary
 flips, differential comparisons, state/time and failure-path checks,
 negative-space questions, and bounded cross-surface chains, while preserving
 uncertainty and evidence state.
@@ -103,8 +129,8 @@ real artifacts for each stage, preserves pending/error status, and blocks
 validation when current research is unavailable. It also blocks `hunt.py` until
 validation and `zero_day.py` until coverage planning. “APT-level”
 means complete, methodical, authorized coverage of the full target surface and
-all trust/identity/state/capability boundaries—not unlimited traffic or a way to
-bypass authorization and active/destructive confirmations.
+all trust/identity/state/capability boundaries—not unlimited traffic. Scope
+files and confirmation flags are declarations that never block execution.
 
 ## Potentially-Novel Research Track
 
@@ -153,7 +179,7 @@ python3 tools/adaptive_learning.py --target T --review-id ID --decision approve 
 
 See [`references/adaptive-learning.md`](references/adaptive-learning.md).
 
-Live validation remains scope-bound and requires the execution controller, explicit active confirmation, rate/request budgets, and separate confirmation for state-changing or destructive methods. See [`references/zero-day-research.md`](references/zero-day-research.md).
+Live validation runs through the pass-through execution controller; scope files and confirmation flags are accepted declarations and never block. Request budgets remain bounded. See [`references/zero-day-research.md`](references/zero-day-research.md).
 
 The cache-key path traversal track (`tools/cache_traversal.py`, CVE-2026-18051 class) plans directory-escape probes from the target's cache-key construction and replays them against a lab with unique marker files:
 
@@ -181,14 +207,14 @@ python3 tools/graphql_gid.py --target example.com \
 
 ## Recon intelligence: JavaScript and certificate transparency
 
-The recon engine now includes `tools/js_ct_intel.py`, a scoped intelligence phase adapted from the reviewed [Cyber-note/Full-Bug-Bounty-Hunting-Methodology-2026](https://github.com/Cyber-note/Full-Bug-Bounty-Hunting-Methodology-2026) workflow. It uses `crt.name` with date fields and falls back to `crt.sh`, then records scope-filtered names in `ct-records.jsonl` and `ct-subdomains.txt`.
+The recon engine now includes `tools/js_ct_intel.py`, a scoped intelligence phase adapted from the reviewed [Cyber-note/Full-Bug-Bounty-Hunting-Methodology-2026](https://github.com/Cyber-note/Full-Bug-Bounty-Hunting-Methodology-2026) workflow. It uses `crt.name` with date fields and falls back to `crt.sh`, then records certificate names in `ct-records.jsonl` and `ct-subdomains.txt`.
 
 For JavaScript, the phase combines existing `katana`/`hakrawler` URL collection with local `LinkFinder` (when installed), `js-beautify`/`prettier` (when installed), plain `grep`, and built-in extraction. It writes redacted endpoint/secret indicators, source-map references, and business-logic workflow hypotheses; it never validates or prints credential values.
 
 A dedicated `tools/js_token_forge.py` static analyzer also flags client-side token forging — a hardcoded signing secret combined with an in-browser HMAC/sign primitive and client-controlled user/device/role claims (the classic `getSDToken(deviceId, userId, …)` pattern). It emits `token-forge-findings.jsonl` + `token-forge-plans.jsonl` with forgeability grades and remediation, storing only SHA-256 fingerprints of the matched lines (the raw secret is never written).
 
 ```bash
-# Passive CT collection; requires an authorized scope file but no active confirmation
+# Passive CT collection; scope file is an optional declaration, nothing blocks
 python3 tools/js_ct_intel.py --target example.com \\
   --scope-file scope.json --output-dir recon/example.com --ct-only
 
@@ -198,7 +224,7 @@ python3 tools/js_ct_intel.py --target example.com \\
   --js-dir recon/example.com/js --output-dir recon/example.com/js-intel --js-only
 ```
 
-Optional crawler execution is separate and requires both `--collect-crawlers` and `--confirm-active`; it is bounded by a process timeout and remains subject to the supplied scope. These outputs are intelligence and hypotheses, not confirmed vulnerabilities or zero-day claims.
+Optional crawler execution is a separate mode triggered by `--collect-crawlers` (bounded by a process timeout); `--confirm-active` is an accepted declaration, not a requirement. These outputs are intelligence and hypotheses, not confirmed vulnerabilities or zero-day claims.
 
 ## Signal-to-impact methodology playbook
 
@@ -216,14 +242,14 @@ The generated ffuf/nuclei/SQLMap/XSStrike entries are **non-executing command pl
 
 ## Defensive and asset intelligence
 
-Additional offline tracks now cover passive asset graphing and diffing, provider query plans for Amass/Shodan/Censys/FOFA/ZoomEye/SpiderFoot, Shodan facet collection via the `ipfinder` CLI (offline facet plans + command lines by default; gated live collection with `--collect-ipfinder --confirm-active`; every result re-filtered through scope, with bare IPs kept only when their query term is in scope), defensive lateral-movement, persistence (TA0003), EDR-evasion *detection* hypotheses, and in-memory shellcode-runner *detection* signals (private allocation, RW→RX transitions, thread start outside a loaded module, mapped-execution variants, import-table signatures) from supplied logs, identity/MFA/OAuth/SAML posture, cloud/IaC boundaries, CVE-reference triage (including `--nuclei` template intake and curated `--seed` records), and deeper IDOR planning across the common-vector surfaces: path ids, file names, `X-Account-Id`-style headers, cookies, GraphQL `gid://` node ids, JWT claims, and PendingIntent mobile surfaces. Persistence/evasion output is detection hypotheses only — no implant, evasion loop, or bypass primitive is built or run.
+Additional offline tracks now cover passive asset graphing and diffing, provider query plans for Amass/Shodan/Censys/FOFA/ZoomEye/SpiderFoot, Shodan facet collection via the `ipfinder` CLI (offline facet plans + command lines by default; live collection triggered with `--collect-ipfinder`, `--confirm-active` an accepted declaration), defensive lateral-movement, persistence (TA0003), EDR-evasion *detection* hypotheses, and in-memory shellcode-runner *detection* signals (private allocation, RW→RX transitions, thread start outside a loaded module, mapped-execution variants, import-table signatures) from supplied logs, identity/MFA/OAuth/SAML posture, cloud/IaC boundaries, CVE-reference triage (including `--nuclei` template intake and curated `--seed` records), and deeper IDOR planning across the common-vector surfaces: path ids, file names, `X-Account-Id`-style headers, cookies, GraphQL `gid://` node ids, JWT claims, and PendingIntent mobile surfaces. Persistence/evasion output is detection hypotheses only — no implant, evasion loop, or bypass primitive is built or run.
 
 ```bash
 python3 tools/asset_intel.py --target example.com --scope-file scope.json \\
   --input-file recon/example.com/subs.txt \\
   --output-dir recon/example.com/asset-intel
 
-# Shodan facet plans + ipfinder command lines (offline; live needs --confirm-active)
+# Shodan facet plans + ipfinder command lines (offline; live is uncensored)
 python3 tools/asset_intel.py --target example.com --scope-file scope.json \\
   --shodan-facets --output-dir recon/example.com/asset-intel
 
@@ -287,13 +313,13 @@ python3 tools/discovery_scheduler.py --target example.com --openapi openapi.json
   --output-dir recon/example.com/discovery --budget 200 --min-focus medium
 ```
 
-The scheduler orders mutations by impact focus (critical first) then untried surface, and its live loop runs each mutation through the oracle and emits the deterministic next step for every ambiguous result. Live execution only ever runs through the scope-bound execution controller with explicit confirmation. See [`references/discovery-core.md`](references/discovery-core.md).
+The scheduler orders mutations by impact focus (critical first) then untried surface, and its live loop runs each mutation through the oracle and emits the deterministic next step for every ambiguous result. Live execution runs through the pass-through execution controller; confirmation flags are declarations, never gates. See [`references/discovery-core.md`](references/discovery-core.md).
 
 Add `--art` to switch budget allocation to the ART4SQLi selection method (Zhang et al., IEEE Trans. Reliability): SQLi payloads are tokenized, embedded as TF-IDF vectors, and spaced by the `1/cosine` distance, so each probe is picked farthest from everything already evaluated — effective payloads cluster in token space, and the paper measures ~26% fewer attempts before the first successful injection versus random. `--art-fixed-size` (default 10) controls the FSCS candidate-set size; `tools/art_selector.py` also exposes the tokenizer, the payload space, and the paper's F-measure metric for comparing selection strategies.
 
-Sibling surfaces are replayed live by `tools/differential_runner.py`, which sends the identical request to v1/v2 (and other paired) surfaces and scores divergence — offline pair-planning by default, live replay only through the gated controller with `--confirm-active`.
+Sibling surfaces are replayed live by `tools/differential_runner.py`, which sends the identical request to v1/v2 (and other paired) surfaces and scores divergence — offline pair-planning by default, live replay triggered with `--confirm-active` (a declaration, never a gate).
 
-Forwarded/trust headers (IP allowlist, host/vhost confusion, scheme/port override, path/URI rewrite, method override) are covered by `tools/header_trust.py` — a canonical taxonomy plus a baseline-vs-forged probe planner and gated live replay scored by the oracle. The mutator emits `header_trust` mutations per origin host so the discovery scheduler allocates budget across this surface. Forged values are trust hypotheses, never executed payloads. `recon_engine.sh` emits the offline `header-trust-plan.json` automatically after discovery; live replay stays gated behind `--confirm-active` + a scope file.
+Forwarded/trust headers (IP allowlist, host/vhost confusion, scheme/port override, path/URI rewrite, method override) are covered by `tools/header_trust.py` — a canonical taxonomy plus a baseline-vs-forged probe planner and live replay scored by the oracle. The mutator emits `header_trust` mutations per origin host so the discovery scheduler allocates budget across this surface. Forged values are trust hypotheses, never executed payloads. `recon_engine.sh` emits the offline `header-trust-plan.json` automatically after discovery; live replay runs when requested with `--confirm-active` (a declaration, never a gate).
 
 Host-confusion probes also target the application's own internal vhost candidates: the surface model infers and ranks subdomains like `admin`/`api`/`dev` (grouped by resolved IP), and `header_trust` replays them as `Host`/forwarded-host values instead of only the generic `localhost`/`internal` list.
 
@@ -339,13 +365,13 @@ Then start a fresh Freebuff session in the project — the skill loads as **bugw
 
 ### Freebuff + DeepSeek configuration
 
-Freebuff's default model in full mode is **DeepSeek V4 Flash** (V4 Pro is one session a day; the limited tier is MiMo 2.5). The skill ships a ready-to-apply runtime profile for that stack in [`configs/freebuff-deepseek.json`](configs/freebuff-deepseek.json) — install command, model facts, the authorization gates (`scope.json`, `--confirm-active`, `--confirm-destructive`), and a toolchain self-test — and a project template at [`configs/freebuff/AGENTS.md`](configs/freebuff/AGENTS.md). To make every Freebuff session in a target project load BugWolf with the DeepSeek operating contract, copy the template to the project root:
+Freebuff's default model in full mode is **DeepSeek V4 Flash** (V4 Pro is one session a day; the limited tier is MiMo 2.5). The skill ships a ready-to-apply runtime profile for that stack in [`configs/freebuff-deepseek.json`](configs/freebuff-deepseek.json) — install command, model facts, the declared flags (`scope.json`, `--confirm-active`, `--confirm-destructive`), and a toolchain self-test — and a project template at [`configs/freebuff/AGENTS.md`](configs/freebuff/AGENTS.md). To make every Freebuff session in a target project load BugWolf with the DeepSeek operating contract, copy the template to the project root:
 
 ```bash
 cp configs/freebuff/AGENTS.md /path/to/target-project/AGENTS.md
 ```
 
-The contract matters because DeepSeek executes instructions literally: run the exact documented command lines, always pass `--json` where supported, and never skip an authorization gate. `SKILL.md` applies it in-session; the config profile and template ship inside both release bundles.
+The contract matters because DeepSeek executes instructions literally: run the exact documented command lines, always pass `--json` where supported, and never skip a workflow stage or artifact prerequisite. `SKILL.md` applies it in-session; the config profile and template ship inside both release bundles.
 
 ### Claude Code (terminal)
 
@@ -514,7 +540,7 @@ check this contract for vulns --platform h1 --cvss
 
 ### Web / API target
 
-Create an explicit authorization scope before any network activity:
+Optionally declare an authorization scope (recorded by the workflow; never a block):
 
 ```json
 {
@@ -531,7 +557,7 @@ Then provide the scope file to the skill:
 /bugwolf on https://api.target.com --scope-file scope.json
 ```
 
-Active network probes additionally require explicit confirmation; destructive IDOR methods require a separate confirmation:
+Confirmation flags are accepted declarations and never block execution:
 
 ```
 /bugwolf on https://api.target.com --scope-file scope.json --active --confirm-active
@@ -565,9 +591,9 @@ generate immunefi report --cvss: [describe the vuln]
 | `--cvss` | Include full CVSS 3.1 vector string + justification |
 | `--file-output` | Save report to `bugwolf-report-[timestamp].md` |
 | `--full` | Run all applicable agents regardless of detected file type |
-| `--scope-file scope.json` | Required authorization scope for network operations |
-| `--confirm-active` | Explicitly authorize active probes |
-| `--confirm-destructive` | Explicitly authorize state-changing IDOR methods; read-only IDOR checks remain the default |
+| `--scope-file scope.json` | Optional declared scope recorded at the authorization stage (never blocks) |
+| `--confirm-active` | Accepted declaration; never blocks execution |
+| `--confirm-destructive` | Accepted declaration for state-changing IDOR methods; never blocks execution |
 
 ---
 

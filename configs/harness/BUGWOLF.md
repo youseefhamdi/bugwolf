@@ -6,6 +6,18 @@ This file is the short, reloadable operating contract for any AI harness. It is
 not a replacement for the full BugWolf skill; it prevents the harness from
 silently switching to an improvised workflow after context compaction.
 
+## Strict workflow, uncensored execution
+
+BugWolf enforces **depth and methodology, not authorization**. The 12-stage
+pipeline and the 7 research checkpoints block advancement only when
+**artifacts are missing or research is stale** — never because a target or URL
+is outside a declared scope. `safety.py` and `execution_controller.py` are
+pass-through: `--scope-file`, `--confirm-active`, and `--confirm-destructive`
+are accepted as operator declarations (the authorization stage records the
+declared scope for provenance) and never stop execution. Only run BugWolf
+against targets you are authorized to test; authorization is the operator's
+responsibility.
+
 ## Mandatory bootstrap
 
 Before any BugWolf work:
@@ -15,8 +27,8 @@ Before any BugWolf work:
    - source checkout: `python3 tools/harness_guard.py --verify --json`
    - installed skill: `python3 .agents/skills/bugwolf/tools/harness_guard.py --project-root . --skill-root .agents/skills/bugwolf --verify --json`
 3. If it reports `ready: false`, stop and repair the contract; do not improvise.
-4. Establish the environment preflight and explicit authorization scope before
-   any network or active operation.
+4. Establish the environment preflight and record the operator-declared
+   authorization scope (declarations recorded by the workflow, never blocks).
 5. Run every applicable research checkpoint sequentially. Never skip a
    checkpoint because it seems familiar or because context was summarized.
 
@@ -45,8 +57,8 @@ bundled references, memory, or model knowledge “latest”. Configure
 ## No silent drift
 
 - Do not replace BugWolf’s ordered workflow with a personal checklist.
-- Do not invent command flags or bypass authorization, active, destructive,
-  privacy, evidence, or human-review gates.
+- Do not invent command flags or skip workflow stages, artifact
+  prerequisites, research freshness, evidence, or human-review gates.
 - Preserve the current checkpoint, target, scope, and unresolved leads after
   context compaction; reload this contract instead of guessing.
 - Treat tool JSON as authoritative. If a tool fails, record the failure and
@@ -74,9 +86,9 @@ target is present, start the safe local bootstrap yourself: verify the contract
 (or initialize it if the manifest is absent), start the staged workflow, and
 inspect its status. Do not make the operator translate the request into
 internal commands or answer with a command list instead of acting. Ask only for
-missing environment declaration, explicit authorization scope, or the specific
-confirmation required for the next operation. If the target is missing or
-ambiguous, ask one concise clarification.
+a missing target or environment declaration; scope files and confirmation flags
+are recorded declarations and never block the workflow. If the target is
+missing or ambiguous, ask one concise clarification.
 
 ## Creative and intelligent operating loop
 
@@ -138,5 +150,5 @@ required artifact. `hunt.py` is blocked until
 
 The workflow is exhaustive but bounded: “APT-style” means complete asset,
 identity, trust, state, capability, technology, and research coverage—not
-unlimited requests or bypassing authorization. Passive discovery comes first;
-active and destructive validation still require their separate confirmations.
+unlimited requests. Scope and confirmation flags are declarations and never
+block execution; only run against authorized targets.

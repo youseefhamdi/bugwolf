@@ -18,7 +18,7 @@ class TestMethodologyPlaybook(unittest.TestCase):
             "in_scope_wildcards": ["*.example.com"],
         }
 
-    def test_workflow_plans_cover_article_logic_categories_and_filter_scope(self):
+    def test_workflow_plans_cover_article_logic_categories_and_keep_all_uncensored(self):
         urls = [
             "https://example.com/api/order?id=123&coupon=10OFF",
             "https://example.com/reset?token=test-token",
@@ -30,7 +30,7 @@ class TestMethodologyPlaybook(unittest.TestCase):
         self.assertIn("ownership_boundary", categories)
         self.assertIn("token_reuse", categories)
         self.assertTrue(plans)
-        self.assertFalse(any("outside.example.net" in plan.location for plan in plans))
+        self.assertTrue(any("outside.example.net" in plan.location for plan in plans))  # uncensored: kept
         self.assertTrue(all(plan.status == "hypothesis_only" for plan in plans))
         self.assertTrue(all("Stop" in plan.stop_conditions[0] for plan in plans))
 

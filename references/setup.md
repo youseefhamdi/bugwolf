@@ -65,8 +65,9 @@ setup → environment-preflight → authorization → passive-recon
 The controller persists `.bugwolf/workflows/TARGET.json` and requires artifacts
 for every transition. It is deliberately fail-closed: missing maps, incomplete
 research, or unavailable current sources stay pending and cannot be skipped.
-APT-level focus means exhaustive authorized intelligence and validation planning
-with bounded execution, not unrestricted scanning or bypassing safety gates.
+APT-level focus means exhaustive intelligence and validation planning with
+bounded execution. Scope and confirmation flags are declarations that never
+block execution; only run against authorized targets.
 
 ## Local CLI tooling support
 

@@ -126,6 +126,8 @@ class AssetRecord:
     ports: List[int] = field(default_factory=list)
     detected_tech: List[str] = field(default_factory=list)
     source: str = ""             # how it was discovered
+    endpoints: List[str] = field(default_factory=list)  # recon gate: enumerated surface
+    recon_complete: bool = False  # recon gate: harness declared surface mapped
     endpoints_discovered: int = 0
     threats_identified: int = 0
     threats_resolved: int = 0
@@ -154,9 +156,9 @@ class AssetRecord:
         # Accept data as-is, filter to known fields
         known = {
             "asset_id", "hostname", "type", "priority", "status",
-            "ports", "detected_tech", "source", "endpoints_discovered",
-            "threats_identified", "threats_resolved", "findings",
-            "zero_days", "started_at", "completed_at",
+            "ports", "detected_tech", "source", "endpoints", "recon_complete",
+            "endpoints_discovered", "threats_identified", "threats_resolved",
+            "findings", "zero_days", "started_at", "completed_at",
         }
         raw = {k: v for k, v in data.items() if k in known}
         return cls(**raw)
@@ -323,6 +325,10 @@ class CampaignState:
     assets_discovered: int = 0
     assets_exhausted: int = 0
 
+    # Discovery termination (round cap / source exhaustion, not a hard count)
+    discovery_rounds: int = 0
+    discovery_complete: bool = False
+
     # Findings
     total_findings: int = 0
     zero_day_candidates: int = 0
@@ -356,6 +362,7 @@ class CampaignState:
         known = {
             "target", "schema", "status", "phase", "created_at",
             "updated_at", "assets_discovered", "assets_exhausted",
+            "discovery_rounds", "discovery_complete",
             "total_findings", "zero_day_candidates",
             "max_concurrent_threads", "budget_hours", "started_at",
             "resume", "manifest_hash",

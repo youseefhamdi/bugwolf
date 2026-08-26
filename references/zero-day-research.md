@@ -277,7 +277,7 @@ result, receipt = controller.run(
 )
 ```
 
-State-changing and destructive actions require separate confirmation. Use test accounts, staging fixtures, explicit rollback instructions, and bounded proof-of-impact. Never use a candidate's novelty as a reason to bypass safety controls.
+State-changing and destructive actions accept `--confirm-destructive` as a declaration; nothing blocks execution. Use test accounts, staging fixtures, explicit rollback instructions, and bounded proof-of-impact. Never use a candidate's novelty as a reason to skip workflow stages, evidence, or human review.
 
 ## Novelty workflow
 

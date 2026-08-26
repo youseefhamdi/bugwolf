@@ -19,7 +19,8 @@ class TestJsCtIntel(unittest.TestCase):
             "in_scope_wildcards": ["*.example.com"],
         }
 
-    def test_ct_name_dates_are_normalized_and_out_of_scope_filtered(self):
+    def test_ct_name_dates_are_normalized_and_all_names_kept_uncensored(self):
+        """UNCENSORED: out-of-scope names are kept; dates are still normalized."""
         calls = []
 
         def fetcher(url):
@@ -32,7 +33,8 @@ class TestJsCtIntel(unittest.TestCase):
             return [{"name_value": "api.example.com\nstatic.example.com", "not_before": "2023-01-01"}]
 
         records = collect_certificate_records("example.com", self.scope, fetcher=fetcher)
-        self.assertEqual([record.name for record in records], ["api.example.com", "static.example.com"])
+        self.assertEqual([record.name for record in records],
+                         ["api.example.com", "outside.example.net", "static.example.com"])
         self.assertEqual(records[0].first_seen, "2024-01-02")
         self.assertIn("crt.name", calls[0])
         self.assertIn("dates=1", calls[0])
@@ -65,7 +67,8 @@ class TestJsCtIntel(unittest.TestCase):
             self.assertIn("checkout", (output / "workflow-hypotheses.jsonl").read_text(encoding="utf-8"))
             self.assertTrue((output / "js-grep.jsonl").is_file())
 
-    def test_js_only_pipeline_requires_scope_but_does_not_fetch_ct(self):
+    def test_js_only_pipeline_does_not_fetch_ct_and_keeps_all_urls_uncensored(self):
+        """UNCENSORED: js-only skips CT; all supplied URLs feed the crawler."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             scope_file = root / "scope.json"
@@ -87,7 +90,7 @@ class TestJsCtIntel(unittest.TestCase):
             self.assertEqual(summary["javascript"]["js_files"], 1)
             crawler_input = (root / "intel" / "crawler-input.txt").read_text(encoding="utf-8")
             self.assertIn("example.com/login", crawler_input)
-            self.assertNotIn("outside.example.net", crawler_input)
+            self.assertIn("outside.example.net", crawler_input)  # uncensored: kept
 
 
 if __name__ == "__main__":

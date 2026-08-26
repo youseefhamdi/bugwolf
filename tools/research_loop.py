@@ -868,6 +868,104 @@ def run_mandatory_research(
 
 
 # ---------------------------------------------------------------------------
+# Enforcement layer — block stale research, never block fresh research
+# ---------------------------------------------------------------------------
+
+class ResearchFreshnessError(RuntimeError):
+    """Raised when the mandatory research sequence is missing or stale.
+
+    The stage controller mirrors this check in ``_validate_research``; this
+    class exists so orchestrators can gate on freshness programmatically
+    without importing the workflow controller.
+    """
+
+
+def verify_sequence(target: str, *, base_dir: Optional[str] = None,
+                    require_latest: bool = True) -> Dict[str, Any]:
+    """Verify the persisted mandatory research sequence for a target.
+
+    Deterministic report (never raises for a missing/stale manifest):
+
+      - ``sequence_ok``  — current execution covers the exact ordered sequence
+      - ``latest_ready`` — freshness of the CURRENT execution only (historical
+        offline runs never poison a later live run)
+      - ``pending_searches`` — pending searches in the current execution
+      - ``ready`` — ``sequence_ok`` and (``latest_ready`` or not ``require_latest``)
+
+    Mirrors ``WorkflowController._validate_research`` so both enforcement
+    points always agree.
+    """
+    target_slug = re.sub(r"[^\w.\-]+", "_", target or "default") or "default"
+    # Same location execute_sequential persists to: <research-root>/<target>/.
+    root = Path(base_dir) if base_dir else ROOT / "research"
+    path = root / target_slug / "sequence.json"
+    report: Dict[str, Any] = {
+        "schema": "research_execution/verify-v1",
+        "target": target or "",
+        "sequence_file": str(path),
+        "ready": False,
+        "sequence_ok": False,
+        "latest_ready": False,
+        "pending_searches": -1,
+        "sequence": [],
+        "executions": 0,
+        "errors": [],
+    }
+    if not path.is_file():
+        report["errors"].append(
+            f"no research sequence manifest at {path}; "
+            f"run the mandatory sequence first")
+        return report
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        report["errors"].append(f"invalid research sequence manifest: {exc}")
+        return report
+    executions = data.get("executions") \
+        if isinstance(data.get("executions"), list) else []
+    current = executions[-1] if executions else data
+    sequence = list(current.get("sequence", []))
+    latest_ready = bool(current.get("latest_ready", False))
+    runs = current.get("runs", []) if isinstance(current.get("runs"), list) else []
+    pending = sum(int(item.get("pending_searches", 0)) for item in runs)
+    report.update({
+        "sequence": sequence,
+        "executions": len(executions) or (1 if not executions and data else 0),
+        "latest_ready": latest_ready,
+        "pending_searches": pending,
+    })
+    report["sequence_ok"] = sequence == list(MANDATORY_RESEARCH_SEQUENCE)
+    if not report["sequence_ok"]:
+        report["errors"].append(
+            "current execution sequence != " + " -> ".join(MANDATORY_RESEARCH_SEQUENCE))
+    if not latest_ready:
+        report["errors"].append(
+            f"latest_ready is false ({pending} pending searches); "
+            f"research is not current")
+    report["ready"] = report["sequence_ok"] and (
+        latest_ready or not require_latest)
+    return report
+
+
+def assert_sequence_current(target: str, *, base_dir: Optional[str] = None,
+                            require_latest: bool = True) -> Dict[str, Any]:
+    """Raise unless the mandatory research sequence is current.
+
+    ``require_latest=True`` demands fresh live research (raises on
+    ``complete_pending``); ``require_latest=False`` only demands the exact
+    ordered sequence to have run.  Returns the ``verify_sequence`` report on
+    success.
+    """
+    report = verify_sequence(target, base_dir=base_dir,
+                             require_latest=require_latest)
+    if not report["ready"]:
+        raise ResearchFreshnessError(
+            "research not current for target " + (target or "?")
+            + ": " + "; ".join(report["errors"]))
+    return report
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -907,12 +1005,27 @@ def main():
                         help="Sequential phase to run (default: full)")
     parser.add_argument("--list-checkpoints", action="store_true",
                         help="List checkpoints and exit")
+    parser.add_argument("--verify-sequence", action="store_true",
+                        help="Verify the mandatory research sequence for --target "
+                             "and exit non-zero when stale")
+    parser.add_argument("--base-dir", default=None,
+                        help="Research root override (default: workspace research/)")
     args = parser.parse_args()
 
     if args.list_checkpoints:
         for name, spec in CHECKPOINTS.items():
             print(f"  {name:14s} {spec['label']}")
         return
+
+    if args.verify_sequence:
+        if not args.target:
+            print(json.dumps({"schema": "research_execution/verify-v1",
+                              "ready": False, "errors": ["--verify-sequence requires --target"]},
+                             indent=2))
+            return 2
+        report = verify_sequence(args.target, base_dir=args.base_dir)
+        print(json.dumps(report, indent=2))
+        return 0 if report["ready"] else 2
 
     modes = [m.strip() for m in args.mode.split(",") if m.strip()]
     loop = ResearchLoop(target=args.target, stack=args.stack,
@@ -1001,4 +1114,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

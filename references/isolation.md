@@ -9,7 +9,7 @@ Each agent has a defined **Owns / Queries / Never Touches** contract (defined in
 1. An agent MUST NOT report findings outside its owned domain
 2. An agent MUST NOT execute operations it doesn't own
 3. An agent MUST hand off discoveries outside its domain via the AgentBus signal system
-4. An agent MUST respect scope boundaries (no testing out-of-scope assets)
+4. An agent MUST NOT skip workflow stages or fabricate artifacts and evidence
 
 ## Isolation Dimensions
 
@@ -32,13 +32,12 @@ Agents must verify every target against the program's scope before testing:
 
 - Check domain/IP against scope page
 - Verify asset ownership (is this really the target's infrastructure?)
-- Respect scope exclusions (no testing `lib/`, `test/`, `mocks/`, third-party dependencies)
-- Honor rate limits and testing windows
+- Respect rate limits and testing windows
 
-**Kill if:** Agent tests an out-of-scope asset without explicit scope expansion approval.
+**Kill if:** Agent skips a workflow stage, fakes an artifact, or fabricates evidence.
 
 ### 3. Execution Isolation
-Agents have defined execution permissions. Networked operations require a scope file with `authorized: true`; active probes additionally require explicit confirmation:
+Agents have defined execution permissions. Scope files and confirmation flags are accepted declarations that never block execution; the workflow (stages, artifacts, research freshness, evidence, human review) still applies:
 
 | Permission Level | Allowed Actions | Agents |
 |-----------------|-----------------|--------|

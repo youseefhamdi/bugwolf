@@ -165,7 +165,9 @@ class TestStageController(unittest.TestCase):
         with self.assertRaises(WorkflowError):
             self.controller.require_stage("validation")
 
-    def test_authorization_requires_explicit_in_scope_target(self):
+    def test_authorization_records_declared_scope_without_scope_enforcement(self):
+        # UNCENSORED contract: authorization requires a declared scope file but
+        # deliberately does NOT gate on target membership.
         self.controller.complete("setup")
         env = self.project / "state" / "environment.json"
         env.parent.mkdir(parents=True)
@@ -173,8 +175,24 @@ class TestStageController(unittest.TestCase):
         self.controller.complete("environment-preflight")
         scope = self.project / "scope.json"
         scope.write_text(json.dumps({"authorized": True, "in_scope_domains": ["other.test"]}))
+        status = self.controller.complete("authorization", scope_file=str(scope))
+        self.assertEqual(status["current_stage"], "passive-recon")
+        self.assertEqual(status["scope_file"], "scope.json")
+        # Missing/unparseable scope files are still refused (artifact integrity).
         with self.assertRaises(WorkflowError):
-            self.controller.complete("authorization", scope_file=str(scope))
+            self.controller.complete("setup")
+        fresh = WorkflowController(
+            "missing-scope.test", project_root=str(self.project), mode="web")
+        fresh.initialize()
+        fresh.complete("setup")
+        env.write_text(json.dumps({"location": "unknown"}))
+        fresh.complete("environment-preflight")
+        with self.assertRaises(WorkflowError):
+            fresh.complete("authorization")
+        bad = self.project / "bad-scope.json"
+        bad.write_text("not json")
+        with self.assertRaises(WorkflowError):
+            fresh.complete("authorization", scope_file=str(bad))
 
     def test_manifest_is_append_only_by_history_and_atomic(self):
         self.controller.complete("setup")
@@ -182,6 +200,47 @@ class TestStageController(unittest.TestCase):
         self.assertEqual(manifest["history"][0]["stage"], "setup")
         self.assertTrue(self.controller.path.is_file())
         self.assertFalse(self.controller.path.with_suffix(".json.tmp").exists())
+
+    def test_complete_pending_research_can_be_upgraded_once_fresh(self):
+        """Stale research records complete_pending; a fresh sequence upgrades it
+        so validation is never permanently locked."""
+        self._complete_to_maps()
+        maps = self.project / "state" / "sessions" / self.target / "maps"
+        maps.mkdir(parents=True)
+        for name in ("asset.md", "trust.md", "authz.md", "state.md", "capability.md"):
+            (maps / name).write_text(f"# {name}\n")
+        self.controller.complete("maps")
+
+        research = self.project / "research" / self.target
+        research.mkdir(parents=True)
+        seq = ["pre-hunt", "post-recon", "post-maps", "bypass",
+               "post-findings", "escalation", "pre-report"]
+        manifest = {"latest_ready": False, "executions": [{
+            "sequence": seq, "latest_ready": False, "runs": [{"pending_searches": 2}]}]}
+        (research / "sequence.json").write_text(json.dumps(manifest))
+        status = self.controller.complete("research")
+        research_stage = next(s for s in status["stages"] if s["name"] == "research")
+        self.assertEqual(research_stage["status"], "complete_pending")
+        # complete_pending must not record hashes (sequence.json will be rewritten)
+        self.assertEqual(research_stage["artifact_hashes"], {})
+
+        discovery = self.project / "recon" / self.target / "discovery"
+        discovery.mkdir()
+        (discovery / "plan.jsonl").write_text("{}\n")
+        self.controller.complete("coverage-plan")
+        with self.assertRaises(WorkflowError):
+            self.controller.require_stage("validation")
+
+        # Fresh research run rewrites sequence.json -> upgrade re-completion.
+        (research / "sequence.json").write_text(json.dumps({
+            "latest_ready": True, "executions": [{
+                "sequence": seq, "latest_ready": True, "runs": []}]}))
+        status = self.controller.complete("research")
+        research_stage = next(s for s in status["stages"] if s["name"] == "research")
+        self.assertEqual(research_stage["status"], "complete")
+        self.assertEqual(research_stage["quality"], "verified")
+        # Validation now unblocked.
+        self.controller.require_stage("validation")
 
 
 if __name__ == "__main__":

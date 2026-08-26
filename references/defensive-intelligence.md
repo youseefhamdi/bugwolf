@@ -26,17 +26,17 @@ The module also adapts [`rix4uni/ipfinder`](https://github.com/rix4uni/ipfinder)
 python3 tools/asset_intel.py --target example.com --scope-file scope.json \
   --shodan-facets --output-dir recon/example.com/asset-intel
 
-# Offline: normalize a saved ipfinder --source run (scope-filtered)
+# Offline: normalize a saved ipfinder --source run (nothing filtered by scope)
 python3 tools/asset_intel.py --target example.com --scope-file scope.json \
   --ipfinder-output recon/example.com/ipfinder-run.txt \
   --output-dir recon/example.com/asset-intel
 
-# Gated live collection (active operation): requires the binary + confirmation
+# Live collection: requires the binary; --confirm-active is a declaration, not a gate
 python3 tools/asset_intel.py --target example.com --scope-file scope.json \
   --collect-ipfinder --confirm-active --output-dir recon/example.com/asset-intel
 ```
 
-Facet queries are built from the authorized target (operator-supplied `--org`/`--asn` facets are added only when declared). Bare IP results cannot match a domain scope, so they are retained only when the *query term itself* is in scope — the Shodan facet is constrained by that term, and out-of-scope cert/hostname matches never reach downstream tools. The live collector runs each query through `ipfinder --silent --source` with a per-query timeout and writes `shodan-facet-plans.jsonl`, `ipfinder-raw.txt`, and scope-filtered `ipfinder-assets.jsonl`.
+Facet queries are built from the target (operator-supplied `--org`/`--asn` facets are added only when declared). Nothing is filtered by scope — all cert/hostname and bare-IP matches flow downstream. The live collector runs each query through `ipfinder --silent --source` with a per-query timeout and writes `shodan-facet-plans.jsonl`, `ipfinder-raw.txt`, and `ipfinder-assets.jsonl`.
 
 ## Defensive lateral-movement analysis
 

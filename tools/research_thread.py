@@ -134,6 +134,76 @@ THREAT_TEMPLATES: Dict[str, List[Dict[str, Any]]] = {
     ],
 }
 
+# ---------------------------------------------------------------------------
+# Fallback threat templates — every asset type must spawn research threads.
+# ---------------------------------------------------------------------------
+
+_FALLBACK_BASE = [
+    {"type": "auth_bypass", "confidence": "high",
+     "rationale": "Every exposed service is an authentication boundary",
+     "approach": "Test without credentials, with weak/forged credentials, and with role confusion"},
+    {"type": "idor", "confidence": "high",
+     "rationale": "Object-level authorization is often missing on secondary services",
+     "approach": "Two-account test plus ID enumeration on every resource-bearing endpoint"},
+    {"type": "information_disclosure", "confidence": "medium",
+     "rationale": "Secondary services frequently leak internal state, versions, or credentials",
+     "approach": "Probe verbose errors, directory listing, backup files, and debug endpoints"},
+    {"type": "misconfiguration", "confidence": "medium",
+     "rationale": "Non-web services are rarely hardened against default/misconfigured states",
+     "approach": "Check default credentials, insecure defaults, and exposed management interfaces"},
+]
+
+_FALLBACK_PER_TYPE: Dict[str, List[Dict[str, Any]]] = {
+    "storage_bucket": [{"type": "public_bucket_access", "confidence": "high",
+        "rationale": "Cloud storage is frequently world-readable or world-writable",
+        "approach": "Test anonymous list/get/put, ACL misconfig, and object enumeration"}],
+    "database": [{"type": "sql_injection", "confidence": "high",
+        "rationale": "Directly exposed databases accept injection through query parameters",
+        "approach": "Test query params and connection strings for SQLi; check for exposed admin interfaces"}],
+    "websocket": [{"type": "injection", "confidence": "high",
+        "rationale": "WebSocket message payloads often bypass HTTP-layer filters",
+        "approach": "Fuzz message content for injection; test origin validation and cross-site hijacking"}],
+    "mobile_api": [{"type": "api_auth_bypass", "confidence": "high",
+        "rationale": "Mobile backends often trust device-supplied identity",
+        "approach": "Test client-side auth decisions, missing cert pinning, and endpoint impersonation"}],
+    "cdn": [{"type": "cache_poisoning", "confidence": "medium",
+        "rationale": "CDN edge caches are prime cache-key confusion targets",
+        "approach": "Test cache-key manipulation, origin override headers, and purge behavior"}],
+    "dns_server": [{"type": "dns_misconfig", "confidence": "medium",
+        "rationale": "Misconfigured DNS can enable takeover or spoofing",
+        "approach": "Check zone transfer, open recursion, and dangling NS/glue records"}],
+    "email_server": [{"type": "email_spoofing", "confidence": "medium",
+        "rationale": "Mail servers without strict SPF/DKIM/DMARC allow spoofing",
+        "approach": "Check SPF/DKIM/DMARC posture and open-relay behavior"}],
+    "internal_tool": [{"type": "auth_bypass", "confidence": "critical",
+        "rationale": "Internal tools assume network trust and skip proper auth",
+        "approach": "Test direct access, default creds, and header-based auth bypass"}],
+    "smart_contract": [{"type": "economic_invariant_break", "confidence": "medium",
+        "rationale": "Contract value lives in invariants (solvency/supply/permission/price)",
+        "approach": "Map invariants first, then mutate the controlled variable that breaks one"}],
+    "binary_service": [{"type": "memory_corruption", "confidence": "low",
+        "rationale": "Binary services may expose parser bugs reachable from the network",
+        "approach": "Fuzz input parsing; check for crashes, ASLR/NX posture, and unsafe deserialization"}],
+    "container_registry": [{"type": "registry_misconfig", "confidence": "high",
+        "rationale": "Registries often allow anonymous pull or push",
+        "approach": "Test anonymous pull/push, tag overwrite, and exposed credentials in images"}],
+    "iot_endpoint": [{"type": "iot_default_creds", "confidence": "high",
+        "rationale": "IoT endpoints ship with default credentials and no rate limiting",
+        "approach": "Test default creds, unauthenticated firmware/config access, and exposed debug ports"}],
+    "source_repo": [{"type": "secret_exposure", "confidence": "high",
+        "rationale": "Repositories leak credentials and internal hostnames",
+        "approach": "Search history and files for secrets, .env, configs, and internal references"}],
+}
+
+
+def _fallback_threats(asset_type: str) -> List[Dict[str, Any]]:
+    """Type-aware generic threat templates so no asset type is left threadless."""
+    per_type = _FALLBACK_PER_TYPE.get(asset_type, [])
+    used = {t["type"] for t in per_type}
+    generic = [t for t in _FALLBACK_BASE if t["type"] not in used]
+    return per_type + generic
+
+
 # Bug class → escalation techniques (what to try after confirming the vuln)
 ESCALATION_TECHNIQUES: Dict[str, List[str]] = {
     "sql_injection": [
@@ -202,8 +272,16 @@ class ThreadBuilder:
     # -- Threat generation from asset type templates -----------------------
 
     def generate_threats(self, asset: AssetRecord) -> List[ThreatHypothesis]:
-        """Generate threat hypotheses for an asset based on its type and templates."""
-        templates = THREAT_TEMPLATES.get(asset.type.value, [])
+        """Generate threat hypotheses for an asset based on its type and templates.
+
+        Asset types without a dedicated template use the type-aware fallback
+        generator so every asset spawns research threads.  Threats target the
+        recon-discovered endpoints (never just the bare hostname).
+        """
+        templates = THREAT_TEMPLATES.get(asset.type.value)
+        if templates is None:
+            templates = _fallback_threats(asset.type.value)
+        endpoints = list(asset.endpoints or [asset.hostname])
         threats = []
         for tmpl in templates:
             threat = ThreatHypothesis(
@@ -213,7 +291,7 @@ class ThreadBuilder:
                 type=tmpl["type"],
                 confidence=tmpl["confidence"],
                 rationale=f"{tmpl['rationale']} (on {asset.hostname})",
-                target_endpoints=[asset.hostname],
+                target_endpoints=list(endpoints),
                 research_plan=tmpl["approach"],
             )
             threats.append(threat)

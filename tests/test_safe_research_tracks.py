@@ -18,15 +18,18 @@ class TestOfflineAssetIntel(unittest.TestCase):
             "in_scope_wildcards": ["*.example.com"],
         }
 
-    def test_provider_plans_do_not_execute_and_exports_are_scoped(self):
+    def test_provider_plans_do_not_execute_and_exports_keep_all_uncensored(self):
         plans = provider_query_plans("example.com")
         self.assertEqual({plan.status for plan in plans}, {"offline_plan_only"})
         records = normalize_exports([
             {"hostname": "api.example.com", "ip_str": "203.0.113.10", "port": 443, "source": "shodan"},
             {"hostname": "outside.example.net", "ip_str": "203.0.113.11"},
         ], "export", self.scope)
-        self.assertEqual(len(records), 1)
-        changed = normalize_exports([{"hostname": "api.example.com", "ip_str": "203.0.113.10", "port": 443, "tags": ["changed"]}], "export", self.scope)
+        self.assertEqual(len(records), 2)  # uncensored: nothing dropped
+        changed = normalize_exports([
+            {"hostname": "api.example.com", "ip_str": "203.0.113.10", "port": 443, "tags": ["changed"]},
+            {"hostname": "outside.example.net", "ip_str": "203.0.113.11"},
+        ], "export", self.scope)
         self.assertEqual([item.change for item in diff_assets(records, changed)], ["changed"])
 
     def test_ipfinder_facet_plans_are_offline_and_carry_commands(self):
@@ -45,21 +48,21 @@ class TestOfflineAssetIntel(unittest.TestCase):
         self.assertIn('org:"Acme Corp"', {p.query for p in org_plans})
         self.assertIn('asn:"AS123"', {p.query for p in org_plans})
 
-    def test_ipfinder_output_parse_is_query_authorized_and_scoped(self):
+    def test_ipfinder_output_parse_with_scope_keeps_all_values_uncensored(self):
         lines = [
-            'ssl:"example.com"::203.0.113.10',      # bare IP under an in-scope query
-            'ssl:"example.com"::api.example.com',    # in-scope hostname
-            'ssl:"outside.example.net"::203.0.113.11',  # query term out of scope -> dropped
-            'ssl:"example.com"::not.a.host',          # junk value -> dropped
-            'org:"Acme Corp"::203.0.113.12',          # bare IP under a non-domain query -> dropped
+            'ssl:"example.com"::203.0.113.10',      # bare IP
+            'ssl:"example.com"::api.example.com',    # hostname
+            'ssl:"outside.example.net"::203.0.113.11',  # out-of-scope term kept
+            'ssl:"example.com"::not.a.host',          # junk value kept as hostname
+            'org:"Acme Corp"::203.0.113.12',          # bare IP under non-domain query kept
             'ssl:"example.com"::203.0.113.10',        # duplicate -> deduped
         ]
         records = parse_ipfinder_output(lines, scope=self.scope)
-        by_ip = {r.ip: r for r in records if r.ip}
-        self.assertEqual(set(by_ip), {"203.0.113.10"})
-        hostnames = [r.hostname for r in records if r.hostname]
-        self.assertEqual(hostnames, ["api.example.com"])
-        self.assertEqual(len(records), 2)
+        by_ip = {r.ip for r in records if r.ip}
+        self.assertEqual(by_ip, {"203.0.113.10", "203.0.113.11", "203.0.113.12"})
+        hostnames = {r.hostname for r in records if r.hostname}
+        self.assertEqual(hostnames, {"api.example.com", "not.a.host"})
+        self.assertEqual(len(records), 5)
 
     def test_ipfinder_output_parse_without_scope_keeps_all_values(self):
         lines = ['ssl:"example.com"::203.0.113.10', 'ssl:"example.com"::api.example.com']
@@ -161,7 +164,7 @@ class TestAdvancedIdor(unittest.TestCase):
         refs = classify_endpoint("https://example.com/uploads/a8f3d91c.pdf")
         self.assertIn("file_or_export", {r.reference_type for r in refs})
 
-    def test_matrix_requires_two_test_accounts_and_blocks_out_of_scope(self):
+    def test_matrix_requires_two_test_accounts_and_keeps_out_of_scope_uncensored(self):
         scope = {"authorized": True, "in_scope": ["example.com"], "in_scope_wildcards": ["*.example.com"]}
         plans = build_idor_matrix("example.com", [
             "https://example.com/api/user?id=1",
@@ -174,7 +177,7 @@ class TestAdvancedIdor(unittest.TestCase):
         self.assertTrue(all(len(plan.accounts) == 2 for plan in plans))
         self.assertTrue(all("victim-data" in " ".join(plan.prohibited_actions).lower() for plan in plans))
         self.assertTrue(all("enumeration" in " ".join(plan.prohibited_actions).lower() for plan in plans))
-        self.assertFalse(any("outside.example.net" in plan.location for plan in plans))
+        self.assertTrue(any("outside.example.net" in plan.location for plan in plans))  # uncensored: kept
         # Dict endpoints with headers/cookies are planned too.
         header_plans = [p for p in plans if p.reference_type == "header_reference"]
         cookie_plans = [p for p in plans if p.reference_type == "cookie_reference"]
