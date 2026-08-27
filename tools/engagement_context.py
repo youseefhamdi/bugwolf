@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import uuid
 import os
 import sys
 from datetime import datetime, timezone
@@ -160,9 +161,7 @@ def stamp_operation(action: str, *, target: str = "",
     root = _context_dir(project_root)
     record = {
         "schema": SCHEMA,
-        "operation_id": hashlib.sha256(
-            f"{_now()}:{action}:{target}".encode()
-        ).hexdigest()[:16],
+        "operation_id": str(uuid.uuid4()),
         "recorded_at": _now(),
         "operator": str(context.get("operator") or DEFAULT_OPERATOR),
         "authorization": str(context.get("authorization") or "organization_level"),

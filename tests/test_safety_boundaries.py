@@ -73,16 +73,14 @@ class TestAuthorizationScope(unittest.TestCase):
 
     # --- validate_http_url uncensored ---
 
-    def test_validate_http_url_always_passes(self):
-        """UNCENSORED: all URLs pass validation."""
+    def test_validate_http_url_rejects_malformed_or_unsupported_urls(self):
+        """Uncensored target selection still rejects malformed URL syntax."""
         self.assertEqual(validate_http_url("http://user:pass@example.com/api"),
                          "http://user:pass@example.com/api")
-        self.assertEqual(validate_http_url("http://example.com/api\x00sneaky"),
-                         "http://example.com/api\x00sneaky")
-        self.assertEqual(validate_http_url("file:///etc/passwd"),
-                         "file:///etc/passwd")
-        self.assertEqual(validate_http_url("javascript:alert(1)"),
-                         "javascript:alert(1)")
+        for value in ("http://example.com/api\x00sneaky",
+                      "file:///etc/passwd", "javascript:alert(1)"):
+            with self.assertRaises(ValueError):
+                validate_http_url(value)
 
     def test_validate_http_url_always_in_scope(self):
         """UNCENSORED: URLs always pass scope validation."""

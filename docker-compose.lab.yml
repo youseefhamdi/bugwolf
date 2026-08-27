@@ -1,0 +1,53 @@
+services:
+  browser:
+    image: mcr.microsoft.com/playwright:v1.55.0-noble
+    profiles: [browser]
+    command: ["bash", "-lc", "node -e \"console.log('BugWolf browser runtime ready')\" && sleep infinity"]
+    networks: [bugwolf_lab]
+    read_only: true
+    tmpfs: [/tmp]
+
+  emulator:
+    image: budtmo/docker-android:emulator_35.0
+    profiles: [emulator]
+    privileged: true
+    networks: [bugwolf_lab]
+
+  chain_node:
+    image: ghcr.io/foundry-rs/foundry:stable
+    profiles: [chain_node]
+    command: ["anvil", "--host", "0.0.0.0", "--port", "8545"]
+    networks: [bugwolf_lab]
+    ports: ["127.0.0.1:8545:8545"]
+
+  model:
+    image: ollama/ollama:0.11.10
+    profiles: [model]
+    networks: [bugwolf_lab]
+    ports: ["127.0.0.1:11434:11434"]
+    volumes: [ollama_data:/root/.ollama]
+
+  mcp:
+    image: python:3.12-slim
+    profiles: [mcp]
+    working_dir: /app
+    command: ["python", "-u", "mcp_local_server.py"]
+    volumes: ["./lab/mcp:/app:ro"]
+    networks: [bugwolf_lab]
+
+  cloud:
+    image: localstack/localstack:4.8.1
+    profiles: [cloud]
+    environment:
+      - SERVICES=s3,iam,sts,lambda
+      - AWS_DEFAULT_REGION=us-east-1
+      - PERSISTENCE=0
+    networks: [bugwolf_lab]
+    ports: ["127.0.0.1:4566:4566"]
+
+networks:
+  bugwolf_lab:
+    internal: true
+
+volumes:
+  ollama_data:

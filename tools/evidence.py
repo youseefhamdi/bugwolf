@@ -159,7 +159,7 @@ class EvidenceStore:
             evidence_id=evidence_id,
             kind=kind,
             sha256=digest,
-            path=str(path.relative_to(ROOT)),
+            path=str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path),
             previous_hash=self._tip(),
             created_at=datetime.now(timezone.utc).isoformat(),
             metadata=redact(metadata or {}),
@@ -204,7 +204,9 @@ class EvidenceStore:
             result["entries"] += 1
             try:
                 record = json.loads(line)
-                body_path = (ROOT / record["path"]).resolve()
+                recorded_path = Path(record["path"])
+                body_path = ((ROOT / recorded_path) if not recorded_path.is_absolute()
+                             else recorded_path).resolve()
                 try:
                     body_path.relative_to(self.root)
                 except ValueError as exc:

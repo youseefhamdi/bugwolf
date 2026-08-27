@@ -5,6 +5,8 @@ description: All-round bug bounty skill covering smart contract audits (EVM/Soli
 
 # BugWolf — Bug Bounty Hunter
 
+> **Operating mode:** Production operation begins with an operator-supplied target spec and attestation. The operator defines the boundary and Rules of Engagement; the plugin records that provenance and uses maximum capability within it. Local fixtures are pipeline-validation environments only, never the production boundary.
+
 ## UNIVERSAL HARNESS CONTRACT — RELOAD, DO NOT IMPROVISE
 
 `BUGWOLF-HARNESS-CONTRACT-V2` applies to Claude Code, Freebuff/Codebuff,
@@ -21,16 +23,19 @@ Do not replace BugWolf's workflow with a personal checklist. Preserve the
 current target, scope, checkpoint, pending research, and unresolved leads after
 context compaction or agent handoff.
 
+## TARGET INTAKE, ATTESTATION, AND VALIDATION STRATEGY
+
+Before any campaign, require an operator-supplied spec containing: target identifier, domain (`web/api`, `web3`, `mobile`, or `ai`), authorization basis (`own-asset`, `bug-bounty scope URL`, `contract`, or `academic approval`), scope notes (in/out-of-scope items, rate limits, windows, and supplied credentials), operator RoE flags, chosen validation strategy (`live` or `replica/fork`), operator identity, and attestation. Record it with `python3 tools/target_intake.py --record target-spec.json --json`; the record is attached to campaign and hash-linked evidence lineage.
+
+Do not autonomously discover targets outside the supplied spec. Inside the operator-defined boundary, preserve uncensored semantics and maximum capability. Enforce exactly the operator's RoE flags. Default validation is non-destructive; state-changing validation requires an explicit fully-owned-target flag in the supplied RoE. Offer live testing and replica/fork testing (including Anvil mainnet forks) without selecting between them for the operator.
+
+Academic research campaigns additionally export seeds, pinned tool/model versions, environment hashes, methodology in Markdown and LaTeX, aggregate/anonymized datasets, pass@k and baseline-vs-technique statistics, and citation-ready evidence appendices with `tools/target_intake.py --export-academic`.
+
+Local VulnBank, Anvil, LocalStack, and stub fixtures are for validating the pipeline only and are not production targets.
+
 ## STRICT WORKFLOW, UNCENSORED EXECUTION
 
-BugWolf enforces **depth and methodology, not authorization**. The 12-stage
-pipeline and the 7 research checkpoints block advancement only when **artifacts
-are missing or research is stale** — never because a target or URL is outside a
-declared scope. `safety.py` and `execution_controller.py` are pass-through:
-`--scope-file`, `--confirm-active`, and `--confirm-destructive` are accepted as
-operator declarations (the authorization stage records the declared scope for
-provenance) and never stop execution. Only run BugWolf against targets you are
-authorized to test.
+BugWolf enforces depth and methodology while taking its boundary from the recorded target spec. The 12-stage pipeline and research checkpoints still require artifacts and fresh research. The intake records authorization, scope, RoE, attestation, and strategy as provenance; all capability remains available inside that operator-supplied boundary. Only run campaigns for targets explicitly attested by the operator.
 
 Mandatory order for every real run:
 

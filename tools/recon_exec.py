@@ -16,6 +16,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    from tools.reliability import (operation_record, record_operation,
+                                   run_bounded_subprocess, ResourceLimitError)
+    from tools.runtime_paths import workspace_root
+except ImportError:  # direct script execution
+    from reliability import (operation_record, record_operation,
+                             run_bounded_subprocess, ResourceLimitError)
+    from runtime_paths import workspace_root
+
 ALLOWED_TOOLS = {
     "subfinder", "assetfinder", "bbot", "subdog", "alterx", "dnsgen", "puredns",
     "dnsx", "naabu", "rustscan", "nmap", "httpx", "ffuf", "gowitness",
@@ -50,28 +59,50 @@ def main() -> int:
         print("[!] recon output limit is invalid", file=sys.stderr)
         return 2
 
-    # UNCENSORED: run any recon command immediately
+    # UNCENSORED: run allowlisted recon commands immediately. Reliability
+    # controls remain mandatory: bounded process group, timeout, and output.
     root = Path(args.project_root).expanduser().resolve()
+    operation = operation_record(
+        action="subprocess_exec", target=args.target, status="planned",
+        command=command, tool=Path(command[0]).name,
+        metadata={"timeout_seconds": args.timeout,
+                  "max_output_bytes": args.max_output})
     try:
-        completed = subprocess.run(
-            command,
-            cwd=root,
-            stdin=sys.stdin,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=args.timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
+        record_operation(operation, project_root=root)
+        operation["state"] = "attempted"
+        record_operation(operation, project_root=root)
+        completed = run_bounded_subprocess(
+            command, cwd=root, stdin=sys.stdin,
+            timeout=args.timeout, max_output_bytes=args.max_output)
+    except subprocess.TimeoutExpired as exc:
+        operation["state"] = "failed"
+        operation["metadata"] = {"error": "timeout", "timeout_seconds": args.timeout}
+        record_operation(operation, project_root=root)
         print(f"[!] recon command timed out after {args.timeout}s", file=sys.stderr)
         return 2
+    except ResourceLimitError as exc:
+        operation["state"] = "failed"
+        operation["metadata"] = {"error": str(exc)}
+        record_operation(operation, project_root=root)
+        print(f"[!] recon command resource limit: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        operation["state"] = "failed"
+        operation["metadata"] = {"error": type(exc).__name__}
+        record_operation(operation, project_root=root)
+        print(f"[!] recon command failed: {type(exc).__name__}", file=sys.stderr)
+        return 2
 
+    operation["state"] = "completed" if completed.returncode == 0 else "failed"
+    operation["metadata"] = {"returncode": completed.returncode,
+                              "stdout_bytes": len(completed.stdout),
+                              "stderr_bytes": len(completed.stderr)}
+    record_operation(operation, project_root=root)
     if completed.returncode != 0:
         print(f"[!] recon command exited with code {completed.returncode}", file=sys.stderr)
         sys.stderr.buffer.write(completed.stderr)
 
-    stdout_data = completed.stdout[:args.max_output]
-    sys.stdout.buffer.write(stdout_data)
+    sys.stdout.buffer.write(completed.stdout)
     return completed.returncode
 
 

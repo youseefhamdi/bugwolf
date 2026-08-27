@@ -23,6 +23,8 @@
 
 > **New in v1.0.0:** LLM / Agentic AI security track (OWASP GenAI LLM Top 10 2026 + Agentic Top 10 ASI01–ASI10), RAG & embedding attacks, MCP security, mobile + cloud-native vectors, and a zero-day LLM attack-surface detector. See [CHANGELOG.md](CHANGELOG.md).
 
+> **Operating mode:** Production campaigns run only from an operator-supplied target specification and attestation. The operator defines the exact boundary and Rules of Engagement; BugWolf records that provenance and applies maximum capability inside it. Local fixtures (VulnBank, Anvil, LocalStack, and stubs) validate the pipeline only; they are not the production boundary.
+
 ---
 
 ## APT Commander — Strict Workflow, Uncensored Execution
@@ -49,6 +51,36 @@ deliberately **uncensored** for operational freedom.
 - **Authorization is the operator's responsibility.** BugWolf is for
   authorized security research; only run it against targets you have explicit
   permission to test.
+
+## Operator-Supplied Target Intake
+
+Every campaign starts with a recorded target spec. No autonomous target discovery is performed beyond the supplied identifier and scope. The operator chooses live validation or replica/fork validation, and supplies the Rules of Engagement; validation is non-destructive by default unless the spec explicitly flags a fully owned target.
+
+```json
+{
+  "target_identifier": "https://api.example.com",
+  "domain": "web/api",
+  "authorization_basis": "own-asset",
+  "scope_notes": {"in_scope": ["/api/*"], "out_of_scope": ["/admin"], "rate_limits": "1 request/sec", "testing_windows": "09:00-17:00 UTC", "credentials": "operator supplied"},
+  "roe_flags": {"no_destructive": true},
+  "validation_strategy": "live",
+  "operator": "operator@example.com",
+  "attestation": "I attest that I am authorized to test this boundary.",
+  "campaign_id": "ENG-001"
+}
+```
+
+Record it and attach it to campaign/evidence lineage:
+
+```bash
+python3 tools/target_intake.py --record target-spec.json --json
+```
+
+Supported authorization bases are `own-asset`, `bug-bounty scope URL`, `contract`, and `academic approval`; domains are `web/api`, `web3`, `mobile`, and `ai`. Use `"validation_strategy": "replica/fork"` for an Anvil/mainnet fork or equivalent reproducible environment. For academic campaigns, export seeds, pinned versions, environment hashes, Markdown/LaTeX methodology, anonymized aggregate data, baseline-vs-technique statistics, and citation-ready appendices:
+
+```bash
+python3 tools/target_intake.py --export-academic --target https://api.example.com --output-dir research/academic --attempts-file attempts.json --json
+```
 
 ## What It Does
 
@@ -131,6 +163,36 @@ validation and `zero_day.py` until coverage planning. “APT-level”
 means complete, methodical, authorized coverage of the full target surface and
 all trust/identity/state/capability boundaries—not unlimited traffic. Scope
 files and confirmation flags are declarations that never block execution.
+
+## Lab Runtime Setup
+
+The optional runtime stack is fully local and isolated. It is not required for static analysis, but runtime-backed validation reports a missing dependency instead of fabricating results.
+
+```bash
+# Start all supplied container runtimes
+scripts/lab_setup.sh up
+
+# Inspect readiness for all six runtimes
+python3 tools/lab_doctor.py
+
+# Stop and remove the disposable stack
+scripts/lab_setup.sh down
+```
+
+The compose profile provides browser, Android emulator, Anvil chain node, Ollama, local MCP, and LocalStack services. If Docker Compose is unavailable, the fallback commands are printed by `scripts/lab_setup.sh up`; the host alternatives are Playwright Chromium, Android SDK/emulator, Foundry Anvil, Ollama with an explicitly pinned model, the supplied stdio MCP fixture, and LocalStack. Never treat a `MISSING` runtime as a successful test.
+
+## Claude Code Four-Domain Research Workflow
+
+Use the Claude Code-facing workflow for explicitly supplied local assets:
+
+```bash
+python3 tools/claude_workflow.py --target local-project --domain web_api --path src/app.py --json
+python3 tools/claude_workflow.py --target local-project --domain web3 --path contracts/Vault.sol --json
+python3 tools/claude_workflow.py --target local-project --domain mobile --path app/AndroidManifest.xml --json
+python3 tools/claude_workflow.py --target local-project --domain ai --path agent/config.py --json
+```
+
+It dispatches to the existing four-domain analyzers, persists candidates through evidence/novelty handling, prioritizes critical/high hypotheses, and returns explicit diagnostics for optional browser, emulator, chain-node, model, MCP, and cloud runtimes. Missing runtimes are never represented as fake results.
 
 ## Potentially-Novel Research Track
 

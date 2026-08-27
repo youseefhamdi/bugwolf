@@ -1478,6 +1478,9 @@ class CampaignOrchestrator:
             "severity": severity,
             "title": getattr(thread, "objective", ""),
             "confirmed_behavior": getattr(thread, "confirmed_behavior", ""),
+            "demonstrated_impact": (
+                getattr(thread, "live_exploit", None) or {}
+            ).get("demonstrated_impact", ""),
             "refutation": thread.refutation,
             "recorded_at": _now(),
             "method": getattr(thread, "method", "GET"),
@@ -1518,7 +1521,9 @@ class CampaignOrchestrator:
             return None
         evidence = getattr(result, "evidence", None) or {}
         response = evidence.get("response") or {}
-        body = str(response.get("body") or "").strip()
+        body = str(response.get("body") or response.get("body_preview") or "").strip()
+        if not body and getattr(result, "response_body", None):
+            body = str(result.response_body).strip()
         impact = {
             "schema": "bugwolf/exploit-demonstration/v1",
             "finding_id": refutation.get("finding_id") or thread.thread_id,
@@ -1532,14 +1537,14 @@ class CampaignOrchestrator:
         }
         # Impact demonstration: the data actually obtained by the replay
         # (truncated for the ledger; full body lives in the probe evidence).
-        if body:
-            impact["demonstrated_impact"] = body[:500]
+        impact["demonstrated_impact"] = body[:500] or str(
+            getattr(result, "response_body", "") or "")[:500]
         # Exploit feedback: the demonstrated impact unlocks new chain
         # hypotheses ("what else does the data unlock").  Advisory — a
         # feedback failure never gates the exploitation phase.
+        thread.live_exploit = impact
         self._feed_exploit_to_chains(thread, impact,
                                      project_root=project_root)
-        thread.live_exploit = impact
         self.campaign.save_thread(thread)
         self._append_exploit_record(impact)
         return impact
@@ -1614,7 +1619,9 @@ class CampaignOrchestrator:
             return None
         evidence_out = getattr(result, "evidence", None) or {}
         response = evidence_out.get("response") or {}
-        body_out = str(response.get("body") or "").strip()
+        body_out = str(response.get("body") or response.get("body_preview") or "").strip()
+        if not body_out and getattr(result, "response_body", None):
+            body_out = str(result.response_body).strip()
         impact = {
             "schema": "bugwolf/exploit-demonstration/v1",
             "kind": "bypass-approval",
@@ -1633,8 +1640,8 @@ class CampaignOrchestrator:
             "replay_key": evidence_out.get("replay_key", ""),
             "recorded_at": _now(),
         }
-        if body_out:
-            impact["demonstrated_impact"] = body_out[:500]
+        impact["demonstrated_impact"] = body_out[:500] or str(
+            getattr(result, "response_body", "") or "")[:500]
         self._append_exploit_record(impact)
         return impact
 
@@ -1679,9 +1686,19 @@ class CampaignOrchestrator:
             path = self.project / "state" / "sessions" / self.target \
                 / "leads.jsonl"
             path.parent.mkdir(parents=True, exist_ok=True)
+            existing_ids = set()
+            if path.is_file():
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    try:
+                        existing_ids.add(json.loads(line).get("lead_id", ""))
+                    except json.JSONDecodeError:
+                        continue
             with path.open("a", encoding="utf-8") as stream:
                 for record in records:
+                    if record.get("lead_id") in existing_ids:
+                        continue
                     stream.write(json.dumps(record, sort_keys=True) + "\n")
+                    existing_ids.add(record.get("lead_id", ""))
                 stream.flush()
             # Rebuild the chain graph so the new leads join chain proposals.
             from tools.chain_orchestrator import refresh_target

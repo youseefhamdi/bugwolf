@@ -89,6 +89,7 @@ class Finding:
     status: str = "open"  # open, reported, resolved, dup, n/a
     evidence: Any = field(default_factory=dict)
     confirmed_behavior: str = ""
+    demonstrated_impact: str = ""
 
     def __post_init__(self):
         if not self.found_at:
@@ -319,6 +320,13 @@ def add_finding(target: str, finding: Dict,
         record["evidence"] = safe_finding["evidence"]
     if "confirmed_behavior" in safe_finding:
         record["confirmed_behavior"] = safe_finding["confirmed_behavior"]
+    # Legacy findings may not carry impact evidence; normalize them so every
+    # persisted finding has a stable schema without breaking old campaigns.
+    record["demonstrated_impact"] = str(
+        safe_finding.get("demonstrated_impact")
+        or safe_finding.get("impact")
+        or safe_finding.get("confirmed_behavior")
+        or "")
 
     state_dir = _state_dir(target, project_root)
     if record.get("endpoint"):
@@ -333,6 +341,15 @@ def add_finding(target: str, finding: Dict,
             project_root=project_root,
         )
     atomic_append(state_dir / "findings.jsonl", json.dumps(record))
+    # Mirror legacy findings into the shared candidate lifecycle. This is an
+    # additive compatibility index: the canonical findings ledger remains
+    # unchanged and failures here never erase or block finding persistence.
+    try:
+        from tools.candidate_lifecycle import CandidateStore, migrate_candidate
+        CandidateStore(state_dir / "candidates.jsonl").add(
+            migrate_candidate({**record, "target": target}))
+    except (OSError, TypeError, ValueError):
+        pass
 
     state = load_state(target, project_root)
     state.findings_count = _jsonl_count(state_dir / "findings.jsonl")

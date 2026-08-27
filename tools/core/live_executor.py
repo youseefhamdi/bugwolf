@@ -47,6 +47,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 if str(Path(__file__).resolve().parent.parent.parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from tools.evidence import redact, redact_text
+from tools.reliability import (MAX_ARTIFACT_BYTES, ResourceLimitError,
+                               operation_record, record_operation,
+                               atomic_write_bytes)
 from tools.runtime_paths import target_slug, workspace_root
 
 # Accountability hook (Phase 1): records the operator-declared engagement
@@ -62,7 +65,8 @@ SCHEMA = "bugwolf/live-executor/v1"
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_RETRIES = 2          # 1 initial + 2 retries = 3 attempts max
 RETRY_BACKOFF = 0.25         # seconds, deterministic fixed backoff
-MAX_BODY_RECORD = 4096       # chars of response body kept in evidence
+MAX_BODY_RECORD = 4096       # preview chars retained inline
+MAX_RAW_BODY_BYTES = 50_000_000
 
 # ---------------------------------------------------------------------------
 # WAF fingerprints (defense-name -> header keys / body markers)
@@ -584,7 +588,8 @@ def execute_probe(unit: Dict[str, Any], target: str, *,
     primary = primary or (baseline_result or all_results[0])
     primary.signals = extract_signals(primary, baseline_result)
     # Package replayable evidence: full recorded request/response.
-    primary.evidence = _build_evidence(primary, unit, bug_class)
+    primary.evidence = _build_evidence(primary, unit, bug_class,
+                                        project_root=project_root)
     # Do not return a credential-bearing object after persisting a redacted
     # evidence block; callers commonly serialize the full ProbeResult.
     primary.spec = redact(primary.spec)
@@ -609,7 +614,8 @@ def execute_probe(unit: Dict[str, Any], target: str, *,
 
 
 def _build_evidence(result: ProbeResult, unit: Dict[str, Any],
-                    bug_class: str) -> Dict[str, Any]:
+                    bug_class: str, *,
+                    project_root: Optional[str] = None) -> Dict[str, Any]:
     """Build the reproducible-evidence block (recorded request + response)."""
     spec = result.spec or {}
     request_record = redact({
@@ -620,10 +626,25 @@ def _build_evidence(result: ProbeResult, unit: Dict[str, Any],
         "technique": spec.get("technique", ""),
         "bug_class": bug_class,
     })
+    raw_body = str(result.response_body or "").encode("utf-8", errors="replace")
+    response_body: Any = result.response_body
+    response_ref = ""
+    if len(raw_body) > MAX_BODY_RECORD:
+        root = workspace_root(project_root)
+        evidence_dir = root / "state" / "sessions" / target_slug(
+            str(spec.get("url", "unknown"))) / "evidence"
+        try:
+            raw_path = evidence_dir / f"{result.probe_id}.response.raw"
+            atomic_write_bytes(raw_path, raw_body, max_bytes=MAX_RAW_BODY_BYTES)
+            response_body = str(raw_path.relative_to(root))
+            response_ref = response_body
+        except (OSError, ResourceLimitError, ValueError):
+            response_body = redact_text(result.response_body)
     response_record = redact({
         "status": result.status,
         "headers": result.response_headers,
-        "body": result.response_body,
+        "body_preview": str(response_body)[:MAX_BODY_RECORD],
+        "body_ref": response_ref,
         "elapsed_ms": result.elapsed_ms,
     })
     replay = hashlib.sha256(json.dumps(
