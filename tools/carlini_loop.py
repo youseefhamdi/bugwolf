@@ -242,8 +242,10 @@ def enumerate_files(path: str | Path, *,
             surface = accept(rel)
             if surface is None:
                 continue
-            found.append(_build_source_file(
-                rel, str(rel.relative_to(root)), surface, max_bytes, max_lines))
+            built = _build_source_file(
+                rel, str(rel.relative_to(root)), surface, max_bytes, max_lines)
+            if built is not None:  # caps-rejected/unreadable files are skipped, never yielded as None
+                found.append(built)
     return found
 
 

@@ -1,17 +1,17 @@
 # BugWolf — Repository Audit & File Map (generated)
 
-> Generated on 2026-08-27T07:13:42+00:00 from `main@95f66e0` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
+> Generated on 2026-09-02T14:41:54+00:00 from `main@b52a5ae` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
 
 ## 1. Scale
 
-- Python modules under `tools/`: **151** (60756 lines) + **12** `__init__.py` package markers.
-- CLI-capable modules (argparse/`__main__`): **106**
+- Python modules under `tools/`: **152** (61586 lines) + **13** `__init__.py` package markers.
+- CLI-capable modules (argparse/`__main__`): **107**
 - Group sizes: core **8**, domains **14**, intelligence **3**, recon **1**, validation **2**
 
 ## 2. Test suite
 
-- Test files: **110**
-- Discovered tests: **1053**
+- Test files: **112**
+- Discovered tests: **1098**
 
 ## 3. References
 
@@ -43,7 +43,7 @@
 | `tools/patch_gap.py` | 806 | BugWolf Patch-Gap Exploitation Engine v1.0.0 |
 | `tools/leads.py` | 796 | BugWolf Lead Ledger — persistent state-transition research objects for OPEN LEADs. |
 | `tools/infra_deploy.py` | 763 | BugWolf Infrastructure Auto-Deploy v1.0.0 |
-| `tools/carlini_loop.py` | 750 | BugWolf Carlini Loop Track — per-file brute-force vulnerability analysis. |
+| `tools/carlini_loop.py` | 752 | BugWolf Carlini Loop Track — per-file brute-force vulnerability analysis. |
 | `tools/capability_registry.py` | 733 | BugWolf Capability Registry v1.0.0 |
 | `tools/trust_map.py` | 720 | BugWolf Trust Map Engine v1.0.0 |
 | `tools/agent_isolation.py` | 711 | Agent Isolation Checker — verifies each BugWolf agent operates within |
@@ -64,9 +64,9 @@
 | `tools/opsec.py` | 571 | BugWolf OPSEC Module — Anti-attribution & operational security. |
 | `tools/zero_day_tracks.py` | 571 | Deterministic discovery adapters for the five research surfaces. |
 | `tools/chain_orchestrator.py` | 568 | BugWolf full-chain orchestrator. |
+| `tools/runtime/contracts.py` | 564 | BugWolf Runtime Contracts - Phase 1 of the orchestrator plan. |
 | `tools/domains/cloud/iam_privesc_graph.py` | 559 | BugWolf IAM Privilege-Escalation Graph — offline capability analysis (AWS). |
 | `tools/formal_verify.py` | 544 | BugWolf Formal Verification Bridge v1.0.0 |
-| `tools/methodology_playbook.py` | 540 | Offline methodology and validation planning for BugWolf. |
 
 ## 6. Verification notes
 

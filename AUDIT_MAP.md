@@ -166,7 +166,7 @@ target), with domain modules publishing typed events onto
 | `tools/threat_intel.py` | 659 | HackerOne hacktivity fetch, CVE→target mapping, ransomware mentions. `ThreatIntel`@443, `IntelMonitor`@543 |
 | `tools/recon_engine.sh` | 718 | Bash recon engine: subdomain/DNS/port/tech collection + research hooks (NOT Python; shell syntax verified) |
 | `tools/trust_map.py` | 720 | Directed trust graph across target. `TrustMap`@126 (add_node/add_edge/attach_capability), `bootstrap_from_recon`@539 |
-| `tools/historical_asset_delta.py` (in `recon/`) | 424 | Passive-DNS/CRT churn tracker. `compute_delta`@274, `ingest_historical`@232 |
+| `tools/recon/historical_asset_delta.py` | 460 | Passive-DNS/CRT churn tracker. `compute_delta`@238, `ingest_historical`@322 |
 
 ### 7.3 Discovery core (Web/API)
 
@@ -290,7 +290,7 @@ target), with domain modules publishing typed events onto
 | `tools/intelligence/chain_graph_ai.py` | 336 | Missing-link chain proposals on the deep_chain graph. `propose`@134 |
 | `tools/intelligence/failure_learning.py` | 408 | Blocker → bypass-candidate feedback loop + **operator approval gate**. `BypassCandidate`@155, `learn`@189, `approve_candidate`@293, `make_blocked_listener`@344 |
 | `tools/intelligence/seed_advisor.py` | 336 | Seed/mutation probe proposals for research units. `advise`@222 |
-| `tools/recon/historical_asset_delta.py` | 424 | Passive-DNS/CRT churn tracking (see §7.2) |
+| `tools/recon/historical_asset_delta.py` | 460 | Passive-DNS/CRT churn tracking (see §7.2) |
 | `tools/validation/self_eval_harness.py` | 667 | AutoPenBench-style milestone scoring against fixed task set. `Milestone`@76, `EvalTask`@86, `evaluate`@137 (10 tasks, 100% = pass) |
 | `tools/validation/verification_lab.py` | 393 | Disposable dynamic-validation lab plans (container/dir spec, setup→reproduce→verify→cleanup). `plan_labs`@276 |
 

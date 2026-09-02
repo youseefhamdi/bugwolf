@@ -1,8 +1,8 @@
 state/
 .private/
 vault/
-recon/
-research/
+/recon/
+/research/
 *.tmp
 __pycache__/
 *.pyc
