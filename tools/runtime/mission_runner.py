@@ -27,9 +27,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 if str(Path(__file__).resolve().parent.parent.parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -190,9 +191,183 @@ def _probe_graphql_introspection(base: str, paths: List[str]) -> List[Dict]:
     return signals
 
 
+# ---------------------------------------------------------------------------
+# WAF-bypass technique matrix + pass@k swarm (plan v2 sections 5.4/5.5)
+# ---------------------------------------------------------------------------
+
+# Markers that distinguish the protected resource from a generic 200 page.
+_BYPASS_MARKERS = ("token", "internal", "admin", "role")
+
+
+def _bypass_hit(result: ProbeResult) -> bool:
+    """A bypass attempt hit the protected resource (not just any 200)."""
+    if not (200 <= result.status < 300):
+        return False
+    lowered = result.body.lower()
+    return any(marker in lowered for marker in _BYPASS_MARKERS)
+
+
+def _variants_header_original_url(base: str, path: str) -> List[Tuple[str, ProbeResult]]:
+    """header-original-url: forwarded/rewrite header trust confusions."""
+    return [(f"{header}: {path}",
+             http_probe(base + path, headers={header: path}))
+            for header in ("X-Original-URL", "X-Rewrite-URL")]
+
+
+def _variants_path_obfuscation(base: str, path: str) -> List[Tuple[str, ProbeResult]]:
+    """path-obfuscation: dot-segment and duplicate-slash normalizers."""
+    head, _, tail = path.rpartition("/")
+    variants = [
+        "//" + path.lstrip("/"),
+        "/./" + path.lstrip("/"),
+        f"{head}/./{tail}",
+        f"{path}/.",
+    ]
+    return [(v, http_probe(base + v)) for v in variants]
+
+
+def _variants_encoding(base: str, path: str) -> List[Tuple[str, ProbeResult]]:
+    """encoding-variants: single/double percent-encoding, trailing junk."""
+    head, _, tail = path.rpartition("/")
+    encoded = ("%" + format(ord(tail[0]), "x") + tail[1:]) if tail else tail
+    variants = [
+        f"{head}/{encoded}",                       # single-encoded segment char
+        "/%252f" + path.lstrip("/"),               # double-encoded root slash
+        f"{path}%20",                              # trailing encoded space
+        f"{head}%2f{tail}",                        # encoded separator
+    ]
+    return [(v, http_probe(base + v)) for v in variants]
+
+
+def _variants_parser_differential(base: str, path: str) -> List[Tuple[str, ProbeResult]]:
+    """parser-differential: semicolon path params, dot-dot re-joins."""
+    head, _, tail = path.rpartition("/")
+    variants = [
+        f"{path};.css",
+        f"{path}?next={path}",
+        f"{head}/xx/../{tail}",
+        f"{head}/{tail}?next={path}",
+    ]
+    return [(v, http_probe(base + v)) for v in variants]
+
+
+def _variants_case_rotation(base: str, path: str) -> List[Tuple[str, ProbeResult]]:
+    """case-rotation: case-normalizing front ends vs strict back ends."""
+    variants = [path.upper(), path.title()]
+    head, _, tail = path.rpartition("/")
+    variants.append(f"{head}/{tail.upper()}")
+    return [(v, http_probe(base + v)) for v in variants]
+
+
+def _variants_payload_splitting(base: str, path: str) -> List[Tuple[str, ProbeResult]]:
+    """payload-splitting: method-override / parameter-borne routing."""
+    sep = "&" if "?" in path else "?"
+    return [
+        ("X-HTTP-Method-Override",
+         http_probe(base + path, headers={"X-HTTP-Method-Override": "GET"})),
+        (f"{sep}_method=GET",
+         http_probe(f"{base}{path}{sep}_method=GET")),
+    ]
+
+
+# Registry order = escalation order; the swarm runs all of them in parallel
+# (pass@k) and the winner is the first success in registry order.
+WAF_BYPASS_TECHNIQUES: Dict[str, Callable[[str, str], List[Tuple[str, ProbeResult]]]] = {
+    "header-original-url": _variants_header_original_url,
+    "path-obfuscation": _variants_path_obfuscation,
+    "encoding-variants": _variants_encoding,
+    "parser-differential": _variants_parser_differential,
+    "case-rotation": _variants_case_rotation,
+    "payload-splitting": _variants_payload_splitting,
+}
+
+
+def replay_bypass_technique(base: str, path: str,
+                            technique: str) -> Optional[ProbeResult]:
+    """Re-execute one named bypass technique (verify-lane F0.5 replay).
+
+    Returns the first hitting ProbeResult, or None when the technique no
+    longer reproduces.  Deterministic, independent of the hunt lane.
+    """
+    fn = WAF_BYPASS_TECHNIQUES.get(technique)
+    if fn is None:
+        return None
+    for _variant, result in fn(base, path):
+        if _bypass_hit(result):
+            return result
+    return None
+
+
+def _probe_waf_bypass(base: str, paths: List[str],
+                      *, pass_at_k: int = 6) -> List[Dict]:
+    """WAF family: baseline 403 -> pass@k swarm over the technique matrix.
+
+    Only a real differential opens a candidate (blocked 403 first, exactly
+    the elite loop's rule).  Every technique is dispatched in parallel
+    regardless of the first success -- the matrix must be recorded-tried for
+    R2 exhaustion accounting, and a second winner is valuable evidence.
+    Returns one signal per blocked surface carrying all attempts + winner.
+    """
+    signals: List[Dict] = []
+    for path in paths:
+        sep = "&" if "?" in path else "?"
+        baseline = http_probe(f"{base}{path}{sep}q=probe")
+        if baseline.status != 403:
+            continue  # not blocked: nothing to bypass (no differential)
+
+        attempts: List[Dict] = []
+        workers = max(1, min(int(pass_at_k or 1), len(WAF_BYPASS_TECHNIQUES)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(fn, base, path): name
+                       for name, fn in WAF_BYPASS_TECHNIQUES.items()}
+            raw: Dict[str, List[Tuple[str, ProbeResult]]] = {}
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    raw[name] = future.result()
+                except Exception as exc:  # noqa: BLE001 - attempt failure is data
+                    raw[name] = [("swarm-error", ProbeResult(
+                        0, f"{type(exc).__name__}: {exc}", 0))]
+
+        winner = ""
+        winning_evidence = ""
+        for name, fn_order in WAF_BYPASS_TECHNIQUES.items():
+            variants = raw.get(name) or []
+            statuses = [(v, r.status) for v, r in variants]
+            hit = next((r for _v, r in variants if _bypass_hit(r)), None)
+            if hit is not None:
+                outcome = "success"
+                if not winner:
+                    winner = name
+                    winning_evidence = hit.body[:400]
+            elif any(status == 0 for _v, status in statuses):
+                outcome = "error"
+            else:
+                outcome = "blocked"
+            attempts.append({
+                "technique": name,
+                "outcome": outcome,
+                "variants": statuses,
+                "detail": "; ".join(f"{v[:40]}->{s}" for v, s in statuses)[:400],
+            })
+
+        signals.append({
+            "signal": "waf_block",
+            "detail": (f"{path} blocked (403) -> "
+                       + (f"bypassed via {winner}" if winner
+                          else "no bypass in matrix")),
+            "evidence": winning_evidence,
+            "path": path,
+            "status": 200 if winner else 403,
+            "attempts": attempts,
+            "winning_technique": winner,
+        })
+    return signals
+
+
 LANE_FAMILIES = (
     (_probe_direct_object_reference, "access_control", "direct-attempt"),
-    (_probe_header_trust, "waf_bypass", "header-original-url"),
+    (_probe_waf_bypass, "waf_bypass", "header-original-url"),
     (_probe_fuzz_batch, "fuzzing", "boundary-length"),
     (_probe_graphql_introspection, "generic", "parameter-mutation"),
 )
@@ -291,10 +466,24 @@ class MissionRunner:
                     bug_class=bug_class, surface=sig.get("path", ""),
                     evidence_refs=[], signal=sig["signal"])
                 lead_ids.append(lead.lead_id)
-                # T0 attempt for this family's own technique.
-                self.leads.record_technique(
-                    lead.lead_id, technique, "success" if sig.get("status", 0) == 200 else "signal",
-                    detail=sig.get("detail", ""))
+                attempts = sig.get("attempts") or []
+                if attempts:
+                    # R3 depth: every matrix attempt recorded on the lead.
+                    for att in attempts:
+                        self.leads.record_technique(
+                            lead.lead_id, att["technique"], att["outcome"],
+                            detail=att.get("detail", ""))
+                    if sig.get("winning_technique"):
+                        self.leads.escalate(
+                            lead.lead_id, TIER_T1,
+                            reason=f"pass@k swarm bypassed via "
+                                   f"{sig['winning_technique']}")
+                else:
+                    # T0 attempt for this family's own technique.
+                    self.leads.record_technique(
+                        lead.lead_id, technique,
+                        "success" if sig.get("status", 0) == 200 else "signal",
+                        detail=sig.get("detail", ""))
                 evidence.append(f"evid-{lead.lead_id}")
                 self._log("lead_opened", {"lead_id": lead.lead_id,
                                           "signal": sig["signal"],
@@ -368,12 +557,13 @@ class MissionRunner:
                 return True
             return False
         if lead.bug_class == "waf_bypass":
-            # Replay the recorded differential: blocked path + bypass header.
-            probe = http_probe(self.base_url + lead.surface,
-                               headers={"X-Original-URL": lead.surface})
-            if probe.ok and "token" in probe.body.lower():
-                return True
-            return False
+            # F0.5 replay: re-execute the recorded winning technique.
+            winner = next((e["technique"] for e in reversed(lead.technique_log)
+                           if e.get("outcome") == "success"),
+                          "header-original-url")
+            result = replay_bypass_technique(self.base_url, lead.surface,
+                                             winner)
+            return result is not None
         if lead.bug_class == "fuzzing":
             sep = "&" if "?" in lead.surface else "?"
             probe = http_probe(f"{self.base_url}{lead.surface}{sep}q={'A' * 65}")

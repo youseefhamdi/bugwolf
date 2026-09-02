@@ -169,11 +169,11 @@ class MissionE2ETest(unittest.TestCase):
         runner = MissionRunner(self._mission(), base_url=self.base)
         report = runner.run()
         counts = report["counts"]
-        # BOLA x2 + WAF bypass x2 (two headers) + fuzz x3 = 7 findings.
-        self.assertEqual(counts["findings"], 7)
+        # BOLA x2 + WAF gateway x1 (one surface, full matrix) + fuzz x3 = 6.
+        self.assertEqual(counts["findings"], 6)
         self.assertEqual(counts["refuted"], 0)
         self.assertEqual(counts["open"], 1)  # GraphQL lead: honest, open
-        self.assertEqual(counts["total_leads"], 8)
+        self.assertEqual(counts["total_leads"], 7)
         # All 4 lane tasks drained through the scheduler with no rejections.
         self.assertEqual(len(report["tasks"]), 4)
         self.assertFalse([e for e in report["events"]
@@ -183,6 +183,41 @@ class MissionE2ETest(unittest.TestCase):
         self.assertIn("/api/gateway", surfaces)
         for finding in report["findings"]:
             self.assertTrue(finding["evidence"])
+
+    def test_waf_lead_carries_full_matrix_and_t1_escalation(self):
+        from tools.runtime.lead_protocol import TIER_T1
+        mission = self._mission("bw-e2e-matrix")
+        MissionRunner(mission, base_url=self.base).run()
+        store = LeadStore(mission.mission_id).load()
+        waf_leads = [l for l in store.list_leads()
+                     if l.bug_class == "waf_bypass"]
+        self.assertEqual(len(waf_leads), 1)
+        lead = waf_leads[0]
+        self.assertEqual(lead.status, "PWNED")
+        # R3 depth: all six matrix techniques recorded-tried exactly once.
+        logged = {e["technique"] for e in lead.technique_log}
+        self.assertEqual(
+            logged, {"header-original-url", "path-obfuscation",
+                     "encoding-variants", "parser-differential",
+                     "case-rotation", "payload-splitting"})
+        winner = next(e for e in lead.technique_log
+                      if e["outcome"] == "success")
+        self.assertEqual(winner["technique"], "header-original-url")
+        self.assertGreaterEqual(lead.tier, TIER_T1)
+        self.assertTrue(any("pass@k" in h["reason"]
+                            for h in lead.escalation_history))
+
+    def test_waf_replay_uses_winning_technique(self):
+        from tools.runtime.mission_runner import (
+            replay_bypass_technique, WAF_BYPASS_TECHNIQUES,
+        )
+        self.assertEqual(len(WAF_BYPASS_TECHNIQUES), 6)
+        hit = replay_bypass_technique(self.base, "/api/gateway",
+                                      "header-original-url")
+        self.assertIsNotNone(hit)
+        self.assertTrue(hit.ok)
+        self.assertIsNone(replay_bypass_technique(
+            self.base, "/api/gateway", "path-obfuscation"))
 
     def test_open_graphql_lead_survives_resume(self):
         mission = self._mission("bw-e2e-resume")
