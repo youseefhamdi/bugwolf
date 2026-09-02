@@ -40,7 +40,7 @@
       "modes": ["offline", "planned_active", "controlled_active"],
       "entrypoints": ["tools/hunt.py", "tools/core/live_executor.py", "tools/core/fuzz_bridge.py"],
       "evidence": ["request_response", "replay", "state_transition", "human_review"],
-      "fixture": "lab/vulnbank/server.py",
+      "fixture": "tests/_stub_target.py (CI regression only; production binds operator targets)",
       "limitations": ["scope enforcement is not yet a production security boundary", "impact requires human review"]
     },
     "source_repository": {

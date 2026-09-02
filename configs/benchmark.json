@@ -1,9 +1,10 @@
 {
-  "schema": "bugwolf/benchmark/v1",
-  "benchmark_version": 1,
-  "lab": "vulnbank",
-  "lab_fixture": "lab/vulnbank/server.py",
-  "setting": "synthetic-lab",
+  "schema": "bugwolf/benchmark/v2",
+  "benchmark_version": 2,
+  "lab": null,
+  "setting": "operator-target",
+  "target_binding": "base_url and cases are supplied by the operator (mission scope.json / target_intake). This manifest ships only the case schema and regression-stub references; it never binds a target.",
+  "regression_stub": "tests/_stub_target.py",
   "cases": [
     {
       "case_id": "bola-user-1",
@@ -12,7 +13,7 @@
       "path": "/api/users/1",
       "expected_finding": true,
       "expected_severity": "high",
-      "notes": "Object-level authorization is never checked; user 1 returns to any caller."
+      "notes": "Object-level authorization is never checked; user 1 returns to any caller. (Stub-regression case.)"
     },
     {
       "case_id": "bola-admin-42",
@@ -21,7 +22,7 @@
       "path": "/api/users/42",
       "expected_finding": true,
       "expected_severity": "critical",
-      "notes": "Admin record is reachable without authentication."
+      "notes": "Admin record is reachable without authentication. (Stub-regression case.)"
     },
     {
       "case_id": "bola-missing-999",
@@ -30,7 +31,7 @@
       "path": "/api/users/999",
       "expected_finding": false,
       "expected_severity": "none",
-      "notes": "Negative control: a 404 must never be reported as a finding."
+      "notes": "Negative control: a 404 must never be reported as a finding. (Stub-regression case.)"
     },
     {
       "case_id": "mass-assignment-role",
@@ -40,7 +41,7 @@
       "body": {"username": "mallory", "role": "admin", "isAdmin": true},
       "expected_finding": true,
       "expected_severity": "critical",
-      "notes": "Role/isAdmin over-binding is trusted by the server."
+      "notes": "Role/isAdmin over-binding is trusted by the server. (Stub-regression case.)"
     },
     {
       "case_id": "fuzz-crash-ingest",
@@ -49,7 +50,7 @@
       "path": "/api/ingest?q=%27%20OR%20%271%27%3D%271",
       "expected_finding": true,
       "expected_severity": "medium",
-      "notes": "Ingest parser deterministically 5xxes on SQL-ish input."
+      "notes": "Ingest parser deterministically 5xxes on SQL-ish input. (Stub-regression case.)"
     },
     {
       "case_id": "gateway-open",
@@ -58,7 +59,7 @@
       "path": "/api/gateway",
       "expected_finding": false,
       "expected_severity": "none",
-      "notes": "Negative control: an open gateway response is expected, not a finding."
+      "notes": "Negative control: an open gateway response is expected, not a finding. (Stub-regression case.)"
     },
     {
       "case_id": "login-valid",
@@ -68,7 +69,51 @@
       "body": {"username": "alice", "password": "x"},
       "expected_finding": false,
       "expected_severity": "none",
-      "notes": "Negative control: a normal 200 login is expected, not a finding."
+      "notes": "Negative control: a normal 200 login is expected, not a finding. (Stub-regression case.)"
+    },
+    {
+      "case_id": "fin-param-price-trust",
+      "bug_class": "business_logic",
+      "method": "POST",
+      "path": "/api/checkout",
+      "body": {"item_id": "sku-1", "quantity": 1, "price": 0.01},
+      "signal_check": "\"total\": 0.01",
+      "expected_finding": true,
+      "expected_severity": "critical",
+      "notes": "FIN-PARAM-02: client-supplied price is trusted; 0.01 totals a 100.00 order. (Stub-regression case.)"
+    },
+    {
+      "case_id": "fin-replay-callback",
+      "bug_class": "business_logic",
+      "method": "POST",
+      "path": "/api/payment/callback",
+      "body": {"order_id": "ord-1", "amount": 100},
+      "signal_check": "acknowledged",
+      "expected_finding": true,
+      "expected_severity": "high",
+      "notes": "FIN-REPLAY-01: identical callback acked repeatedly (no nonce). (Stub-regression case.)"
+    },
+    {
+      "case_id": "fin-voucher-reuse",
+      "bug_class": "business_logic",
+      "method": "POST",
+      "path": "/api/voucher/redeem",
+      "body": {"code": "SAVE10"},
+      "signal_check": "\"applied\": true",
+      "expected_finding": true,
+      "expected_severity": "high",
+      "notes": "FIN-VOUCHER: single-use code redeemable repeatedly. (Stub-regression case.)"
+    },
+    {
+      "case_id": "fin-toctou-price-shift",
+      "bug_class": "business_logic",
+      "method": "POST",
+      "path": "/api/checkout/confirm",
+      "body": {"order_id": "ord-1", "price": 0.01},
+      "signal_check": "\"total\": 0.01",
+      "expected_finding": true,
+      "expected_severity": "critical",
+      "notes": "FIN-TOCTOU: paid-order confirm re-accepts a changed price. (Stub-regression case.)"
     }
   ]
 }

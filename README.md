@@ -23,7 +23,7 @@
 
 > **New in v1.0.0:** LLM / Agentic AI security track (OWASP GenAI LLM Top 10 2026 + Agentic Top 10 ASI01–ASI10), RAG & embedding attacks, MCP security, mobile + cloud-native vectors, and a zero-day LLM attack-surface detector. See [CHANGELOG.md](CHANGELOG.md).
 
-> **Operating mode:** Production campaigns run only from an operator-supplied target specification and attestation. The operator defines the exact boundary and Rules of Engagement; BugWolf records that provenance and applies maximum capability inside it. Local fixtures (VulnBank, Anvil, LocalStack, and stubs) validate the pipeline only; they are not the production boundary.
+> **Operating mode:** Production campaigns run only from an operator-supplied target specification and attestation. The operator defines the exact boundary and Rules of Engagement; BugWolf records that provenance and applies maximum capability inside it. BugWolf ships **no labs**: deterministic stubs under `tests/` (plus optional Anvil/LocalStack on the operator's own machine) validate the pipeline in CI only; they are never the production boundary.
 
 ---
 
@@ -449,8 +449,8 @@ tools/zero_day.py --mode diff-analysis   # behavior deltas across versions
   clean → REFUTED; transport errors are observations, never gates.
 - `tools/refutation.py` — `verify_reproducibility()` replays a finding's
   recorded request via the live executor for deterministic reproduction.
-- Integration tests boot the VulnBank lab in-process and assert the real
-  probe → observation → adaptation cycle (`tests/test_live_feedback_loop.py`,
+- Integration tests boot a deterministic stub target in-process and assert the
+  real probe → observation → adaptation cycle (`tests/test_live_feedback_loop.py`,
   `tests/test_e2e_deep_dive_campaign.py`).
 
 ---

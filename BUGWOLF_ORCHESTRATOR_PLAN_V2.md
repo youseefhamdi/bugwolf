@@ -6,6 +6,7 @@
 **Reference:** oh-my-claudecode v5.1.0 — feature parity target, performance baseline to beat
 **Incorporates:** All 10 revisions from `PLAN_AUDIT.md` (file-by-file verified)
 **Layers added post-audit (all mandatory):** hunt-yield engineering (§5.4) · lead-exhaustion mandate (§5.5) · elite-workflow parity + knowledge-ingestion ledger (§5.6, batches 1–4) · pre-flight/MCP gates (§4.5)
+**Policy (real-world operation):** BugWolf is a real-world plugin — production campaigns bind exclusively to operator-supplied targets and attestations. No shipped labs; deterministic stubs live under ``tests/`` for CI regression only and are never a production boundary. "Fixture" below means a CI regression stub, not a target.
 
 ---
 
@@ -196,7 +197,7 @@ Output: `state/preflight/manifest.json` — `{name, version, invoke_path, status
 
 ### 5.3 Measured targets (gate the release on these)
 
-Baseline first with `tools/benchmark.py` + `configs/benchmark.json` on VulnBank, then:
+Baseline first with `tools/benchmark.py` + `configs/benchmark.json` against the operator-declared target, then:
 
 ```text
 first plan artifact ..................... < 5 s   (local mission)
@@ -247,7 +248,7 @@ Speed is meaningless without yield. The orchestrator's objective function is **s
 **New yield metrics (join §5.3 targets; signal-to-escalation latency already lives in §5.3):**
 
 ```text
-severity-weighted confirmed findings / hour (VulnBank-extended) ... tracked vs single-session baseline
+severity-weighted confirmed findings / hour (regression-stub-extended) ... tracked vs single-session baseline
 high+ share of confirmed findings ................................ tracked
 chain depth of criticals ......................................... tracked (≥2 for chain-classified)
 novel-class candidates per campaign ............................. tracked
@@ -318,7 +319,7 @@ lead conversion rate (PWNED / opened) vs single-session ........ tracked
 |---|---|---|
 | 9-phase master loop | `campaign_orchestrator` 12-stage + `stage_controller` integrity digests | EXISTS — phases become task-graph stages |
 | state.json + notes + coverage resumability | event-sourced `signal_bus` + append-only JSONL (P5) | EXCEEDS — event replay, not file re-read |
-| ~500 canonical checklist IDs | `methodology_playbook` + domain modules (partial) | NEW: `configs/checklists/*.json` machine registry — ID → module → tool → VulnBank fixture, load-on-demand per surface |
+| ~500 canonical checklist IDs | `methodology_playbook` + domain modules (partial) | NEW: `configs/checklists/*.json` machine registry — ID → module → tool → regression stub (``tests/_stub_target.py``), load-on-demand per surface |
 | coverage ledger (endpoint × class verdicts, `n-a` requires reason) | `research_core.CoverageTracker` + `surface_model` (partial) | EXTEND: endpoint × method × auth-context × checklist-ID verdict ledger, every verdict → evidence ID |
 | G0–G6 gate ladder (incl. G5 fresh-validator re-execution) | `refutation.py` gates + F0.5 + `verify_reproducibility` replay | EXISTS — G5 = verifier lane with zero-shared-context PoC re-execution; make explicit |
 | Differential protocol (baseline / mutation / control × 3) | `differential.py` + `differential_runner.py` | EXISTS |
@@ -347,7 +348,7 @@ lead conversion rate (PWNED / opened) vs single-session ........ tracked
 2. **Lead-exhaustion enforced by contracts** — their anti-stalling clauses live in prose; ours make premature abandonment structurally impossible (§5.5).
 3. **Research refresh on every stall** (R4) — their loop researches in Phase 2 only; ours re-researches mid-technique and grows the matrix.
 4. **Complexity-based model routing** — frontier spend only where the score demands; single-model loops cannot tier.
-5. **Evaluation harness** — VulnBank positives/negative controls, published perf targets, readiness manifest; their loop has no regression benchmark.
+5. **Evaluation harness** — deterministic stub positives/negative controls, published perf targets, readiness manifest; their loop has no regression benchmark.
 6. **Beyond-web natively** — smart contracts (Anvil forks), cloud/IAM graphs, mobile, LLM/agentic; their loop is web-only (AI-01..06 aside).
 7. **Hash-linked evidence lineage** (`chain_of_custody`, replay keys) vs flat EVID files.
 8. **Cross-campaign learning** — novelty fingerprints, failure learning, technique ledgers persist and bias future missions.
@@ -396,7 +397,7 @@ One entry, as the registry schema in practice:
 
 **Safety mapping:** the guide's cache-poisoning objective (`X-Forwarded-Host`) carries the RoE default from §5.6 — own canary with fresh cache key only, never shared-user traffic; sensitive-file and internal-API objectives record-and-redact, never use. These are recorded RoE defaults, not runtime gates, per the full-power doctrine.
 
-**Generalization:** this is the pipeline for *every* technique guide, paper, and disclosed report — `research_sources.SourceRegistry` ingests → instructions stripped → matrix/checklist entries generated → VulnBank fixture (if expressible) → registry-digested into CI. Knowledge compounds as data, not prompts.
+**Generalization:** this is the pipeline for *every* technique guide, paper, and disclosed report — `research_sources.SourceRegistry` ingests → instructions stripped → matrix/checklist entries generated → deterministic regression stub (if expressible, under ``tests/``) → registry-digested into CI. Knowledge compounds as data, not prompts.
 
 #### 5.6.2 Knowledge-ingestion ledger — batch 2
 
@@ -407,14 +408,14 @@ Five further sources ingested through the same pipeline. Each maps: **exists in 
 - *Exists:* `asset_discovery`, `recon_engine.sh`, `tech_fingerprint`, `discovery_scheduler`, `wordlist_gen`.
 - *New registry (`configs/checklists/recon_pipeline.json`):* `RECON-PIPE-01..06` — the stage graph becomes the recon lane's default DAG edges (subdomains → live+IP → dedup → ports → service/version → vuln-scan → content discovery); `RECON-DEDUP-01` — IP dedup + CDN/WAF origin verification via title-match heuristic (edge-IP hits are noise, never scanned); `RECON-PORTS-01` — vulnerability scanning is fed the **full discovered port list**, not web ports ("admin panels and APIs live on non-standard ports"); `RECON-FUZZ-01` — response **size/word-count baseline clustering** so a 200-OK custom error page matching a real page's size is classified noise; `RECON-403-01` — every 403 opens a bypass-ladder lead (wires into `header_trust`/`parser_differential`; identical to the elite doc's "every 403 is a question").
 - *Enforcement:* `fuzz_bridge` anomaly classification gains size/word-count deltas; 403 → auto-lead via R1.
-- *Fixture:* VulnBank decoy — custom 200 error page sized like a real page (negative control for RECON-FUZZ-01).
+- *Fixture:* stub-target decoy — custom 200 error page sized like a real page (negative control for RECON-FUZZ-01).
 
 **S2 — GraphQL hidden-input ATO writeup ($4,500, 2026-08).**
 
 - *Exists:* `graphql_gid`, `graphql_workflow`, `domains/api/graphql_batch_analyzer`, `bopla_matrix` — and the elite workflow's ID-39/AP-16 already named this exact pattern.
 - *New registry (`gql_input.json`):* `GQL-INPUT-01` — introspect every `*Input` type, **diff schema fields against UI-exposed fields**, probe each hidden field (`userId`, `orgId`, `role`, `email`) as an override with the A/B account matrix; `GQL-ATO-01` — chain template: hidden `userId` → attacker email attached to victim → password-reset → full ATO (a CH-catalog chain, auto-synthesized per §4.3).
 - *Enforcement:* three-way differential (A→A / A→B / anon→B) mandatory per `accounts.py`; verdict evidence = 200 carrying victim `id` + attacker email.
-- *Fixture:* VulnBank GraphQL mutation with an update-profile input exposing a non-UI `userId` override — the exact regression test for this bounty class.
+- *Fixture:* stub-target GraphQL mutation with an update-profile input exposing a non-UI `userId` override — the exact regression test for this bounty class.
 
 **S3 — GitHub dorking guide (2026-08).**
 
@@ -428,14 +429,14 @@ Five further sources ingested through the same pipeline. Each maps: **exists in 
 - *Exists:* most discovery stages overlap `asset_discovery`/`recon_engine.sh`.
 - *New:* seed-expansion task types — ASN→CIDR via RDAP, TLD sweep, brand variations, SEC EDGAR, whois-registrant pivot; `TAKEOVER-01..N` — 55+ dangling-DNS fingerprints as registry data; favicon-hash clustering; SaaS-tenant and third-party-vendor intel tasks; cloud inventory + bucket permutation; DNS full-record resolution (SPF/DKIM/DMARC/MTA-STS) feeding `asset_intel`.
 - *Enforcement:* **Frogy's 31 steps become the recon lane's completeness bar** — the coverage ledger gains a `surface-pipeline` dimension; `coverage` mode (§6) cannot report complete while any pipeline step is unexecuted or unexplained. This turns "another tool's feature list" into our exit criterion.
-- *Fixture:* DNS/takeover fixtures expressible in VulnBank-lab DNS.
+- *Fixture:* DNS/takeover fixtures expressible in a stub DNS harness (future; operator-lab DNS acceptable).
 
 **S5 — NCC Group financial-application checklist (Dalili, v2.0) — the canonical business-logic corpus.**
 
 - *Exists:* `multitenant_workflow`, `state_machine_probing`, `kill_chain`; the elite doc's BL-01..08 was thin by comparison.
 - *New registry (`fin_logic.json`, ~40 entries):* `FIN-TOCTOU-01..03` (order change upon/after payment completion); `FIN-PARAM-01..10` (price, currency, quantity, shipping, additional costs, response manipulation, HPP, parameter omission/null, mass assignment, multi-parameter behavior monitoring); `FIN-REPLAY-01..02` (payment callback replay, encrypted-parameter cross-item replay); `FIN-ROUND-01..02` (currency and inter-component rounding drift); `FIN-NUM-01..10` — **the guide's language-behavior table becomes a deterministic format-mutation matrix**: same numeric value in N encodings (negative, `0.1` decimal, overflow `2^31−1→−2^31`, zero/null/subnormal, `9e99`/`1e-1` exponential, reserved `NaN`/`Infinity`, leading zeros, currency symbols, grouping separators, hex `0x0A`) sent to every money field, responses diffed — zero model calls needed (`model_router` → deterministic tier); `FIN-VOUCHER-01..10` (stacking, earn-more-than-price, expired/other-user codes, basket-state discount retention, refund abuse, buy-X-get-Y variants `3-for-2→3-for-1`, out-of-stock ordering, point transfer); `FIN-CRYPTO-01..02` (length extension, concatenated-signature delimiter confusion); `FIN-TESTDATA-01` (forcing test payment gateways in prod); `FIN-ARBITRAGE-01` (deposit/withdraw cross-rate drift).
 - *Enforcement:* money-flow surfaces (checkout/payment/refund/voucher keywords in `master.json`) **auto-instantiate the entire FIN matrix** at prioritization — attack-first rule; `FIN-NUM` and rounding matrices run in the deterministic tier at zero token cost; TOCTOU entries bind `race_engine.py`.
-- *Fixture:* VulnBank commerce module with a manipulable price field + voucher endpoint — the FIN-NUM matrix becomes a CI regression suite; this is the highest-value fixture addition in the batch.
+- *Fixture:* stub-target commerce module with a manipulable price field + voucher endpoint — the FIN-NUM matrix becomes a CI regression suite; this is the highest-value fixture addition in the batch.
 
 **Batch takeaway:** the ingestion pipeline is source-type-agnostic — workflow guides become DAG edges, writeups become chain templates + fixtures, dork lists become query grammars, tool pipelines become completeness bars, vendor whitepapers become deterministic matrices. R4's research refresh re-ingests newer editions automatically; nothing here depends on model memory.
 
@@ -446,21 +447,21 @@ Five further sources ingested through the same pipeline. Each maps: **exists in 
 - *Exists:* payload families in `mutator` + `wordlist_gen`; probe/evidence loop in `live_executor`; OAST service planned (§5.6 `oast.py`).
 - *New registry (`file_proc.json`):* `FILE-ASYNC-01` — **HTTP 202 Accepted / `job_id` / "processing" status / polling endpoints = background-worker indicator** → surface marked `async-worker` and the file-processor matrix auto-instantiates (workers run with different privileges and weaker validation than front-end APIs); `FILE-EXIF-01` — fuzz every metadata field (`Comment`, `Artist`, `Copyright`, `Make`, `Model`, `Software`) with shell-substitution canaries (`$(curl {LEAD-ID}.oast)`, backticks, `|`, newline) — uploads are never tested only for extension/MIME; `FILE-OAST-01` — **OOB-first proof standard**: HTTP/DNS callback before any complex pipeline (safety-ceiling canary, §5.6); `FILE-CMD-01` — output-readback ladder (`id > /tmp` → POST to OAST) executed only within the operator's canary RoE; engine attribution from the callback User-Agent (`curl/7.81.0` → `system()`-style exec chain identified).
 - *Enforcement:* upload surfaces in `master.json` with any async indicator gain `file-proc` matrix membership at prioritization; OAST callback auto-attributed per-lead (R1 lead, `OAST_CALLBACK` event).
-- *Fixture:* VulnBank avatar-upload endpoint whose EXIF `Comment` reaches a shell call — the exact regression fixture for a top-tier bounty class; `exiftool` added to pre-flight inventory (PF1).
+- *Fixture:* stub avatar-upload endpoint (planned) whose EXIF `Comment` reaches a shell call — the exact regression fixture for a top-tier bounty class; `exiftool` added to pre-flight inventory (PF1).
 
 **S7 — XSS exploitation paper (academic, contexts + prevention).**
 
 - *Exists:* `domains/web/parser_differential`; browser-proof requirement already planned (§5.6 `browser_driver.py`, 100% browser-proof target); elite XS-01..22.
 - *New registry (`xs_context.json`):* `XS-CTX-01..06` — the **context matrix as machine data**: HTML body / attribute / JS string / CSS / raw-text (`textarea`, `title`, `noscript`) / comment — each with breakout syntax, required encoding rounds, and payload family; `XS-DOM-01` — **source→sink registry** (`document.write`, `innerHTML`, `eval`, `setInterval`/`setTimeout`, `location.*`, `decodeURIComponent`, `postMessage`) — deterministic static scan of JS assets feeding DOM-candidate leads; `XS-CSP-01` — **deterministic CSP analyzer** (zero model calls): `unsafe-inline`, `*`, nonce reuse, `strict-dynamic` gadget gaps, JSONP endpoints → bypass-family leads; `XS-SAN-01` — **defense-informed prioritization**: detected output-encoding/framework escaping or dangerous-context placement reorders the matrix — input landing in a dangerous context (`<script>`, event handlers, CSS `background-url`) defeats encoding, so those payloads jump the queue.
 - *Enforcement:* JS-asset scan outputs feed `browser_driver` for execution proof; CSP/sanitizer findings are registry data checked on every surface (like `tech_fingerprint`).
-- *Fixture:* VulnBank reflected + stored + DOM (`document.write` via `decodeURIComponent`) pages — browser_driver asserts console execution + screenshot, completing the 100% browser-proof gate.
+- *Fixture:* stub reflected/stored/DOM pages (planned) (`document.write` via `decodeURIComponent`) pages — browser_driver asserts console execution + screenshot, completing the 100% browser-proof gate.
 
 **S8 — PDF-export SSRF→LFI writeup (CVSS 9.8, 2026-08; pasted ×3 — **deduplicated by content hash at ingest**, novelty fingerprinting makes the ledger idempotent).**
 
 - *Exists:* SSRF ladder in SR playbook; `header_trust` UA analysis; OAST planned.
 - *New registry (`render_engine.json`):* `PDF-EXP-01` — every export/render surface (PDF, invoice, report, download-summary keywords in `master.json`) auto-instantiates the rendering-engine matrix — "frequently overlooked" surfaces are precisely the high-yield ones; `PDF-HTML-01` — raw-HTML evaluation probe (`<h1>` + styled `<b>` in the template field) as the deterministic first step; `PDF-SSRF-01` — `<iframe src={LEAD-ID}.oast>` → **callback User-Agent fingerprints the engine** (HeadlessChrome / wkhtmltopdf / WeasyPrint) → engine ID selects the payload set (fingerprint→payload mapping as registry data); `PDF-LFI-01` — `file://` iframe escalation, least-sensitive-first proof files (`/etc/hostname`, `/etc/passwd` line 1); `PDF-META-01` — cloud-metadata ladder (`169.254.169.254`, `localhost`) — **documented-chain only, no credential use** (RoE canary standard, §5.6);
 - *Chain template (auto-synthesized):* raw-HTML → OAST SSRF → engine fingerprint → `file://` LFI → cloud-metadata → RCE primitive — every step with its own evidence standard; mirrors the S2 pattern of bounty writeups becoming CH entries.
-- *Fixture:* VulnBank invoice render endpoint (headless-Chrome container) accepting user HTML — OAST callback + `file://` iframe both exercisable in CI; second-highest-value fixture in the ledger after FIN-NUM.
+- *Fixture:* stub invoice-render endpoint (planned) (headless-Chrome container) accepting user HTML — OAST callback + `file://` iframe both exercisable in CI; second-highest-value fixture in the ledger after FIN-NUM.
 
 **Batch 3 takeaway:** writeups now contribute three reusable shapes — **surface-detection signals** (202/job-id → async worker), **deterministic analyzers** (CSP, DOM source→sink, engine fingerprint via UA), and **escalation ladders with evidence standards per rung**. The dedup property is confirmed in practice: duplicate sources cost nothing.
 
@@ -476,7 +477,7 @@ Five further sources ingested through the same pipeline. Each maps: **exists in 
   - **Solana Token-2022 extensions** family (`SOL-T22-01..`) and **ZK/Circom soundness–completeness–constraint review** family (`ZK-CIR-01..`) — coverage BugWolf's SKILL.md claims but whose tool bindings were unregistered;
   - **Paid/closed-source tier** — recorded in the manifest with `status: paid-api` + operator-key requirement; the pre-flight state machine (§4.5) treats them exactly like missing binaries: degraded, never silently assumed.
 - *Enforcement:* PF1 pre-flight adds `forge`, `anvil`, `cast`, `solc`, `slither`; `web3_tool_adapter` bindings generated from the catalog's free/local tier; R4 refresh re-pulls the catalog before every Web3-heavy mission.
-- *Fixture:* the existing VulnBank/Anvil fork fixture gains a forge-PoC assertion path (`W3-POC-01` regression).
+- *Fixture:* an operator-supplied Anvil fork (or stub) fixture gains a forge-PoC assertion path (`W3-POC-01` regression).
 
 **Batch 4 takeaway:** fourth ingestion shape — **subscription sources**: living catalogs (tool hubs, awesome-lists, vendor advisories) are watched and diffed, not read once. Combined with the earlier shapes: workflow→DAG, writeup→chain+fixture, dork-list→grammar, tool-pipeline→completeness bar, whitepaper→deterministic matrix, catalog→binding manifest + coverage matrix.
 
@@ -498,12 +499,12 @@ Stop-hook (`/bugwolf-stop`) freezes state; `/bugwolf-resume` rebuilds the graph 
 
 | Phase | Deliverables | Exit criteria | Existing-work reuse |
 |---|---|---|---|
-| **0 — Baseline** | Run `benchmark.py` on VulnBank; validate AUDIT_MAP/DEPENDENCIES/readiness against tree; record baseline metrics | baseline frozen; discrepancies in AUDIT_MAP fixed | 100% |
+| **0 — Baseline** | Run `benchmark.py` against the operator-declared target; validate AUDIT_MAP/DEPENDENCIES/readiness against tree; record baseline metrics | baseline frozen; discrepancies in AUDIT_MAP fixed | 100% |
 | **1 — Contracts** | `tools/runtime/contracts.py` (MissionSpec/TaskSpec/TaskResult/ToolReceipt/ArtifactRef), JSON schemas, validators, tests | one existing tool runs through ToolReceipt; malformed results fail explicitly | harness_command, target_intake |
 | **2 — Model profiles** | `configs/models.json`; extend `model_router` with profile mapping + provenance hashes (prompt/response) into TaskResult | routing is config-driven; zero hard-coded model names in domain tools | model_router |
 | **3 — Task graph + scheduler** | dependency-aware dispatch over FleetExecutor + DiscoveryScheduler; retries/timeouts/cancel/resume; new events into signal_bus; `bugwolf-status` CLI; **mandatory pre-flight layer** (`preflight.py`: machine tool inventory, browserMCP/burpMCP connection gates #1/#2, capability memory via manifest ArtifactRef, connection state machine) | 10+ fixture tasks concurrent; interrupt/resume with zero duplicate deterministic work; **no dispatch before `PREFLIGHT_COMPLETE`; MCP failures → explicit blockers + fallback, never silent skips** | FleetExecutor, DiscoveryScheduler, signal_bus, lab_doctor |
-| **4 — Agent registry + lanes** | registry entries; first **web/API lane end-to-end** (recon → analyze → probe → evidence → verify); batched small tasks; **lead-exhaustion protocol** (`lead_protocol.py`: LeadSpec, technique matrix, R1–R4, research-refresh trigger); **checklist registry + coverage ledger + A/B/C account matrix** (`configs/checklists/`, `accounts.py`) | web/API lane runs VulnBank end-to-end through the graph; verifier rejects unreproduced claims; **no lead closes without a terminal state; premature-abandonment = 0; zero applicable checklist IDs untested without recorded reason on P0 fixtures; three-way differentials on all object-ref fixtures. Sequencing note: T3–T4 ship in Phase 6 — until then, T3-exhausted leads remain OPEN (never `BUDGET-EXHAUSTED`), which only strengthens the mandate | capability_registry, domains/*, refutation, patch_gap, research_loop |
-| **5 — Engine migration** | remaining 14 lanes behind adapters; campaign_orchestrator/research_loop/stage_controller behind TaskSpec; **shims keep working**; old CLIs intact; **browser validation lane, OAST service, single-packet race engine, tool-binding manifest, ART scheduling in fuzz_bridge, optional Burp bridge** | full VulnBank campaign through orchestrator; existing artifacts readable; ci_bundle_check green; client-side fixtures browser-proven; OAST callbacks attributed to leads 100% | all engines |
+| **4 — Agent registry + lanes** | registry entries; first **web/API lane end-to-end** (recon → analyze → probe → evidence → verify); batched small tasks; **lead-exhaustion protocol** (`lead_protocol.py`: LeadSpec, technique matrix, R1–R4, research-refresh trigger); **checklist registry + coverage ledger + A/B/C account matrix** (`configs/checklists/`, `accounts.py`) | web/API lane runs the operator target end-to-end through the graph; verifier rejects unreproduced claims; **no lead closes without a terminal state; premature-abandonment = 0; zero applicable checklist IDs untested without recorded reason on P0 fixtures; three-way differentials on all object-ref fixtures. Sequencing note: T3–T4 ship in Phase 6 — until then, T3-exhausted leads remain OPEN (never `BUDGET-EXHAUSTED`), which only strengthens the mandate | capability_registry, domains/*, refutation, patch_gap, research_loop |
+| **5 — Engine migration** | remaining 14 lanes behind adapters; campaign_orchestrator/research_loop/stage_controller behind TaskSpec; **shims keep working**; old CLIs intact; **browser validation lane, OAST service, single-packet race engine, tool-binding manifest, ART scheduling in fuzz_bridge, optional Burp bridge** | full operator-target campaign through orchestrator; existing artifacts readable; ci_bundle_check green; client-side fixtures browser-proven; OAST callbacks attributed to leads 100% | all engines |
 | **6 — Persistent modes + plugin** | 5 mode state machines; escalation ladder **T3–T4** (deep-dive + swarm pass@k) wired to `deep-dive` mode; `.claude-plugin` package, 8 commands, hooks.json, MCP bridge | pause/resume after context reset with open leads re-dispatched first; plugin loads in Claude Code; `/bugwolf` ends-to-end works | signal_bus, stage_controller digest logic, carlini_loop |
 | **7 — Performance** | profile hot paths; implement P1–P8 tuning; benchmark dashboard; regression gate in CI | §5.3 targets measured and published; no evidence-quality regression | benchmark.py |
 | **8 — Release hardening** | generated capability manifest (readiness.py-driven); AUDIT.md/AUDIT_MAP.md updates; migration guide; runbook; bundle verification | clean checkout reproducible; documented commands all resolve; full test suite + bundle tests pass | readiness |
@@ -514,7 +515,7 @@ Stop-hook (`/bugwolf-stop`) freezes state; `/bugwolf-resume` rebuilds the graph 
 
 - **Contracts:** schema validation, dependency cycles, malformed results, event ordering.
 - **Orchestration:** parallel dispatch, dedup, retry/backoff, timeout, cancel propagation, resume, failure isolation, event replay. **Lead protocol:** terminal-state validator rejects open-lead closes; matrix growth from research is consumed before close; research refresh fires on stall; open leads re-dispatch first after resume. **Pre-flight:** inventory completeness (binary found → smoke-tested → manifest entry), browserMCP/burpMCP handshake + smoke round-trips, degraded/blocked transitions, reconnect auto-reopen of blocked leads, dispatch refused without `PREFLIGHT_COMPLETE`. Extend `test_apt_commander_week1.py` (signal_bus), `test_e2e_deep_dive_campaign.py`, `test_live_executor.py`, `test_fuzz_bridge.py`, `test_integrity_hardening.py`.
-- **Research quality:** VulnBank positives detected; negative controls (`bola-missing-999` etc.) stay clean; fixture suites per domain.
+- **Research quality:** stub positives detected; production findings validated on operator targets; negative controls (`bola-missing-999` etc.) stay clean; fixture suites per domain.
 - **Performance:** CI regression gate on §5.3 — a >20% regression on any target fails the build.
 - **Honesty:** `readiness.py` validates the generated manifest; any documented-but-missing capability fails release.
 
@@ -542,7 +543,7 @@ Stop-hook (`/bugwolf-stop`) freezes state; `/bugwolf-resume` rebuilds the graph 
 8. §5.3 performance targets measured, published in the manifest, and regression-gated in CI.
 9. Plugin installs into Claude Code; harness-agnostic contract intact for Freebuff/Codex/Cursor.
 10. Capability manifest generated from `readiness.py`; every claim matches implementation.
-11. VulnBank end-to-end campaign: positives found, negatives clean, full provenance report.
+11. operator-target end-to-end campaign: positives found, negatives clean, full provenance report.
 12. **Elite-parity audit passes:** checklist-registry coverage, 100% browser-proof on client-side findings, OAST attribution, account-matrix differentials — all measured in the manifest.
 13. **Pre-flight is non-skippable:** machine tool inventory + browserMCP/burpMCP connection checks run before any mission work; capabilities are remembered via the manifest ArtifactRef from the first token; connection changes auto-reopen blocked leads; zero silent capability skips.
 

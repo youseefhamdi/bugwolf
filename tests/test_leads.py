@@ -331,7 +331,7 @@ class TestExploitChainHypotheses(unittest.TestCase):
     """Exploit feedback: demonstrated impact → new chain hypotheses."""
 
     LAB_USER = ('{"id": "1", "username": "alice",'
-                ' "email": "alice@vulnbank.local",'
+                ' "email": "alice@stub-target.local",'
                 ' "role": "user", "balance": 100}')
 
     def test_financial_fields_unlock_business_logic(self):

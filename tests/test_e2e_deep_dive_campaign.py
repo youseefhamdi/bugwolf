@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """End-to-end deep-dive campaign integration test (U1–U5 together).
 
-Boots the VulnBank lab fixture (``lab/vulnbank/server.py``, stdlib-only)
-in-process on an ephemeral port, then drives the full BugWolf pipeline the
-way an operator would:
+Boots the deterministic stub target (``tests/_stub_target.py``, stdlib-only)
+in-process on an ephemeral port as a stand-in for an operator-declared
+target, then drives the full BugWolf pipeline the way an operator would:
 
   U4 pass@k variants  ->  U2 artifact bridging  ->  U3 strict F0.5 gate  ->
   U1 fast-path hook   ->  U5 model routing      ->  12-stage workflow
@@ -13,8 +13,8 @@ way an operator would:
 
 This mirrors ``/tmp/e2e_deep_dive.py`` (the manual E2E driver) as a
 repeatable, isolated test: no fixed port, no external process, workspace in
-a temp dir, and the lab fixture is skipped cleanly when absent (e.g. when
-run from inside a bundle that does not ship ``lab/``).
+a temp dir, and the suite skips cleanly when the stub is absent (e.g. when
+run from inside a bundle that does not ship ``tests/``).
 """
 
 import importlib.util
@@ -36,8 +36,8 @@ import tools.campaign as campaign_mod
 from tools.harness_guard import initialize as initialize_contract
 from tools.core.stage_controller import WorkflowError
 
-LAB_SERVER = ROOT / "lab" / "vulnbank" / "server.py"
-TARGET = "vulnbank.local"
+STUB_TARGET = ROOT / "tests" / "_stub_target.py"
+TARGET = "stub-target.local"
 
 RESEARCH_SEQUENCE = [
     "pre-hunt", "post-recon", "post-maps", "bypass",
@@ -45,19 +45,18 @@ RESEARCH_SEQUENCE = [
 ]
 
 
-def _boot_lab():
-    """Load the stdlib-only lab fixture and serve it on an ephemeral port.
+def _boot_stub_target():
+    """Load the stdlib-only stub target and serve it on an ephemeral port.
 
-    Returns (base_url, shutdown) or (None, None) when the fixture is absent.
+    Returns (base_url, shutdown) or (None, None) when the stub is absent.
     """
-    if not LAB_SERVER.is_file():
+    if not STUB_TARGET.is_file():
         return None, None
-    spec = importlib.util.spec_from_file_location("vulnbank_server", LAB_SERVER)
+    spec = importlib.util.spec_from_file_location("stub_target", STUB_TARGET)
     module = importlib.util.module_from_spec(spec)
-    # server.py derives PORT from sys.argv[1] at import time — shield it from
-    # the unittest argv (e.g. the test module name) so import cannot fail.
+    # Shield argv at import (same hygiene as the old lab boot).
     saved_argv = sys.argv
-    sys.argv = ["vulnbank_server.py"]
+    sys.argv = ["_stub_target.py"]
     try:
         spec.loader.exec_module(module)
     finally:
@@ -88,17 +87,17 @@ def _boot_lab():
 class TestE2EDeepDiveCampaign(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.base, cls._shutdown_lab = _boot_lab()
+        cls.base, cls._shutdown_stub = _boot_stub_target()
 
     @classmethod
     def tearDownClass(cls):
-        if cls._shutdown_lab is not None:
-            cls._shutdown_lab()
-            cls._shutdown_lab = None
+        if cls._shutdown_stub is not None:
+            cls._shutdown_stub()
+            cls._shutdown_stub = None
 
     def setUp(self):
         if self.base is None:
-            self.skipTest("lab fixture not present (lab/vulnbank/server.py)")
+            self.skipTest("stub target not present (tests/_stub_target.py)")
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
@@ -151,7 +150,7 @@ class TestE2EDeepDiveCampaign(unittest.TestCase):
 
         # ---- U4: register asset + recon from the live lab surface --------
         orch.register_discovered_assets([{
-            "hostname": "api.vulnbank.local", "type": "web_api",
+            "hostname": "api.stub-target.local", "type": "web_api",
             "priority": "high"}])
         asset = orch.campaign.list_assets()[0]
         endpoints = [f"{self.base}{p}" for p in
@@ -166,7 +165,7 @@ class TestE2EDeepDiveCampaign(unittest.TestCase):
         delta = recon_dir / "asset-intel" / "delta.json"
         delta.parent.mkdir(parents=True, exist_ok=True)
         delta.write_text(json.dumps({
-            "target": TARGET, "new_hosts": ["api.vulnbank.local"],
+            "target": TARGET, "new_hosts": ["api.stub-target.local"],
             "new_endpoints": endpoints, "delta_type": "initial"}, indent=2))
 
         orch.register_recon(asset.asset_id, endpoints=endpoints,
@@ -242,9 +241,9 @@ class TestE2EDeepDiveCampaign(unittest.TestCase):
                      project_root=str(self.root))
         oauth_write(oauth_analyze(TARGET, [OAuthFlow(
             authorize_url=f"{self.base}/login", token_url=f"{self.base}/login",
-            callback_url=f"{self.base}/callback", client_id="vulnbank",
+            callback_url=f"{self.base}/callback", client_id="stub-target",
             response_type="token", scope="profile",
-            params={"client_id": "vulnbank",
+            params={"client_id": "stub-target",
                     "redirect_uri": f"{self.base}/callback"})]),
             project_root=str(self.root))
         ato_write(plan_chains(TARGET, [
@@ -264,24 +263,24 @@ class TestE2EDeepDiveCampaign(unittest.TestCase):
              "Action": ["iam:PutUserPolicy", "iam:CreateAccessKey"],
              "Resource": "*"}]}), project_root=str(self.root))
         dl_write(dl_analyze(TARGET, summary={"surfaces": [
-            {"platform": "android", "scheme": "vulnbank", "host": "account",
+            {"platform": "android", "scheme": "stub-target", "host": "account",
              "path": "users/{id}", "component": "AccountActivity",
              "exported": True, "action": "VIEW"},
-            {"platform": "ios", "scheme": "vulnbank", "host": "login",
+            {"platform": "ios", "scheme": "stub-target", "host": "login",
              "path": "/callback", "component": "LoginVC",
              "exported": False}]}), project_root=str(self.root))
         mp_write(mp_analyze(TARGET, summary={"findings": [
             {"finding_id": "mp-clear-1", "platform": "android",
              "check": "cleartext_traffic", "severity": "high",
              "component": "AndroidManifest",
-             "detail": "usesCleartextTraffic=true for api.vulnbank.local",
+             "detail": "usesCleartextTraffic=true for api.stub-target.local",
              "validation_steps": [f"load {self.base}/login"]},
             {"finding_id": "mp-exported-1", "platform": "android",
              "check": "exported_component", "severity": "medium",
              "component": "AccountActivity",
              "detail": "exported deep-link activity accepts arbitrary ids",
              "validation_steps":
-                 ["adb shell am start -a VIEW -d vulnbank://account/users/2"]}]}),
+                 ["adb shell am start -a VIEW -d stub-target://account/users/2"]}]}),
             project_root=str(self.root))
         ct_write(ct_triage(TARGET, [
             {"candidate_id": "ct-1", "bug_class": "reentrancy",
@@ -290,7 +289,7 @@ class TestE2EDeepDiveCampaign(unittest.TestCase):
             {"candidate_id": "ct-2", "bug_class": "flash_loan",
              "code_slice": "pool.getReserves(); uint price = reserve1 / reserve0;"}]),
             project_root=str(self.root))
-        pm_write(pm_analyze(TARGET, "VulnBankSwap",
+        pm_write(pm_analyze(TARGET, "StubTargetSwap",
                             "function getReserves() external returns (uint r0, uint r1) {\n"
                             "    (r0, r1) = pair.getReserves();\n"
                             "}\n"
@@ -309,7 +308,7 @@ class TestE2EDeepDiveCampaign(unittest.TestCase):
              "identity": "support-agent", "description": "lookup user"}]),
             project_root=str(self.root))
         rag_write(rag_analyze(TARGET, {
-            "name": "vulnbank-support-rag", "store_type": "vector_db",
+            "name": "stub-target-support-rag", "store_type": "vector_db",
             "write_back": True, "sanitization": False,
             "provenance_tagging": False,
             "sources": [

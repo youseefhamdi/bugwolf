@@ -2,7 +2,8 @@
 """Phase 4 — Deterministic benchmark laboratory.
 
 Runs the versioned benchmark corpus (configs/benchmark.json) against the
-VulnBank lab fixture and computes discovery-quality metrics:
+operator-declared target (CI regression: the stub under tests/), and computes
+discovery-quality metrics:
 
   * true positives / false positives / false negatives (ground truth),
   * precision, recall, F-score,
@@ -76,7 +77,7 @@ def probe_case(case: Dict[str, Any], base_url: str, *,
     started = time.monotonic()
     status, body_text = probe(url, method, body, headers)
     elapsed_ms = round((time.monotonic() - started) * 1000.0, 3)
-    return {
+    result = {
         "case_id": case["case_id"],
         "bug_class": str(case.get("bug_class") or ""),
         "url": url,
@@ -85,6 +86,17 @@ def probe_case(case: Dict[str, Any], base_url: str, *,
         "body": body_text[:512],
         "elapsed_ms": elapsed_ms,
     }
+    # Business-logic evidence: an optional deterministic signal check over
+    # the response body (e.g. the stub's gateway echo), recorded as data.
+    signal_fn = case.get("signal_check")
+    if callable(signal_fn):
+        try:
+            result["signal"] = bool(signal_fn(status, body_text))
+        except Exception:  # noqa: BLE001 - a broken check is not a signal
+            result["signal"] = False
+    elif isinstance(signal_fn, str):
+        result["signal"] = signal_fn.lower() in body_text.lower()
+    return result
 
 
 def _default_probe(url: str, method: str, body: Any,
@@ -111,7 +123,10 @@ def _signal_status(case: Dict[str, Any], result: Dict[str, Any]) -> bool:
 
     A 200/201 on an access-control class, a 5xx on a crash class, and a
     non-200 on anything else are signals; negative-control cases must show
-    their expected (non-finding) status.
+    their expected (non-finding) status.  Business-logic cases signal on the
+    recorded ``signal`` field (the FIN swarm's differential verdict), not on
+    bare status codes -- a 200 on a money flow is normal; the total is the
+    evidence.
     """
     bug_class = str(case.get("bug_class") or "")
     status = int(result.get("status") or 0)
@@ -119,6 +134,8 @@ def _signal_status(case: Dict[str, Any], result: Dict[str, Any]) -> bool:
         return status in (200, 201)
     if bug_class == "fuzz_crash":
         return status in (500, 502, 503, 504)
+    if bug_class == "business_logic":
+        return bool(result.get("signal"))
     return False
 
 
@@ -206,8 +223,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser.add_argument("--run", action="store_true", help="run the benchmark")
     parser.add_argument("--gate", action="store_true",
                         help="verify the last run passes the regression gate")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8077",
-                        help="VulnBank lab base URL")
+    parser.add_argument("--base-url", default="",
+                        help="operator target base URL (required; CI uses the tests/ stub)")
     parser.add_argument("--project-root", help="workspace root override")
     parser.add_argument("--json", action="store_true", help="emit JSON")
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -219,6 +236,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             path = root / "state" / "benchmark" / "latest.json"
             report = json.loads(path.read_text(encoding="utf-8"))
         else:
+            if not args.base_url:
+                parser.error("--base-url is required (operator target; "
+                             "CI regression boots the tests/ stub)")
             report = run_benchmark(manifest, base_url=args.base_url,
                                    project_root=args.project_root)
         if args.json:

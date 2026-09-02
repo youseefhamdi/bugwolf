@@ -91,9 +91,12 @@ TECHNIQUE_MATRIX: Dict[str, tuple] = {
         "boolean-based", "error-based", "time-based", "union-based",
         "out-of-band", "sandbox-escape",
     ),
+    # FIN matrix (plan S5) -- key-for-key with mission_runner.FIN_TECHNIQUES
+    # so R2 exhaustion accounting matches the swarm exactly.
     "business_logic": (
         "quantity-mutation", "currency-arbitrage", "toctou-race", "replay",
         "negative-values", "rounding-abuse", "voucher-stacking",
+        "price-trust", "test-gateway-forcing", "format-mutation-matrix",
     ),
     "fuzzing": (
         "boundary-length", "grammar-family", "type-confusion",
@@ -262,14 +265,20 @@ class LeadStore:
                     or TECHNIQUE_MATRIX["generic"])
 
     def record_technique(self, lead_id: str, technique: str, outcome: str,
-                         *, evidence_ref: str = "", detail: str = "") -> LeadSpec:
+                         *, evidence_ref: str = "", detail: str = "",
+                         registry_ids: Optional[List[str]] = None) -> LeadSpec:
         """Record one matrix attempt (tried + result).  Returns the lead."""
         lead = self._leads[lead_id]
-        lead.technique_log.append({
+        entry = {
             "technique": technique, "outcome": outcome,
             "evidence_ref": evidence_ref, "detail": detail[:500],
             "ts": _now_iso(),
-        })
+        }
+        if registry_ids:
+            # Registry linkage (e.g. FIN-PARAM-02) kept structured on the
+            # attempt so reports can cite the canonical checklist entries.
+            entry["registry_ids"] = [str(r) for r in registry_ids][:16]
+        lead.technique_log.append(entry)
         self._append(lead)
         return lead
 

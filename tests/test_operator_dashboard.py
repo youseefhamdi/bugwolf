@@ -40,19 +40,19 @@ class OperatorDashboardTest(unittest.TestCase):
         return CandidateStore(path)
 
     def test_summary_counts_candidates_by_domain_status_severity(self) -> None:
-        web = self._store("api.vulnbank.local")
-        web.add(_candidate("web_api", "api.vulnbank.local", "bola", "high",
+        web = self._store("api.stub-target.local")
+        web.add(_candidate("web_api", "api.stub-target.local", "bola", "high",
                            CandidateStatus.CONFIRMED, "/api/users/42"))
-        web.add(_candidate("web_api", "api.vulnbank.local", "mass-assignment", "medium",
+        web.add(_candidate("web_api", "api.stub-target.local", "mass-assignment", "medium",
                            CandidateStatus.TRIAGED, "/api/users"))
-        chain = CrossDomainCorrelator("api.vulnbank.local", project_root=str(self.root))
+        chain = CrossDomainCorrelator("api.stub-target.local", project_root=str(self.root))
         chain.write_report([
-            CrossDomainChain(chain_id="c1", target="api.vulnbank.local",
+            CrossDomainChain(chain_id="c1", target="api.stub-target.local",
                              candidate_ids=["a", "b"], domains=["web_api", "ai"],
                              shared_tokens=["/api/users"], severity="high"),
         ])
         summary = dashboard_summary(self.root)
-        self.assertEqual(summary["targets"], ["api.vulnbank.local"])
+        self.assertEqual(summary["targets"], ["api.stub-target.local"])
         self.assertEqual(summary["candidate_count"], 2)
         self.assertEqual(summary["by_domain"]["web_api"], 2)
         self.assertEqual(summary["by_status"]["confirmed"], 1)

@@ -31,7 +31,7 @@ Verified environment:
 |---|---|
 | Python | 3.14 (stdlib-only core; no third-party runtime deps) |
 | curl | optional — HTTP/1.1·HTTP/2 probing (`tools/http_protocol_runner.py`) |
-| forge (Foundry) | optional — `lab/web3` fixture runs (graceful skip if absent) |
+| forge (Foundry) | optional — operator-supplied Foundry projects (graceful skip if absent) |
 | slither / echidna / medusa / mythril / halmos | optional — Web3 tool runners (graceful skip if absent) |
 | PyRIT / Garak / Promptfoo | optional — AI red-team runners (graceful skip if absent) |
 

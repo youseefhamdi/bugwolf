@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Integration test for the Live Execution Harness Loop (Phase 3).
 
-Boots the VulnBank lab fixture in-process on an ephemeral port and drives
+Boots the deterministic stub target (``tests/_stub_target.py``) in-process
+on an ephemeral port as a stand-in for an operator-declared target and drives
 ``CampaignOrchestrator.live_feedback_loop`` end-to-end:
 
   unit -> real HTTP probe -> recorded evidence -> observation ->
@@ -10,7 +11,8 @@ Boots the VulnBank lab fixture in-process on an ephemeral port and drives
 Asserts the loop actually executes (units/probes > 0), adapts (blocked /
 signal / refuted outcomes), attaches recorded request/response evidence, and
 that the reproducible-evidence gate is exercised.  Skipped cleanly when the
-lab fixture is absent (e.g. from inside a bundle that does not ship lab/).
+stub target is absent (e.g. from inside a bundle that does not ship
+``tests/``).
 """
 
 import importlib.util
@@ -31,18 +33,18 @@ if str(ROOT) not in sys.path:
 import tools.campaign as campaign_mod
 from tools.harness_guard import initialize as initialize_contract
 
-LAB_SERVER = ROOT / "lab" / "vulnbank" / "server.py"
-TARGET = "vulnbank.local"
+STUB_TARGET = ROOT / "tests" / "_stub_target.py"
+TARGET = "stub-target.local"
 
 
-def _boot_lab():
-    """Load the stdlib-only lab fixture and serve it on an ephemeral port."""
-    if not LAB_SERVER.is_file():
+def _boot_stub_target():
+    """Load the stdlib-only stub target and serve it on an ephemeral port."""
+    if not STUB_TARGET.is_file():
         return None, None
-    spec = importlib.util.spec_from_file_location("vulnbank_server", LAB_SERVER)
+    spec = importlib.util.spec_from_file_location("stub_target", STUB_TARGET)
     module = importlib.util.module_from_spec(spec)
     saved_argv = sys.argv
-    sys.argv = ["vulnbank_server.py"]
+    sys.argv = ["_stub_target.py"]
     try:
         spec.loader.exec_module(module)
     finally:
@@ -70,17 +72,17 @@ def _boot_lab():
 class TestLiveFeedbackLoop(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.base, cls._shutdown_lab = _boot_lab()
+        cls.base, cls._shutdown_stub = _boot_stub_target()
 
     @classmethod
     def tearDownClass(cls):
-        if cls._shutdown_lab is not None:
-            cls._shutdown_lab()
-            cls._shutdown_lab = None
+        if cls._shutdown_stub is not None:
+            cls._shutdown_stub()
+            cls._shutdown_stub = None
 
     def setUp(self):
         if self.base is None:
-            self.skipTest("lab fixture not present (lab/vulnbank/server.py)")
+            self.skipTest("stub target not present (tests/_stub_target.py)")
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
@@ -114,7 +116,7 @@ class TestLiveFeedbackLoop(unittest.TestCase):
         orch.initialize()
         orch.complete_workflow_stage("authorization", scope_file=str(scope))
         orch.register_discovered_assets([{
-            "hostname": "api.vulnbank.local", "type": "web_api",
+            "hostname": "api.stub-target.local", "type": "web_api",
             "priority": "high"}])
         asset = orch.campaign.list_assets()[0]
         endpoints = [f"{self.base}{p}" for p in
@@ -177,7 +179,7 @@ class TestLiveFeedbackLoop(unittest.TestCase):
         orch = self._seed_campaign()
         orch.live_feedback_loop(base_url=self.base, max_units=10,
                                 project_root=str(self.root))
-        probes = (self.root / "state" / "sessions" / "vulnbank.local"
+        probes = (self.root / "state" / "sessions" / "stub-target.local"
                   / "probes.jsonl")
         if probes.is_file():
             records = [json.loads(l) for l in probes.read_text().splitlines()

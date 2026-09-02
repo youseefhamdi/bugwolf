@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 4 end-to-end: lead protocol + first VulnBank mission.
+"""Phase 4 end-to-end: lead protocol + full-lane mission (real-world plugin).
 
 Lead-protocol contract (plan v2 section 5.5):
   * R1: open_lead is the only way an insight becomes durable; every lead
@@ -13,8 +13,12 @@ E2E contract (Phase 4 exit criterion):
   MissionSpec -> Scheduler.plan_mission -> preflight gate recorded ->
   recon/web_api/verify/report lanes drained -> deterministic hunt families
   open leads -> verify lane replays them independently -> report carries
-  replay-confirmed findings.  Runs against a live in-process VulnBank
-  fixture (skips when lab/vulnbank/server.py is absent).
+  replay-confirmed findings.
+
+Real-world plugin policy: production hunting binds to operator-declared
+surfaces only -- the runner has no shipped target defaults.  These tests
+declare the surfaces explicitly against the deterministic stub target
+(``tests/_stub_target.py``), which stands in for an operator target in CI.
 """
 
 import importlib.util
@@ -37,16 +41,24 @@ from tools.runtime.lead_protocol import (
 from tools.runtime.mission_runner import MissionRunner, http_probe
 
 ROOT = Path(__file__).resolve().parents[1]
-LAB_SERVER = ROOT / "lab" / "vulnbank" / "server.py"
+STUB_TARGET = ROOT / "tests" / "_stub_target.py"
+
+# Operator-declared surfaces for the e2e missions (as an operator would pass
+# --paths / declare in intake): object refs, blocked gateway, fuzz endpoint,
+# GraphQL, and two money-flow surfaces for the FIN lane.
+OPERATOR_PATHS = [
+    "/api/users/1", "/api/users/2", "/api/gateway", "/api/ingest",
+    "/graphql", "/api/checkout", "/api/voucher/redeem",
+]
 
 
-def _boot_lab():
-    if not LAB_SERVER.is_file():
+def _boot_stub_target():
+    if not STUB_TARGET.is_file():
         return None, None
-    spec = importlib.util.spec_from_file_location("vulnbank_server", LAB_SERVER)
+    spec = importlib.util.spec_from_file_location("stub_target", STUB_TARGET)
     module = importlib.util.module_from_spec(spec)
     saved_argv = sys.argv
-    sys.argv = ["vulnbank_server.py"]
+    sys.argv = ["_stub_target.py"]
     try:
         spec.loader.exec_module(module)
     finally:
@@ -85,7 +97,7 @@ class LeadProtocolTest(unittest.TestCase):
     def test_r1_open_lead_is_durable_and_reloadable(self):
         lead = self.store.open_lead(
             title="test anomaly", mission_id="bw-lp-test",
-            target="lab", bug_class="waf_bypass", surface="/x",
+            target="stub-target.local", bug_class="waf_bypass", surface="/x",
             signal="waf_block")
         reloaded = LeadStore("bw-lp-test").load()
         self.assertEqual([l.lead_id for l in reloaded.list_leads()],
@@ -93,7 +105,8 @@ class LeadProtocolTest(unittest.TestCase):
 
     def test_r2_exhaustion_guard_blocks_premature_closure(self):
         lead = self.store.open_lead(
-            title="premature close", mission_id="bw-lp-test", target="lab",
+            title="premature close", mission_id="bw-lp-test",
+            target="stub-target.local",
             bug_class="auth_bypass", signal="anomaly")
         with self.assertRaises(ValueError) as ctx:
             self.store.close_exhausted(lead.lead_id)
@@ -104,8 +117,9 @@ class LeadProtocolTest(unittest.TestCase):
 
     def test_r2_pwned_requires_and_keeps_evidence(self):
         lead = self.store.open_lead(
-            title="evidence check", mission_id="bw-lp-test", target="lab",
-            bug_class="generic", signal="verbose_error")
+            title="evidence check", mission_id="bw-lp-test",
+            target="stub-target.local", bug_class="generic",
+            signal="verbose_error")
         self.store.close_pwned(lead.lead_id, evidence_ref="ev-42")
         stored = self.store.get(lead.lead_id)
         self.assertEqual(stored.status, "PWNED")
@@ -113,8 +127,9 @@ class LeadProtocolTest(unittest.TestCase):
 
     def test_escalation_never_moves_down(self):
         lead = self.store.open_lead(
-            title="ladder check", mission_id="bw-lp-test", target="lab",
-            bug_class="generic", signal="gut_feeling")
+            title="ladder check", mission_id="bw-lp-test",
+            target="stub-target.local", bug_class="generic",
+            signal="gut_feeling")
         self.store.escalate(lead.lead_id, TIER_T2, reason="research")
         # escalating downward is a no-op (tier unchanged)
         self.store.escalate(lead.lead_id, TIER_T0, reason="should not move")
@@ -122,7 +137,8 @@ class LeadProtocolTest(unittest.TestCase):
 
     def test_closeability_reports_blockers(self):
         lead = self.store.open_lead(
-            title="closeability", mission_id="bw-lp-test", target="lab",
+            title="closeability", mission_id="bw-lp-test",
+            target="stub-target.local",
             bug_class="injection", signal="anomaly")
         report = self.store.closeability(self.store.get(lead.lead_id))
         self.assertFalse(report["can_close_pwned"])
@@ -135,17 +151,17 @@ class LeadProtocolTest(unittest.TestCase):
 class MissionE2ETest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.base, cls._shutdown_lab = _boot_lab()
+        cls.base, cls._shutdown_stub = _boot_stub_target()
 
     @classmethod
     def tearDownClass(cls):
-        if cls._shutdown_lab is not None:
-            cls._shutdown_lab()
-            cls._shutdown_lab = None
+        if cls._shutdown_stub is not None:
+            cls._shutdown_stub()
+            cls._shutdown_stub = None
 
     def setUp(self):
         if self.base is None:
-            self.skipTest("lab fixture not present (lab/vulnbank/server.py)")
+            self.skipTest("stub target not present (tests/_stub_target.py)")
         self._td = tempfile.TemporaryDirectory()
         self._saved_root = os.environ.get("BUGWOLF_PROJECT_ROOT")
         os.environ["BUGWOLF_PROJECT_ROOT"] = self._td.name
@@ -160,19 +176,24 @@ class MissionE2ETest(unittest.TestCase):
 
     def _mission(self, mission_id="bw-e2e"):
         return MissionSpec(
-            mission_id=mission_id, target="vulnbank.local",
+            mission_id=mission_id, target="stub-target.local",
             domains=["recon", "web_api", "verify", "report"],
             budget={"max_agents": 8, "max_parallel_tasks": 4,
                     "max_runtime_seconds": 300})
 
+    def _runner(self, mission):
+        return MissionRunner(mission, base_url=self.base,
+                             paths=list(OPERATOR_PATHS))
+
     def test_full_mission_finds_confirms_and_reports(self):
-        runner = MissionRunner(self._mission(), base_url=self.base)
-        report = runner.run()
+        report = self._runner(self._mission()).run()
         counts = report["counts"]
-        # BOLA x2 + WAF gateway x1 (one surface, full matrix) + fuzz x3 = 6.
+        # BOLA template x1 (consolidated: one surface, full technique matrix)
+        # + WAF gateway x1 + FIN checkout x1 + fuzz x3 = 6 findings;
+        # GraphQL stays open (honest generic-class lead).
         self.assertEqual(counts["findings"], 6)
         self.assertEqual(counts["refuted"], 0)
-        self.assertEqual(counts["open"], 1)  # GraphQL lead: honest, open
+        self.assertEqual(counts["open"], 1)
         self.assertEqual(counts["total_leads"], 7)
         # All 4 lane tasks drained through the scheduler with no rejections.
         self.assertEqual(len(report["tasks"]), 4)
@@ -181,13 +202,31 @@ class MissionE2ETest(unittest.TestCase):
         # The WAF-bypass finding is differential-proven (403 -> 200).
         surfaces = {f["surface"] for f in report["findings"]}
         self.assertIn("/api/gateway", surfaces)
+        self.assertIn("/api/checkout", surfaces)  # FIN lane fired
         for finding in report["findings"]:
             self.assertTrue(finding["evidence"])
 
+    def test_bola_lead_is_consolidated_with_full_matrix(self):
+        mission = self._mission("bw-e2e-bola")
+        self._runner(mission).run()
+        store = LeadStore(mission.mission_id).load()
+        bola = [l for l in store.list_leads() if l.bug_class == "access_control"]
+        # One lead per TEMPLATE (both /api/users/{id} hits collapse), not one
+        # per ID -- the matrix lives on the template-level lead.
+        self.assertEqual(len(bola), 1)
+        lead = bola[0]
+        self.assertEqual(lead.status, "PWNED")
+        logged = {e["technique"] for e in lead.technique_log}
+        self.assertEqual(logged, {"direct-object-reference", "id-enumeration",
+                                  "role-override", "mass-assignment",
+                                  "hidden-field", "scope-confusion"})
+        winner = next(e for e in lead.technique_log
+                      if e["outcome"] == "success")
+        self.assertEqual(winner["technique"], "direct-object-reference")
+
     def test_waf_lead_carries_full_matrix_and_t1_escalation(self):
-        from tools.runtime.lead_protocol import TIER_T1
         mission = self._mission("bw-e2e-matrix")
-        MissionRunner(mission, base_url=self.base).run()
+        self._runner(mission).run()
         store = LeadStore(mission.mission_id).load()
         waf_leads = [l for l in store.list_leads()
                      if l.bug_class == "waf_bypass"]
@@ -207,6 +246,54 @@ class MissionE2ETest(unittest.TestCase):
         self.assertTrue(any("pass@k" in h["reason"]
                             for h in lead.escalation_history))
 
+    def test_fin_lead_carries_full_matrix_and_registry_ids(self):
+        from tools.runtime.mission_runner import FIN_TECHNIQUES
+        mission = self._mission("bw-e2e-fin")
+        self._runner(mission).run()
+        store = LeadStore(mission.mission_id).load()
+        fin = [l for l in store.list_leads()
+               if l.bug_class == "business_logic"]
+        # One consolidated lead per money surface; the stub declares two.
+        self.assertEqual(len(fin), 1)
+        lead = fin[0]
+        self.assertEqual(lead.status, "PWNED")
+        self.assertIn("/api/checkout", lead.surface)
+        # R3 depth: the full FIN technique set was tried on the lead.
+        logged = {e["technique"] for e in lead.technique_log}
+        self.assertTrue(set(FIN_TECHNIQUES) <= logged)
+        self.assertIn("price-trust", logged)
+        # Registry linkage: FIN-PARAM* ids land on the price-trust attempt.
+        price = next(e for e in lead.technique_log
+                     if e["technique"] == "price-trust")
+        self.assertTrue(any(r.startswith("FIN-PARAM")
+                            for r in price.get("registry_ids", [])))
+        # T1 escalation with the pass@k reason.
+        self.assertGreaterEqual(lead.tier, TIER_T1)
+        self.assertTrue(any("pass@k" in h["reason"]
+                            for h in lead.escalation_history))
+        # A FIN-NUM anomaly was recorded by the format-mutation sweep.
+        fmt = [e for e in lead.technique_log
+               if e["technique"] == "format-mutation-matrix"]
+        self.assertTrue(fmt and fmt[0]["outcome"] == "success")
+        self.assertTrue(any(r.startswith("FIN-NUM")
+                            for r in fmt[0].get("registry_ids", [])))
+
+    def test_fin_replay_uses_winning_technique(self):
+        from tools.runtime.mission_runner import replay_fin_technique
+        mission = self._mission("bw-e2e-fin-replay")
+        self._runner(mission).run()
+        store = LeadStore(mission.mission_id).load()
+        fin = next(l for l in store.list_leads()
+                   if l.bug_class == "business_logic")
+        winner = next(e["technique"] for e in reversed(fin.technique_log)
+                      if e["outcome"] == "success")
+        # Independent replay confirms the winning FIN technique...
+        self.assertIs(replay_fin_technique(self.base, fin.surface, winner),
+                      True)
+        # ...and an absent technique is undecidable, never a fake verdict.
+        self.assertIsNone(replay_fin_technique(self.base, fin.surface,
+                                               "nonexistent-technique"))
+
     def test_waf_replay_uses_winning_technique(self):
         from tools.runtime.mission_runner import (
             replay_bypass_technique, WAF_BYPASS_TECHNIQUES,
@@ -221,7 +308,7 @@ class MissionE2ETest(unittest.TestCase):
 
     def test_open_graphql_lead_survives_resume(self):
         mission = self._mission("bw-e2e-resume")
-        MissionRunner(mission, base_url=self.base).run()
+        self._runner(mission).run()
         reloaded = LeadStore(mission.mission_id).load()
         open_leads = reloaded.open_lead_ids()
         self.assertEqual(len(open_leads), 1)

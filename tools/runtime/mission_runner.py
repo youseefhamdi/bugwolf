@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -106,24 +107,233 @@ def http_probe(url: str, *, method: str = "GET", body: Optional[Dict] = None,
 # yields a signal opens a lead via the protocol (R1) and walks the ladder.
 
 
-def _probe_direct_object_reference(base: str, paths: List[str]) -> List[Dict]:
-    """BOLA family: unauthenticated direct object access."""
-    signals = []
+# ---------------------------------------------------------------------------
+# BOLA / access-control technique matrix + pass@k swarm (plan v2 5.4/5.5)
+# ---------------------------------------------------------------------------
+
+# Sensitive keys whose presence in an object response is impact evidence
+# (hidden-field technique).
+_SENSITIVE_KEYS = ("balance", "token", "role", "email", "is_admin", "isadmin")
+
+# Canary marker for state-changing matrix probes (attributable, lab-safe).
+_CANARY = "bw-canary-7f3k"
+
+# ID candidates for enumeration: observed IDs plus deterministic neighbors
+# and edges (zero, gaps, large) that expose unbounded object spaces.
+_ENUM_EXTRA = (1, 2, 3, 4, 0, 11, 42, 999)
+
+
+def _object_data(result: ProbeResult) -> Optional[Dict]:
+    """True object payload (not an error envelope) from a probe, if any."""
+    if not (200 <= result.status < 300):
+        return None
+    try:
+        data = json.loads(result.body)
+    except ValueError:
+        return None
+    if isinstance(data, dict) and any(
+            key in data for key in ("id", "email", "username", "balance")):
+        return data
+    return None
+
+
+def _bola_templates(paths: List[str]) -> Dict[str, List[int]]:
+    """Group concrete paths into collection templates by numeric segment."""
+    templates: Dict[str, List[int]] = {}
     for path in paths:
-        result = http_probe(base + path)
-        if result.ok and result.body.strip().startswith("{"):
-            try:
-                data = json.loads(result.body)
-            except ValueError:
-                continue
-            if isinstance(data, dict) and any(
-                    key in data for key in ("id", "email", "username", "balance")):
-                signals.append({
-                    "signal": "direct-object-reference",
-                    "detail": f"{path} returned object data without auth",
-                    "evidence": result.body[:400],
-                    "path": path, "status": result.status,
-                })
+        head, _, tail = path.rpartition("/")
+        if tail.isdigit():
+            templates.setdefault(head + "/{id}", []).append(int(tail))
+    return templates
+
+
+def _bola_variants_direct(base: str, template: str, ids: List[int]
+                          ) -> List[Tuple[str, ProbeResult]]:
+    coll = template.replace("/{id}", "")
+    return [(f"GET {coll}/{i}", http_probe(f"{base}{coll}/{i}"))
+            for i in ids]
+
+
+def _bola_variants_enumeration(base: str, template: str, ids: List[int]
+                               ) -> List[Tuple[str, ProbeResult]]:
+    coll = template.replace("/{id}", "")
+    edge = [i for i in (0, 999, 12345) if i not in ids]
+    return [(f"edge GET {coll}/{i}", http_probe(f"{base}{coll}/{i}"))
+            for i in edge]
+
+
+def _bola_variants_scope(base: str, template: str, ids: List[int]
+                         ) -> List[Tuple[str, ProbeResult]]:
+    """scope-confusion: the same object reached via query-param forms."""
+    coll = template.replace("/{id}", "")
+    first = ids[0] if ids else 1
+    return [
+        (f"GET {coll}?id={first}", http_probe(f"{base}{coll}?id={first}")),
+        (f"GET {coll}?user_id={first}",
+         http_probe(f"{base}{coll}?user_id={first}")),
+    ]
+
+
+def _bola_variants_role(base: str, template: str, ids: List[int]
+                        ) -> List[Tuple[str, ProbeResult]]:
+    coll = template.replace("/{id}", "")
+    first = ids[0] if ids else 1
+    return [
+        ("X-Role: admin", http_probe(f"{base}{coll}/{first}",
+                                     headers={"X-Role": "admin"})),
+        (f"GET {coll}/{first}?role=admin",
+         http_probe(f"{base}{coll}/{first}?role=admin")),
+    ]
+
+
+def _bola_variants_mass_assignment(base: str, template: str, ids: List[int]
+                                   ) -> List[Tuple[str, ProbeResult]]:
+    """mass-assignment: registration/create trusting role fields.
+
+    State-changing but attributable: the canary username marks every object
+    this probe creates (operator RoE governs on live targets; the matrix
+    entry is skipped entirely when the mission declares no-write).
+    """
+    coll = template.replace("/{id}", "")
+    return [(f"POST {coll} canary",
+             http_probe(base + coll, method="POST",
+                        body={"username": _CANARY, "email": f"{_CANARY}@lab.invalid",
+                              "role": "admin", "isAdmin": True},
+                        headers={"Content-Type": "application/json"}))]
+
+
+def _bola_variants_hidden(base: str, template: str, ids: List[int]
+                          ) -> List[Tuple[str, ProbeResult]]:
+    """hidden-field: no extra probes; impact is read off the baseline body."""
+    return []
+
+
+# Registry order = escalation order (matches lead_protocol TECHNIQUE_MATRIX
+# key-for-key so untried_techniques() aligns with the swarm).
+BOLA_TECHNIQUES: Dict[str, Callable[[str, str, List[int]], List[Tuple[str, ProbeResult]]]] = {
+    "direct-object-reference": _bola_variants_direct,
+    "id-enumeration": _bola_variants_enumeration,
+    "role-override": _bola_variants_role,
+    "mass-assignment": _bola_variants_mass_assignment,
+    "hidden-field": _bola_variants_hidden,
+    "scope-confusion": _bola_variants_scope,
+}
+
+
+def replay_bola_technique(base: str, path: str,
+                          technique: str) -> Optional[ProbeResult]:
+    """Re-execute one named access-control technique (verify-lane F0.5)."""
+    template, _, observed = path.partition("|")
+    ids = [int(x) for x in observed.split(",") if x.isdigit()] or [1]
+    fn = BOLA_TECHNIQUES.get(technique)
+    if fn is None:
+        return None
+    for _variant, result in fn(base, template, ids):
+        if _object_data(result):
+            return result
+    return None
+
+
+def _probe_bola_swarm(base: str, paths: List[str],
+                      *, pass_at_k: int = 6) -> List[Dict]:
+    """BOLA family: template discovery -> pass@k matrix over the template.
+
+    Precondition (the differential): at least one enumerated ID returns
+    object data WITHOUT authentication.  All six access-control techniques
+    then dispatch in parallel regardless of early wins (R2 accounting), and
+    one signal per template carries the full attempt matrix + winners.
+    """
+    signals: List[Dict] = []
+    for template, observed in _bola_templates(paths).items():
+        coll = template.replace("/{id}", "")
+        enum_ids = sorted(set(observed)
+                          | {i for i in _ENUM_EXTRA if i not in observed})
+        # Precondition: unauthenticated object access on an observed ID.
+        baseline_result = http_probe(f"{base}{coll}/{observed[0]}")
+        baseline = _object_data(baseline_result)
+        if baseline is None:
+            continue  # auth-protected (or absent): no unauthenticated access
+
+        workers = max(1, min(int(pass_at_k or 1), len(BOLA_TECHNIQUES)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(fn, base, template, enum_ids): name
+                       for name, fn in BOLA_TECHNIQUES.items()}
+            raw: Dict[str, List[Tuple[str, ProbeResult]]] = {}
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    raw[name] = future.result()
+                except Exception as exc:  # noqa: BLE001 - failure is data
+                    raw[name] = [("swarm-error", ProbeResult(
+                        0, f"{type(exc).__name__}: {exc}", 0))]
+
+        accessible = sorted({int(match.group(1))
+                             for _v, r in raw.get("direct-object-reference", [])
+                             if (match := re.search(r"/(\d+)$", _v))
+                             and _object_data(r)}
+                            | set(observed))
+
+        attempts: List[Dict] = []
+        winner = ""
+        winning_evidence = ""
+        for name in BOLA_TECHNIQUES:
+            variants = raw.get(name) or []
+            statuses = [(v, r.status) for v, r in variants]
+            if name == "direct-object-reference":
+                success = bool(accessible)
+            elif name == "id-enumeration":
+                success = len(accessible) >= 2
+            elif name == "scope-confusion":
+                success = any(_object_data(r) for _v, r in variants)
+            elif name == "role-override":
+                # Success requires a DIFFERENT (escalated) response.
+                success = any(_object_data(r)
+                              and r.body != baseline_result.body
+                              for _v, r in variants)
+            elif name == "mass-assignment":
+                success = any(
+                    (lambda d: d is not None and (
+                        d.get("isAdmin") is True
+                        or str(d.get("role", "")).lower() == "admin"))(
+                        _object_data(r))
+                    for _v, r in variants)
+            else:  # hidden-field: impact read off the baseline object
+                success = any(k in baseline for k in _SENSITIVE_KEYS)
+            if success:
+                outcome = "success"
+                if not winner:
+                    winner = name
+                    if variants:
+                        hit = next((r for _v, r in variants
+                                    if _object_data(r)), None)
+                        winning_evidence = (hit.body if hit
+                                            else baseline_result.body)[:400]
+                    else:
+                        winning_evidence = baseline_result.body[:400]
+            elif any(status == 0 for _v, status in statuses):
+                outcome = "error"
+            else:
+                outcome = "blocked"
+            attempts.append({
+                "technique": name,
+                "outcome": outcome,
+                "variants": statuses,
+                "detail": ("; ".join(f"{v[:40]}->{s}"
+                                     for v, s in statuses) or name)[:400],
+            })
+
+        signals.append({
+            "signal": "direct-object-reference",
+            "detail": (f"{template} returns object data unauthenticated "
+                       f"(accessible ids: {accessible})"),
+            "evidence": winning_evidence or baseline_result.body[:400],
+            "path": f"{coll}/{observed[0]}",
+            "template": template,
+            "status": 200,
+            "attempts": attempts,
+            "winning_technique": winner,
+            "enumerated_ids": accessible,
+        })
     return signals
 
 
@@ -365,9 +575,469 @@ def _probe_waf_bypass(base: str, paths: List[str],
     return signals
 
 
+# ---------------------------------------------------------------------------
+# Business-logic lane: the FIN technique matrix (plan S5, NCC financial corpus)
+# ---------------------------------------------------------------------------
+
+# Canonical FIN technique families (configs/fin_logic.json is the full ~41
+# entry registry; this swarm key set matches lead_protocol.TECHNIQUE_MATRIX
+# ["business_logic"] key-for-key so R2 exhaustion accounting aligns).
+FIN_ENTRY_POINTS = ("checkout", "payment", "pay", "order", "cart", "invoice",
+                    "refund", "voucher", "coupon", "credit", "balance",
+                    "withdraw", "deposit", "transfer", "charge", "billing",
+                    "subscription", "wallet", "rates", "exchange")
+
+_FIN_MONEY_FIELDS = ("price", "amount", "total", "cost", "value", "quantity",
+                     "qty", "subtotal", "discount", "credit", "balance")
+
+# FIN-NUM-01..10: the numeric language-behavior table as a deterministic
+# format-mutation matrix.  Same semantic value, N encodings.
+FIN_NUM_MUTATIONS = (
+    ("fin-num-negative", -1),
+    ("fin-num-decimal", 0.1),
+    ("fin-num-overflow", 2147483648),        # 2^31 wraps to -2^31 in C ints
+    ("fin-num-zero", 0),
+    ("fin-num-null", None),
+    ("fin-num-exponential", "9e99"),
+    ("fin-num-exponential-neg", "1e-1"),
+    ("fin-num-nan", "NaN"),
+    ("fin-num-infinity", "Infinity"),
+    ("fin-num-leading-zeros", "000100"),
+    ("fin-num-currency-symbol", "$100"),
+    ("fin-num-grouping", "1,000"),
+    ("fin-num-hex", "0x0A"),
+)
+
+
+def _load_fin_registry(project_root: Optional[str] = None) -> Dict[str, Any]:
+    """Fail-open loader for configs/fin_logic.json (plan S5 registry).
+
+    Loading follows the benchmark manifest convention (workspace root first,
+    code-root fallback).  Missing or malformed manifests degrade to the
+    shipped defaults below -- the FIN matrix is mandated, never gated.
+    """
+    default = {"schema": "bugwolf/fin-logic/v1", "entries": []}
+    try:
+        from tools.runtime_paths import CODE_ROOT, workspace_root
+        path = workspace_root(project_root) / "configs" / "fin_logic.json"
+        if not path.is_file():
+            path = CODE_ROOT / "configs" / "fin_logic.json"
+        if not path.is_file():
+            return default
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) and isinstance(
+            value.get("entries"), list) else default
+    except Exception:  # noqa: BLE001 - fail-open by contract
+        return default
+
+
+def fin_registry_entries(project_root: Optional[str] = None) -> List[Dict]:
+    """FIN registry entries (defaults when the manifest is absent)."""
+    loaded = _load_fin_registry(project_root)
+    return loaded.get("entries") or []
+
+
+def _is_money_surface(path: str) -> bool:
+    """Money-flow surface test: checkout/payment/refund/voucher keywords."""
+    lowered = path.lower()
+    return any(k in lowered for k in FIN_ENTRY_POINTS)
+
+
+def discover_money_surfaces(base: str, paths: List[str]
+                            ) -> List[Tuple[str, str]]:
+    """Money-flow surfaces among the operator's declared paths.
+
+    Returns [(path, "POST")] for every FIN-named declared path.  Plan S5:
+    money-flow surfaces auto-instantiate the FIN matrix at prioritization --
+    the attack-first rule.  No extra traffic here: surface discovery is a
+    pure name match on paths the operator (or recon) already declared.
+    """
+    surfaces: List[Tuple[str, str]] = []
+    seen = set()
+    for path in paths:
+        if not _is_money_surface(path):
+            continue
+        surface = "/" + path.strip("/")
+        if surface in seen:
+            continue
+        seen.add(surface)
+        surfaces.append((surface, "POST"))
+    return surfaces
+
+
+def _fin_post(base: str, surface: str, payload: Dict) -> ProbeResult:
+    return http_probe(base + surface, method="POST", body=payload,
+                      headers={"Content-Type": "application/json"})
+
+
+def _fin_json(result: ProbeResult) -> Optional[Dict]:
+    try:
+        data = json.loads(result.body)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _fin_baseline(base: str, surface: str) -> Optional[Dict]:
+    """Canary baseline: one order with a known price, for the differential."""
+    result = _fin_post(base, surface, {"item_id": _CANARY, "quantity": 1,
+                                       "price": 100,
+                                       "currency": "USD"})
+    return _fin_json(result)
+
+
+def _fin_price_trust(base: str, surface: str, baseline: Optional[Dict]
+                     ) -> Tuple[bool, str]:
+    """FIN-PARAM-02: server recomputes the total from client price?"""
+    probe = _fin_post(base, surface, {"item_id": _CANARY, "quantity": 1,
+                                      "price": 0.01, "currency": "USD"})
+    data = _fin_json(probe)
+    if not probe.ok or data is None:
+        return False, ""
+    total = data.get("total")
+    unit = data.get("unit_price")
+    if total is not None and float(total) <= 1.0:
+        return True, f"total {total} accepted for a 100.00 item (client-trusted price)"
+    if unit is not None and float(unit) <= 1.0:
+        return True, f"unit_price {unit} echoed from client input"
+    return False, ""
+
+
+def _fin_quantity(base: str, surface: str, baseline: Optional[Dict]
+                  ) -> Tuple[bool, str]:
+    """FIN-PARAM-03 + FIN-NUM: quantity/negative-value mutations."""
+    for name, value in (("fin-num-negative", -1), ("fin-num-zero", 0),
+                        ("fin-num-exponential", "9e99"),
+                        ("fin-num-overflow", 2147483648)):
+        probe = _fin_post(base, surface, {"item_id": _CANARY,
+                                          "quantity": value, "price": 100,
+                                          "currency": "USD"})
+        data = _fin_json(probe)
+        if not probe.ok or data is None:
+            continue
+        total = data.get("total")
+        if total is None:
+            continue
+        try:
+            t = float(total)
+        except (TypeError, ValueError):
+            continue
+        if t <= 0 or t > 1e6:
+            return True, (f"quantity {name!r} -> total {t} "
+                          f"(numeric-language abuse accepted)")
+    return False, ""
+
+
+def _fin_toctou(base: str, surface: str, baseline: Optional[Dict]
+                ) -> Tuple[bool, str]:
+    """FIN-TOCTOU-01: confirm/payment stage re-accepting a changed price."""
+    first = _fin_post(base, surface, {"item_id": _CANARY, "quantity": 1,
+                                      "price": 100, "currency": "USD"})
+    order = _fin_json(first)
+    order_id = (order or {}).get("order_id")
+    if not order_id:
+        # No two-stage flow observable on this surface.
+        return False, ""
+    confirm_path = surface.rstrip("/") + "/confirm"
+    probe = _fin_post(base, confirm_path, {"order_id": order_id,
+                                           "price": 0.01})
+    data = _fin_json(probe)
+    if probe.ok and data and data.get("status") in ("paid", "completed",
+                                                    "confirmed"):
+        try:
+            if float(data.get("total", 0)) <= 1.0:
+                return True, (f"confirm on {order_id} re-accepted "
+                              f"price 0.01 (TOCTOU: state mutated after "
+                              f"payment stage)")
+        except (TypeError, ValueError):
+            return True, f"confirm on {order_id} accepted post-payment mutation"
+    return False, ""
+
+
+def _fin_replay(base: str, surface: str, baseline: Optional[Dict]
+                ) -> Tuple[bool, str]:
+    """FIN-REPLAY-01: identical payment callback accepted repeatedly."""
+    callback = surface.replace("checkout", "payment/callback") \
+        if "checkout" in surface else surface.rstrip("/") + "/callback"
+    payload = {"order_id": "ord-replay-1", "amount": 100,
+               "nonce": "fixed-nonce-1"}
+    first = _fin_post(base, callback, payload)
+    if not first.ok:
+        return False, ""
+    second = _fin_post(base, callback, payload)
+    third = _fin_post(base, callback, payload)
+    data = _fin_json(second)
+    if second.ok and third.ok and _fin_json(third):
+        return True, (f"identical callback acked {3 if data else 2}x "
+                      f"(no nonce/state rejection: FIN-REPLAY-01)")
+    return False, ""
+
+
+def _fin_voucher(base: str, surface: str, baseline: Optional[Dict]
+                 ) -> Tuple[bool, str]:
+    """FIN-VOUCHER-01: single-use code redeemable repeatedly."""
+    redeem = surface.replace("checkout", "voucher/redeem") \
+        if "checkout" in surface else surface.rstrip("/") + "/voucher"
+    payload = {"code": "BWV-TEST-CODE-1", "order_id": "ord-voucher-1"}
+    first = _fin_post(base, redeem, payload)
+    if not first.ok:
+        return False, ""
+    second = _fin_post(base, redeem, payload)
+    data = _fin_json(second)
+    if second.ok and data and data.get("applied") is not False:
+        return True, ("same voucher code applied twice "
+                      "(no single-use state: FIN-VOUCHER-01)")
+    return False, ""
+
+
+def _fin_rounding(base: str, surface: str, baseline: Optional[Dict]
+                  ) -> Tuple[bool, str]:
+    """FIN-ROUND-01: rounding drift in the requester's favor."""
+    withdraw = surface.replace("checkout", "withdraw") \
+        if "checkout" in surface else surface.rstrip("/") + "/withdraw"
+    results = [_fin_post(base, withdraw, {"amount": a, "currency": "USD"})
+               for a in (0.005, 10.005, 99.999)]
+    for amount, result in zip((0.005, 10.005, 99.999), results):
+        data = _fin_json(result)
+        if not result.ok or data is None:
+            continue
+        credited = data.get("credited")
+        if credited is None:
+            continue
+        try:
+            c = float(credited)
+        except (TypeError, ValueError):
+            continue
+        if c > amount + 1e-9:  # credited more than asked: drift in our favor
+            return True, (f"withdraw {amount} credited {c} "
+                          "(favorable rounding: FIN-ROUND-01)")
+    return False, ""
+
+
+def _fin_test_gateway(base: str, surface: str, baseline: Optional[Dict]
+                      ) -> Tuple[bool, str]:
+    """FIN-TESTDATA-01: payment_type forcing a test gateway in production."""
+    probe = _fin_post(base, surface, {"item_id": _CANARY, "quantity": 1,
+                                      "price": 100, "currency": "USD",
+                                      "payment_type": 99})
+    data = _fin_json(probe)
+    if probe.ok and data and str(data.get("gateway", "")).lower() == "test":
+        return True, "payment_type=99 switched the live order to the test gateway"
+    return False, ""
+
+
+def _fin_format_matrix(base: str, surface: str, baseline: Optional[Dict]
+                       ) -> Tuple[bool, str]:
+    """FIN-NUM-01..10 as one technique: the numeric format-mutation sweep."""
+    anomalies = _fin_num_sweep(base, surface, baseline)
+    return (bool(anomalies), "; ".join(anomalies))
+
+
+def _fin_currency(base: str, surface: str, baseline: Optional[Dict]
+                  ) -> Tuple[bool, str]:
+    """FIN-PARAM-02b + FIN-ARBITRAGE-01: currency/withdraw-currency drift."""
+    probe = _fin_post(base, surface, {"item_id": _CANARY, "quantity": 1,
+                                      "price": 100, "currency": "JPY",
+                                      "display_currency": "USD"})
+    data = _fin_json(probe)
+    if probe.ok and data:
+        cur = str(data.get("currency", "")).upper()
+        if cur in ("JPY", "") and data.get("total") == 100:
+            return True, ("multi-currency payload accepted; total unchanged "
+                          "across currency switch")
+    return False, ""
+
+
+# FIN technique -> prober.  Registry order = R2 exhaustion order; each prober
+# returns (success, differential detail).  Deterministic tier: zero model calls.
+FIN_TECHNIQUES: Dict[str, Callable[[str, str, Optional[Dict]], Tuple[bool, str]]] = {
+    "quantity-mutation": _fin_quantity,
+    "currency-arbitrage": _fin_currency,
+    "toctou-race": _fin_toctou,
+    "replay": _fin_replay,
+    "negative-values": _fin_quantity,
+    "rounding-abuse": _fin_rounding,
+    "voucher-stacking": _fin_voucher,
+    "price-trust": _fin_price_trust,
+    "test-gateway-forcing": _fin_test_gateway,
+    "format-mutation-matrix": _fin_format_matrix,
+}
+
+# technique -> the registry entry families it exercises (configs/fin_logic.json).
+FIN_TECHNIQUE_REGISTRY_PREFIX = {
+    "quantity-mutation": ("FIN-PARAM", "FIN-NUM"),
+    "currency-arbitrage": ("FIN-ARBITRAGE",),
+    "toctou-race": ("FIN-TOCTOU",),
+    "replay": ("FIN-REPLAY",),
+    "negative-values": ("FIN-NUM", "FIN-PARAM"),
+    "rounding-abuse": ("FIN-ROUND",),
+    "voucher-stacking": ("FIN-VOUCHER",),
+    "price-trust": ("FIN-PARAM",),
+    "test-gateway-forcing": ("FIN-TESTDATA",),
+    "format-mutation-matrix": ("FIN-NUM",),
+}
+
+# FIN technique set == TECHNIQUE_MATRIX["business_logic"] (asserted by tests)
+# so R2 exhaustion accounting aligns with the swarm key-for-key.
+
+
+def replay_fin_technique(base: str, surface: str,
+                         technique: str) -> Optional[bool]:
+    """Re-execute one named FIN technique (verify-lane F0.5)."""
+    fn = FIN_TECHNIQUES.get(technique)
+    if fn is None:
+        return None
+    baseline = _fin_baseline(base, surface)
+    try:
+        success, _detail = fn(base, surface, baseline)
+    except Exception:  # noqa: BLE001 - replay failure is a refutation
+        return False
+    return bool(success)
+
+
+def _probe_fin_matrix(base: str, paths: List[str],
+                      *, pass_at_k: int = 6) -> List[Dict]:
+    """Business-logic family: FIN matrix over discovered money surfaces.
+
+    Plan S5 enforcement: money-flow surfaces auto-instantiate the FIN matrix;
+    FIN-NUM and rounding run in the deterministic tier at zero token cost.
+    One signal per surface carries the full attempt matrix (R2 accounting) +
+    winners; every dispatch is a differential against the canary baseline.
+    Each money surface is one work unit under the plan's nested budget.
+    """
+    registry_ids = {e.get("id") for e in fin_registry_entries()
+                    if isinstance(e, dict) and e.get("id")}
+    signals: List[Dict] = []
+    for surface, method in discover_money_surfaces(base, paths):
+        baseline = _fin_baseline(base, surface)
+        # Each money surface is one work unit (plan's nested budget: a work
+        # unit may be smaller than an endpoint; the FIN matrix is mandated,
+        # so techniques are never silently skipped to save traffic).
+        # Techniques sharing a prober (quantity-mutation / negative-values)
+        # dispatch ONCE and record under both names.
+        unique_fns: Dict[int, str] = {}
+        for name, fn in FIN_TECHNIQUES.items():
+            unique_fns.setdefault(id(fn), name)
+        workers = max(1, min(int(pass_at_k or 1), len(unique_fns)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(fn, base, surface, baseline): fn
+                       for fn in {fn for fn in FIN_TECHNIQUES.values()}}
+            raw_by_fn: Dict[int, Tuple[bool, str]] = {}
+            for future in as_completed(futures):
+                fn = futures[future]
+                try:
+                    raw_by_fn[id(fn)] = future.result()
+                except Exception as exc:  # noqa: BLE001 - failure is data
+                    raw_by_fn[id(fn)] = (False, f"{type(exc).__name__}: {exc}")
+        raw: Dict[str, Tuple[bool, str]] = {
+            name: raw_by_fn.get(id(fn), (False, "probe missing"))
+            for name, fn in FIN_TECHNIQUES.items()}
+
+        attempts: List[Dict] = []
+        winners: List[str] = []
+        for name in FIN_TECHNIQUES:
+            success, detail = raw.get(name, (False, ""))
+            attempts.append({
+                "technique": name,
+                "outcome": "success" if success else "tried",
+                "detail": detail[:400],
+                "registry_ids": sorted(
+                    rid for prefix in FIN_TECHNIQUE_REGISTRY_PREFIX.get(name, ())
+                    for rid in registry_ids if rid and rid.startswith(prefix)),
+            })
+            if success:
+                winners.append(name)
+
+        if not winners:
+            continue  # clean surface: nothing to open (negative evidence)
+        signals.append({
+            "signal": "differential",
+            "detail": (f"{surface}: FIN matrix "
+                       f"{len(winners)}/{len(attempts)} techniques confirmed "
+                       f"({', '.join(winners[:3])})"),
+            "evidence": "",
+            "path": surface,
+            "method": method,
+            "attempts": attempts,
+            "winning_technique": winners[0],
+            "fin_winners": winners,
+        })
+    return signals
+
+
+# High-signal subset of FIN_NUM_MUTATIONS for live work units: the plan's
+# nested budget caps a work unit at ~25 traffic-producing tests, and the FIN
+# matrix (9 techniques + baseline) already spends 10.  The FULL 13-encoding x
+# money-field matrix runs in the benchmark/regression context (zero budget).
+FIN_NUM_LIVE_MUTATIONS = (
+    "fin-num-negative", "fin-num-zero", "fin-num-overflow",
+    "fin-num-exponential", "fin-num-nan", "fin-num-currency-symbol",
+)
+
+
+def _echo_is_anomalous(echoed: Any, baseline_total: Any) -> bool:
+    """Numeric-language anomaly: the echo reflects the abuse we sent.
+
+    Non-positive totals, NaN/Infinity echoes, order-of-magnitude drift from
+    the canary baseline, or a non-numeric echo of a numeric field.
+    """
+    if isinstance(echoed, bool):
+        return False
+    if isinstance(echoed, (int, float)):
+        f = float(echoed)
+        if f != f or f in (float("inf"), float("-inf")):  # NaN / Inf echoed
+            return True
+        if f <= 0:
+            return True
+        try:
+            b = float(baseline_total)
+        except (TypeError, ValueError):
+            return False
+        return f > b * 10 or f < b / 10
+    text = str(echoed).strip().lower()
+    return text in ("nan", "infinity", "-infinity", "inf", "-inf")
+
+
+def _fin_num_sweep(base: str, surface: str, baseline: Optional[Dict],
+                   *, full: bool = False) -> List[str]:
+    """FIN-NUM-01..10: same semantic value, N encodings, to money fields.
+
+    An anomaly is a DIFFERENTIAL: the response reflects the mutated value
+    (echoed total/credited/unit_price) in a way the canary baseline does not.
+    ``full=True`` runs every encoding x money field (regression/benchmark
+    context); the default live subset respects the work-unit traffic budget.
+    """
+    anomalies: List[str] = []
+    base_total = (baseline or {}).get("total")
+    fields = ("price", "quantity", "amount", "total") if full \
+        else ("price", "quantity")
+    mutations = FIN_NUM_MUTATIONS if full else \
+        tuple(m for m in FIN_NUM_MUTATIONS
+              if m[0] in FIN_NUM_LIVE_MUTATIONS)
+    for field in fields:
+        for name, value in mutations:
+            payload = {"item_id": _CANARY, "quantity": 1, "price": 100,
+                       "currency": "USD"}
+            payload[field] = value
+            probe = _fin_post(base, surface, payload)
+            if not probe.ok:
+                continue  # rejected: the numeric language held
+            data = _fin_json(probe)
+            if not data:
+                continue
+            echoed = data.get("total", data.get("credited",
+                                                data.get("unit_price")))
+            if echoed is None:
+                continue
+            if _echo_is_anomalous(echoed, base_total):
+                anomalies.append(f"{field}={name!r} -> echoed {echoed!r}")
+    return anomalies
+
+
 LANE_FAMILIES = (
-    (_probe_direct_object_reference, "access_control", "direct-attempt"),
+    (_probe_bola_swarm, "access_control", "direct-object-reference"),
     (_probe_waf_bypass, "waf_bypass", "header-original-url"),
+    (_probe_fin_matrix, "business_logic", "quantity-mutation"),
     (_probe_fuzz_batch, "fuzzing", "boundary-length"),
     (_probe_graphql_introspection, "generic", "parameter-mutation"),
 )
@@ -386,8 +1056,9 @@ class MissionRunner:
         self.mission = mission
         self.project_root = project_root
         self.base_url = base_url.rstrip("/")
-        self.paths = paths or ["/api/users/1", "/api/users/2", "/api/gateway",
-                               "/api/ingest", "/graphql"]
+        # Real-world plugin: the operator declares the surfaces (CLI --paths,
+        # mission intake, or recon output).  No shipped target defaults.
+        self.paths = list(paths or [])
         self.scheduler = Scheduler(mission, project_root=project_root)
         self.leads = LeadStore(mission.mission_id,
                                project_root=project_root).load()
@@ -468,15 +1139,17 @@ class MissionRunner:
                 lead_ids.append(lead.lead_id)
                 attempts = sig.get("attempts") or []
                 if attempts:
-                    # R3 depth: every matrix attempt recorded on the lead.
+                    # R3 depth: every matrix attempt recorded on the lead
+                    # (registry IDs preserved for report citations).
                     for att in attempts:
                         self.leads.record_technique(
                             lead.lead_id, att["technique"], att["outcome"],
-                            detail=att.get("detail", ""))
+                            detail=att.get("detail", ""),
+                            registry_ids=att.get("registry_ids"))
                     if sig.get("winning_technique"):
                         self.leads.escalate(
                             lead.lead_id, TIER_T1,
-                            reason=f"pass@k swarm bypassed via "
+                            reason=f"pass@k swarm confirmed via "
                                    f"{sig['winning_technique']}")
                 else:
                     # T0 attempt for this family's own technique.
@@ -568,6 +1241,13 @@ class MissionRunner:
             sep = "&" if "?" in lead.surface else "?"
             probe = http_probe(f"{self.base_url}{lead.surface}{sep}q={'A' * 65}")
             return probe.status >= 500
+        if lead.bug_class == "business_logic":
+            # F0.5 replay: re-execute the recorded winning FIN technique.
+            winner = next((e["technique"] for e in reversed(lead.technique_log)
+                           if e.get("outcome") == "success"), "")
+            if not winner:
+                return None  # no confirmed technique yet: undecidable
+            return replay_fin_technique(self.base_url, lead.surface, winner)
         return None  # generic leads need reasoning tiers (Phase 6)
 
     def _run_report_lane(self) -> Dict[str, Any]:
