@@ -93,6 +93,7 @@ ARTIFACT_KINDS = (ARTIFACT_TOOL, ARTIFACT_AGENT, ARTIFACT_RESEARCH, ARTIFACT_PRE
 TASK_DOMAINS = (
     "web_api", "web", "auth", "business_logic", "smart_contract", "cloud_cicd",
     "llm_ai", "mobile", "recon", "fuzz", "verify", "chain", "report", "triage",
+    "preflight",
 )
 
 # Task-graph node kinds

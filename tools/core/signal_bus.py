@@ -66,12 +66,31 @@ CHAIN_PROPOSAL = "CHAIN_PROPOSAL"
 EVAL_COMPLETE = "EVAL_COMPLETE"
 GRAPHQL_CANDIDATE = "GRAPHQL_CANDIDATE"
 
+# Orchestrator events (plan v2 section 4.2 - canonical list, do not extend
+# ad hoc: mission/task-graph, artifacts/reports, leads, pre-flight, OAST).
+PREFLIGHT_COMPLETE = "PREFLIGHT_COMPLETE"
+MCP_CONNECTION_CHANGED = "MCP_CONNECTION_CHANGED"
+MISSION_CREATED = "MISSION_CREATED"
+TASK_PLANNED = "TASK_PLANNED"
+TASK_STARTED = "TASK_STARTED"
+TASK_COMPLETED = "TASK_COMPLETED"
+ARTIFACT_PRODUCED = "ARTIFACT_PRODUCED"
+REPORT_READY = "REPORT_READY"
+LEAD_OPENED = "LEAD_OPENED"
+LEAD_ESCALATED = "LEAD_ESCALATED"
+LEAD_TERMINAL = "LEAD_TERMINAL"
+OAST_CALLBACK = "OAST_CALLBACK"
+
 EVENT_TYPES = (
     RECON_COMPLETE, FINDING_DISCOVERED, WAF_BLOCKED, STAGE_ADVANCED,
     SMUGGLING_CANDIDATE, AUTH_CANDIDATE, DISCOVERY_COMPLETE,
     RESEARCH_REFRESHED, CLOUD_CANDIDATE, MOBILE_CANDIDATE, ASSET_DELTA,
     LLM_CANDIDATE, LAB_PLANNED, CHAIN_PROPOSAL, EVAL_COMPLETE,
     GRAPHQL_CANDIDATE,
+    PREFLIGHT_COMPLETE, MCP_CONNECTION_CHANGED,
+    MISSION_CREATED, TASK_PLANNED, TASK_STARTED, TASK_COMPLETED,
+    ARTIFACT_PRODUCED, REPORT_READY,
+    LEAD_OPENED, LEAD_ESCALATED, LEAD_TERMINAL, OAST_CALLBACK,
 )
 
 # Which tools are the canonical subscribers for each event (documentation /
@@ -94,6 +113,18 @@ CANONICAL_LISTENERS: Dict[str, List[str]] = {
     EVAL_COMPLETE: ["campaign_orchestrator", "stage_controller"],
     DISCOVERY_COMPLETE: ["campaign_orchestrator"],
     RESEARCH_REFRESHED: ["stage_controller", "campaign_orchestrator"],
+    PREFLIGHT_COMPLETE: ["campaign_orchestrator", "discovery_scheduler"],
+    MCP_CONNECTION_CHANGED: ["discovery_scheduler", "triage"],
+    MISSION_CREATED: ["campaign_orchestrator"],
+    TASK_PLANNED: ["discovery_scheduler"],
+    TASK_STARTED: ["stage_controller"],
+    TASK_COMPLETED: ["discovery_scheduler", "triage"],
+    ARTIFACT_PRODUCED: ["triage"],
+    REPORT_READY: ["campaign_orchestrator"],
+    LEAD_OPENED: ["discovery_scheduler", "triage"],
+    LEAD_ESCALATED: ["discovery_scheduler"],
+    LEAD_TERMINAL: ["triage", "failure_learning"],
+    OAST_CALLBACK: ["triage"],
 }
 
 
