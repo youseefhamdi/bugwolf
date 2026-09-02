@@ -26,8 +26,11 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field, asdict
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Tier names (stable identifiers for unit context and tests).
@@ -86,6 +89,7 @@ class RoutingDecision:
     complexity: float
     rationale: str
     fallback: str = ""
+    fallback_preference: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -127,9 +131,111 @@ def classify(complexity: float) -> str:
 
 
 def _preference(tier: str) -> str:
-    return {TIER_DETERMINISTIC: MODEL_NONE,
-            TIER_LOCAL: MODEL_SLM,
-            TIER_FRONTIER: MODEL_FRONTIER}[tier]
+    cfg = _load_config()
+    return cfg["prefs"].get(tier) or _DEFAULT_PREFERENCES[tier]
+
+
+def _fallback_preference(tier: str) -> str:
+    """Preference string to run with when the preferred tier is unavailable."""
+    cfg = _load_config()
+    return cfg["fallbacks"].get(tier) or _DEFAULT_FALLBACK_PREFERENCES[tier]
+
+
+# ---------------------------------------------------------------------------
+# Config-backed tier mapping (orchestrator plan lever P1)
+# ---------------------------------------------------------------------------
+# configs/models.json maps each complexity tier to a model *preference*
+# string the harness resolves.  Loading is fail-open: a missing, unreadable,
+# or malformed manifest silently falls back to the shipped defaults, and an
+# unavailable model always degrades per tier -- routing can never gate.
+
+_DEFAULT_PREFERENCES: Dict[str, str] = {
+    TIER_DETERMINISTIC: MODEL_NONE,
+    TIER_LOCAL: MODEL_SLM,
+    TIER_FRONTIER: MODEL_FRONTIER,
+}
+
+_DEFAULT_FALLBACK_PREFERENCES: Dict[str, str] = {
+    TIER_DETERMINISTIC: MODEL_NONE,
+    TIER_LOCAL: MODEL_NONE,
+    TIER_FRONTIER: MODEL_SLM,
+}
+
+_CONFIG_CACHE: Dict[str, Any] = {"key": None}
+
+
+def _config_candidates() -> List[Path]:
+    paths: List[Path] = []
+    try:
+        from tools.runtime_paths import workspace_root  # type: ignore
+        paths.append(Path(workspace_root()) / "configs" / "models.json")
+    except Exception:
+        pass  # bundled/installed contexts: fall through to the code root
+    paths.append(Path(__file__).resolve().parent.parent.parent / "configs" / "models.json")
+    return paths
+
+
+def _load_config() -> Dict[str, Any]:
+    """Load configs/models.json (fail-open), cached by path/mtime/size.
+
+    First existing candidate wins (workspace override, then code root),
+    matching the readiness/benchmark manifest precedence.
+    """
+    found_key = None
+    found_path: Optional[Path] = None
+    for path in _config_candidates():
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        found_key = (str(path), stat.st_mtime_ns, stat.st_size)
+        found_path = path
+        break
+    if found_path is None or found_key is None:
+        return {"prefs": {}, "fallbacks": {}, "path": None, "sha256": ""}
+    if _CONFIG_CACHE["key"] == found_key:
+        return _CONFIG_CACHE
+    try:
+        raw = found_path.read_bytes()
+        sha = hashlib.sha256(raw).hexdigest()
+        manifest = json.loads(raw.decode("utf-8"))
+        tiers = manifest.get("tiers") if isinstance(manifest, dict) else None
+    except (OSError, UnicodeDecodeError, ValueError):
+        return {"prefs": {}, "fallbacks": {}, "path": str(found_path), "sha256": ""}
+    prefs: Dict[str, str] = {}
+    fallbacks: Dict[str, str] = {}
+    if isinstance(tiers, dict):
+        for tier in (TIER_DETERMINISTIC, TIER_LOCAL, TIER_FRONTIER):
+            spec = tiers.get(tier)
+            if not isinstance(spec, dict):
+                continue
+            pref = str(spec.get("model_preference") or "").strip()
+            fb = str(spec.get("fallback_preference") or "").strip()
+            if pref:
+                prefs[tier] = pref
+            if fb:
+                fallbacks[tier] = fb
+    result = {"prefs": prefs, "fallbacks": fallbacks,
+              "path": str(found_path), "sha256": sha}
+    _CONFIG_CACHE.clear()
+    _CONFIG_CACHE.update({"key": found_key, **result})
+    return result
+
+
+def config_status() -> Dict[str, Any]:
+    """Provenance report for the active tier->model mapping (never raises)."""
+    cfg = _load_config()
+    tiers = (TIER_DETERMINISTIC, TIER_LOCAL, TIER_FRONTIER)
+    return {
+        "config_loaded": cfg["path"] is not None and bool(cfg["prefs"]),
+        "config_path": cfg["path"],
+        "config_sha256": cfg["sha256"],
+        "preferences": {tier: _preference(tier) for tier in tiers},
+        "fallback_preferences": {tier: _fallback_preference(tier) for tier in tiers},
+        "defaults_used": not bool(cfg["prefs"]),
+    }
 
 
 def _fallback_for(tier: str) -> str:
@@ -161,6 +267,7 @@ def route(objective: str, *, bug_class: str = "", task_id: str = "task",
         rationale=(f"complexity {complexity:.3f} -> {tier} "
                    f"(bug_class={bug_class or 'none'})"),
         fallback=_fallback_for(tier),
+        fallback_preference=_fallback_preference(tier),
     )
 
 
@@ -194,6 +301,7 @@ def attach_hint(unit: Dict[str, Any]) -> Dict[str, Any]:
     context["model_preference"] = decision.model_preference
     context["model_tier"] = decision.tier
     context["model_fallback"] = decision.fallback
+    context["model_fallback_preference"] = decision.fallback_preference
     context["model_routing"] = decision.to_dict()
     return unit
 

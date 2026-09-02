@@ -1,0 +1,40 @@
+{
+  "schema": "bugwolf-models/v1",
+  "version": 1,
+  "updated": "2026-09-02",
+  "description": "Tier-to-model-profile mapping for BugWolf's advisory model router (U5 / orchestrator plan lever P1). model_preference and fallback_preference are stable identifier strings the harness resolves to concrete models; candidates are advisory family-level suggestions, never requirements. The router never gates execution: any unavailable tier degrades per fallback_preference, and a missing or malformed manifest silently falls back to the built-in defaults in tools/core/model_router.py.",
+  "tiers": {
+    "deterministic": {
+      "model_preference": "none",
+      "fallback_preference": "none",
+      "candidates": [],
+      "notes": "Executed by BugWolf's deterministic core (wordlists, payload rendering, artifact verification, fingerprint parsing, plan generation); no model call is warranted."
+    },
+    "local_slm": {
+      "model_preference": "slm-fast",
+      "fallback_preference": "none",
+      "candidates": [
+        "qwen-coder",
+        "deepseek-distill",
+        "glm-air"
+      ],
+      "notes": "Bounded probing/fuzzing decisions where a small fast model suffices; family-level names only -- the harness pins exact versions and checks health at dispatch time. Degrades to the deterministic core when no local model is available."
+    },
+    "frontier": {
+      "model_preference": "frontier-reasoning",
+      "fallback_preference": "slm-fast",
+      "candidates": [
+        "claude-opus",
+        "gpt-5",
+        "glm-5",
+        "gemini-pro"
+      ],
+      "notes": "Open-ended reasoning (chain synthesis, adversarial refutation, exploit construction, novel hypotheses); degrades to local_slm when a frontier model is unavailable."
+    }
+  },
+  "provenance": {
+    "source": "BUGWOLF_ORCHESTRATOR_PLAN_V2.md section 5 lever P1 (configs/models.json mapping)",
+    "baseline": "hardcoded defaults in tools/core/model_router.py at v1.2.11 (preference strings preserved byte-for-byte)",
+    "review": "operator-overridable; the harness resolves preference strings to concrete endpoints; loader exposes a content digest via tools.core.model_router.config_status()"
+  }
+}
