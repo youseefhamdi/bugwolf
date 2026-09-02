@@ -124,6 +124,7 @@ class OrchestratorContext:
     pending_decisions: List[Dict[str, Any]] = field(default_factory=list)
     workflow: Dict[str, Any] = field(default_factory=dict)
     research: Dict[str, Any] = field(default_factory=dict)
+    preflight: Dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +149,10 @@ class CampaignOrchestrator:
         self.llm_advisor = llm_advisor
         self.pass_at_k = max(1, int(pass_at_k or 1))
         self.campaign = CampaignManager(target)
+        # Freshness marker BEFORE any component (AssetDiscoveryEngine et al.)
+        # creates campaign.json: True means a campaign file already existed,
+        # i.e. this orchestrator is resuming, not starting a new mission.
+        self._campaign_preexisting = self.campaign.campaign_path.exists()
         self.discovery = AssetDiscoveryEngine(target)
         self.threads = ThreadBuilder(target, pass_at_k=self.pass_at_k)
         self.workflow = WorkflowController(target, mode=self.mode)
@@ -166,6 +171,43 @@ class CampaignOrchestrator:
                     self.target, project_root=str(self.project)))
         except Exception:
             self._signal_bus = None  # advisory — never gates the campaign
+        # Mandatory pre-flight (plan v2 section 4.5): capability discovery
+        # runs once per orchestrator (lazy) and is fail-open — a failure is
+        # recorded, never a gate.
+        self._preflight: Optional[Dict[str, Any]] = None
+
+    # -- Pre-flight (plan v2 section 4.5) ----------------------------------
+
+    def ensure_preflight(self, *, probe_binaries: bool = True,
+                         force: bool = False) -> Optional[Dict[str, Any]]:
+        """Run the mandatory pre-flight once per orchestrator (fail-open).
+
+        PF1/PF2 capability discovery + PF3 memory: the manifest digest is
+        attached to the campaign context and every research unit so no lane
+        has to rediscover the machine's capabilities.  Records capability --
+        it does not restrict it: a failed check marks dependent work
+        BLOCKED/DEGRADED in the manifest and lets the scheduler/lane decide.
+        """
+        if self._preflight is not None and not force:
+            return self._preflight
+        try:
+            from tools.runtime.preflight import run_preflight
+            self._preflight = run_preflight(
+                self.target, project_root=str(self.project),
+                probe_binaries=probe_binaries)
+            self.campaign.log_event("preflight_complete", {
+                "sha256": self._preflight.get("sha256", ""),
+                "summary": self._preflight.get("summary", {}),
+                "digest": self._preflight.get("digest", ""),
+            })
+        except Exception as exc:  # noqa: BLE001 — advisory, never gates
+            logger.info("preflight unavailable (fail-open): %s", exc)
+            self._preflight = None
+        return self._preflight
+
+    def preflight_digest(self) -> str:
+        manifest = self.ensure_preflight()
+        return str(manifest.get("digest") or "") if manifest else ""
 
     # -- Workflow passthroughs ---------------------------------------------
 
@@ -257,6 +299,11 @@ class CampaignOrchestrator:
             # restored contract — rebuild it deterministically.
             self.workflow.initialize(force=True)
         self._auto_advance_workflow()
+        # Freshness must come from the __init__ disk marker, not from
+        # state.status: this method itself saves status INITIALIZING, so a
+        # status check alone would re-announce MISSION_CREATED on every
+        # resume, and campaign.json exists by initialize() time regardless.
+        fresh_start = not getattr(self, "_campaign_preexisting", False)
         state = self.campaign.initialize(
             budget_hours=self.budget_hours,
             max_concurrent_threads=self.max_concurrent_threads,
@@ -265,6 +312,22 @@ class CampaignOrchestrator:
             state.status = CampaignPhase.INITIALIZING
             state.phase = "Campaign initialized. Ready for asset discovery."
             self.campaign.save(state)
+            if fresh_start:
+                # Section 4.2: a fresh mission start is announced once.
+                try:
+                    bus = getattr(self, "_signal_bus", None)
+                    if bus is not None:
+                        bus.publish("MISSION_CREATED", "campaign_orchestrator",
+                                    {"target": self.target,
+                                     "modes": list(self.modes)})
+                except Exception:  # noqa: BLE001 — advisory
+                    pass
+                # Once per mission: re-initialize on this instance (or a new
+                # instance for the same target) is a resume, not a new start.
+                self._campaign_preexisting = True
+        # Mandatory pre-flight before any mission work (section 4.5 order
+        # rule).  Fail-open: recorded in the context, never a gate.
+        self.ensure_preflight()
         return state
 
     def get_context(self) -> OrchestratorContext:
@@ -291,6 +354,7 @@ class CampaignOrchestrator:
             pending_decisions=resume.pending_decisions if resume else [],
             workflow=self.workflow_status(),
             research=self._research_report(),
+            preflight=(self.ensure_preflight(probe_binaries=False) or {}),
         )
 
     def _derive_phase(self, state: CampaignState) -> str:
@@ -474,6 +538,13 @@ class CampaignOrchestrator:
         attach_deterministic_artifacts(
             unit, self.target, project_root=str(self.project),
             bug_class=bug_class)
+        # PF3 memory: every unit carries the pre-flight digest so no lane
+        # ever has to rediscover (or "remember") machine capabilities.
+        context = unit.setdefault("context", {})
+        if isinstance(context, dict):
+            digest = self.preflight_digest()
+            if digest:
+                context["preflight_digest"] = digest
         try:
             from tools.core.model_router import attach_hint
             attach_hint(unit)
