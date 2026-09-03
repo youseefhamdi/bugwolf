@@ -227,6 +227,10 @@ class TestAuthLaneEndToEnd(unittest.TestCase):
 
 class TestRaceEngineSafety(unittest.TestCase):
     def test_invalid_url_rejected_cleanly(self):
+        from tools.runtime import scope
+        scope.reset()
+        scope.check_url("http://x.local/")   # bind so the gate passes x.local
+        self.addCleanup(scope.reset)
         result = run_race(RaceRequest(url="ftp://x/y", count=2))
         self.assertEqual(result.statuses, [0, 0])
         self.assertIn("http(s)", result.error or "")

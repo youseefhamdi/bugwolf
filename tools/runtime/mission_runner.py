@@ -93,6 +93,15 @@ class ProbeResult:
 def http_probe(url: str, *, method: str = "GET", body: Optional[Dict] = None,
                headers: Optional[Dict[str, str]] = None,
                timeout: float = 8.0) -> ProbeResult:
+    # Execution-boundary scope gate (plan section 2.4; readiness R1 fix):
+    # EVERY HTTP lane shares this choke point.  An out-of-scope URL --
+    # including an SSRF payload the target could never make us send -- fails
+    # closed here as a status-0 probe; the differential records the block.
+    from tools.runtime.scope import ScopeViolation, check_url
+    try:
+        check_url(url)
+    except ScopeViolation as exc:
+        return ProbeResult(0, f"scope-blocked: {exc}", 0)
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("User-Agent", UA)
@@ -2213,19 +2222,39 @@ AUTH_FAMILY = ("auth_bypass", "direct-access")
 # ---------------------------------------------------------------------------
 
 
+def _load_extra_scope_hosts(project_root: Optional[str]) -> List[str]:
+    """Operator scope file at the workspace root (optional, conventional):
+    ``scope.txt`` beside the project -- one authorized host per line."""
+    if not project_root:
+        return []
+    from tools.runtime.scope import load_scope_file
+    return load_scope_file(str(Path(project_root) / "scope.txt"))
+
+
+def _gate_state_safe() -> Dict[str, Any]:
+    from tools.runtime.scope import gate_state
+    try:
+        return gate_state()
+    except Exception:  # noqa: BLE001 - logging must never gate the run
+        return {}
+
+
 class MissionRunner:
     """Drive one MissionSpec through scheduler + lanes + lead protocol."""
 
     def __init__(self, mission: MissionSpec, *, project_root: Optional[str] = None,
                  base_url: str = "", paths: Optional[List[str]] = None,
                  browser_driver: Optional[Any] = None,
-                 oast_enabled: bool = False):
+                 oast_enabled: bool = False,
+                 scope_hosts: Optional[List[str]] = None):
         self.mission = mission
         self.project_root = project_root
-        self.base_url = base_url.rstrip("/")
+        self.base_url = (base_url or getattr(mission, "target", "") or "").rstrip("/")
         # Real-world plugin: the operator declares the surfaces (CLI --paths,
         # mission intake, or recon output).  No shipped target defaults.
         self.paths = list(paths or [])
+        # Operator-declared extra authorized hosts (CLI --scope / scope.txt).
+        self.scope_hosts = list(scope_hosts or [])
         self.scheduler = Scheduler(mission, project_root=project_root)
         self.leads = LeadStore(mission.mission_id,
                                project_root=project_root).load()
@@ -2268,6 +2297,13 @@ class MissionRunner:
     def run(self) -> Dict[str, Any]:
         """Execute the full mission; returns the mission report."""
         started = time.time()
+        # 0. Execution-boundary authorization (readiness R1 fix): bind the
+        # scope gate EXPLICITLY before any dispatch.  From here, every
+        # outbound request through http_probe is checked against the
+        # operator-declared target + optional scope file.
+        from tools.runtime.scope import bind_target
+        bind_target(self.base_url, self.scope_hosts)
+        self._log("scope_bound", {"gate": _gate_state_safe()})
         # 1. Plan (creates the preflight gate + lane roots).
         self.scheduler.plan_mission()
         self._log("planned", {"nodes": len(self.scheduler._nodes)})
@@ -2513,7 +2549,16 @@ class MissionRunner:
             else:
                 # No driver, driver failure, or inconclusive: blocked-browser
                 # semantics -- the lead stays open and re-dispatches later.
+                # A scope-block is NOT blocked-browser: it is a policy fact.
                 blocker = evidence.blocker or "no browser driver bound"
+                if blocker.startswith("scope-blocked"):
+                    blocked.append(lead.lead_id)
+                    self.leads.record_technique(
+                        lead.lead_id, "scope-blocked", "blocked",
+                        detail=blocker)
+                    self._log("scope_violation", {"lead_id": lead.lead_id,
+                                                  "blocker": blocker})
+                    continue
                 blocked.append(lead.lead_id)
                 self.leads.record_technique(
                     lead.lead_id, "blocked-browser", "blocked",
@@ -2795,6 +2840,10 @@ def main() -> int:
                         help="operator account matrix JSON file "
                              "([{label: A|B|C, username, password, "
                              "login_path | token, identifiers, headers}])")
+    parser.add_argument("--scope", default="",
+                        help="operator scope file: one authorized host per "
+                             "line (# comments).  Deny-by-default; the target "
+                             "host is always authorized.")
     parser.add_argument("--report", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -2808,6 +2857,13 @@ def main() -> int:
                 print("--accounts file must be a JSON list; ignoring")
         except (OSError, ValueError) as exc:
             print(f"--accounts file unreadable ({exc}); continuing anon-only")
+    scope_hosts: List[str] = []
+    if args.scope:
+        from tools.runtime.scope import load_scope_file
+        scope_hosts = load_scope_file(args.scope)
+        if not scope_hosts:
+            print(f"--scope file {args.scope!r} parsed empty; "
+                  f"target-only scope stays in force")
     mission = MissionSpec(
         mission_id=args.mission_id, target=args.target,
         domains=[d.strip() for d in args.domains.split(",") if d.strip()],
@@ -2816,7 +2872,8 @@ def main() -> int:
         accounts=accounts,
     )
     runner = MissionRunner(mission, base_url=args.target,
-                           paths=[p for p in args.paths.split(",") if p])
+                           paths=[p for p in args.paths.split(",") if p],
+                           scope_hosts=scope_hosts)
     report = runner.run()
     if args.json:
         print(json.dumps(report, indent=2, default=str))

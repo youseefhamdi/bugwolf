@@ -72,6 +72,101 @@ def _root(explicit: Optional[str] = None) -> Path:
     return workspace_root(explicit) if explicit else CODE_ROOT
 
 
+# ---------------------------------------------------------------------------
+# Functional verification of the execution-boundary controls (honesty rule:
+# a claimed control must prove itself, offline, before the flag counts)
+# ---------------------------------------------------------------------------
+
+_AUDIT_ALLOWED = "https://boundary-audit.invalid"
+_AUDIT_BLOCKED = "http://boundary-audit-evil.invalid/x"
+
+
+def _verify_scope_gate() -> tuple:
+    """Functionally prove the scope gate blocks out-of-scope traffic at the
+    shared HTTP choke point -- no network: the check fires before I/O."""
+    try:
+        from tools.runtime import scope
+        from tools.runtime.mission_runner import http_probe
+        scope.reset()
+        scope.bind_target(_AUDIT_ALLOWED)
+        result = http_probe(_AUDIT_BLOCKED)
+        if result.status == 0 and "scope-blocked" in result.body:
+            return True, "http_probe blocked out-of-scope URL (status 0)"
+        return False, f"http_probe did not block: status={result.status}"
+    except Exception as exc:  # noqa: BLE001 - verification failure is data
+        return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        try:
+            from tools.runtime import scope
+            scope.reset()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _verify_ssrf_choke_points() -> tuple:
+    """Prove every network capability obeys the gate: raw-socket race
+    engine, live executor, and the injected browser driver."""
+    details = []
+    try:
+        from tools.runtime import scope
+        scope.reset()
+        scope.bind_target(_AUDIT_ALLOWED)
+
+        from tools.validation.race_engine import RaceRequest, run_race
+        race = run_race(RaceRequest(url=_AUDIT_BLOCKED, count=2))
+        if not (race.attempted == 2 and race.window_ms == 0
+                and race.statuses == [0, 0]
+                and "scope-blocked" in (race.error or "")):
+            return False, ("race engine did not block: "
+                           f"statuses={race.statuses} error={race.error!r}")
+        details.append("race")
+
+        from tools.core.live_executor import ProbeSpec, _send_once
+        status, _headers, body, _ms = _send_once(
+            ProbeSpec(probe_id="boundary-audit", method="GET",
+                      url=_AUDIT_BLOCKED),
+            timeout=5, urlopen=_NeverOpen)
+        if not (status == 0 and "scope-blocked" in body):
+            return False, f"live executor did not block: status={status}"
+        details.append("live_executor")
+
+        from tools.runtime.browser_driver import validate_client_side
+        evidence = validate_client_side({"url": _AUDIT_BLOCKED,
+                                         "lead_id": "boundary-audit"},
+                                        driver=_NullDriver())
+        if not str(evidence.blocker or "").startswith("scope-blocked"):
+            return False, "browser driver path did not block"
+        details.append("browser_driver")
+
+        return True, "blocked at: " + ", ".join(details)
+    except Exception as exc:  # noqa: BLE001 - verification failure is data
+        return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        try:
+            from tools.runtime import scope
+            scope.reset()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class _NullDriver:
+    """Must never be reached when the scope gate fires first."""
+
+    def navigate(self, url: str) -> str:  # pragma: no cover - guard
+        raise AssertionError("driver reached despite scope block")
+
+    def console(self):  # pragma: no cover - guard
+        return []
+
+    def evaluate(self, _sink):  # pragma: no cover - guard
+        return None
+
+
+def _NeverOpen(*_args, **_kwargs):  # pragma: no cover - guard
+    """Must never be reached when the scope gate fires first."""
+    raise AssertionError("urlopen reached despite scope block")
+
+
 def load_manifest(root: Optional[str] = None) -> Dict[str, Any]:
     path = _root(root) / "configs" / "readiness.json"
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -219,8 +314,19 @@ def validate_manifest(manifest: Dict[str, Any], *, root: Optional[str] = None) -
                 errors.append(f"global control {phase_control!r} must be configured")
         if controls.get("authorization_enforced_at_execution_boundary") is not True:
             warnings.append("authorization is not yet enforced at the execution boundary")
+        else:
+            ok, detail = _verify_scope_gate()
+            if not ok:
+                errors.append(
+                    "authorization_enforced_at_execution_boundary claim is "
+                    f"not verifiable: {detail}")
         if controls.get("ssrf_protection_complete") is not True:
             warnings.append("complete SSRF protection is not yet available")
+        else:
+            ok, detail = _verify_ssrf_choke_points()
+            if not ok:
+                errors.append(
+                    f"ssrf_protection_complete claim is not verifiable: {detail}")
         if controls.get("subprocess_sandbox_required") is not True:
             warnings.append("subprocess sandbox is not yet required")
 

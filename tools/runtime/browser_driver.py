@@ -116,6 +116,15 @@ def validate_client_side(candidate: Dict[str, Any], driver: BrowserDriver,
     evidence = ClientSideEvidence(url=url)
     sink = str(candidate.get("dom_sink") or "")
 
+    # Execution-boundary scope gate: an injected driver is a network
+    # capability like any other -- its navigation obeys operator scope.
+    try:
+        from tools.runtime.scope import ScopeViolation, check_url
+        check_url(url)
+    except ScopeViolation as exc:
+        evidence.blocker = f"scope-blocked: {exc}"
+        return evidence
+
     try:
         html = driver.navigate(url)
         evidence.navigated = True

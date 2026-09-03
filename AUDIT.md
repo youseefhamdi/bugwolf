@@ -1,17 +1,17 @@
 # BugWolf — Repository Audit & File Map (generated)
 
-> Generated on 2026-09-03T12:36:14+00:00 from `main@f8068b1` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
+> Generated on 2026-09-03T13:22:36+00:00 from `main@33ba79c` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
 
 ## 1. Scale
 
-- Python modules under `tools/`: **163** (68246 lines) + **13** `__init__.py` package markers.
+- Python modules under `tools/`: **164** (68688 lines) + **13** `__init__.py` package markers.
 - CLI-capable modules (argparse/`__main__`): **113**
 - Group sizes: core **8**, domains **14**, intelligence **3**, recon **1**, validation **3**
 
 ## 2. Test suite
 
-- Test files: **124**
-- Discovered tests: **1273**
+- Test files: **125**
+- Discovered tests: **1288**
 
 ## 3. References
 
@@ -27,7 +27,7 @@
 
 | Module | Lines | Purpose |
 |---|---|---|
-| `tools/runtime/mission_runner.py` | 2834 | BugWolf mission runner (orchestrator plan v2, Phase 4 exit criterion). |
+| `tools/runtime/mission_runner.py` | 2891 | BugWolf mission runner (orchestrator plan v2, Phase 4 exit criterion). |
 | `tools/core/campaign_orchestrator.py` | 2177 | BugWolf Campaign Orchestrator — APT Commander (Stage 2 rebuild). |
 | `tools/paper_intel.py` | 2096 | Offline adapters derived from the supplied 2026 security papers. |
 | `tools/hunt.py` | 1467 | BugWolf Hunt Engine — Auth-aware vulnerability scanner. |
@@ -40,7 +40,7 @@
 | `tools/ledger.py` | 904 | BugWolf Ledger Verifier v1.0.0 |
 | `tools/surface_model.py` | 869 | Structured Web/API attack-surface model for BugWolf's discovery core. |
 | `tools/observation.py` | 861 | BugWolf Observation / Oracle Validation Layer v1.0.0 |
-| `tools/core/live_executor.py` | 822 | BugWolf Live Execution Harness — real probes, real evidence. |
+| `tools/core/live_executor.py` | 829 | BugWolf Live Execution Harness — real probes, real evidence. |
 | `tools/patch_gap.py` | 806 | BugWolf Patch-Gap Exploitation Engine v1.0.0 |
 | `tools/leads.py` | 796 | BugWolf Lead Ledger — persistent state-transition research objects for OPEN LEADs. |
 | `tools/infra_deploy.py` | 763 | BugWolf Infrastructure Auto-Deploy v1.0.0 |

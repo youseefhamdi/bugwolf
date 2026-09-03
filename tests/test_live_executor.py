@@ -279,6 +279,14 @@ class TestExploitAndReproducibility(unittest.TestCase):
 
 
 class TestRetries(unittest.TestCase):
+    def setUp(self):
+        # The scope gate is now part of the transport contract: declare the
+        # test host so gate checks pass and urlopen receives the attempts.
+        from tools.runtime import scope
+        scope.reset()
+        scope.bind_target("https://acme")
+        self.addCleanup(scope.reset)
+
     def test_default_transport_retries_then_succeeds(self):
         # urlopen fails twice (URLError), succeeds on the third attempt.
         attempts = {"n": 0}

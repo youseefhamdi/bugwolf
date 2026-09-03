@@ -14,8 +14,17 @@ class TestReadinessManifest(unittest.TestCase):
         self.assertTrue(report["valid"])
         self.assertEqual(report["readiness_level"], "L1-controlled-active-researcher")
         self.assertFalse(manifest["claims"]["zero_day_guarantee"])
-        self.assertFalse(manifest["global_controls"]["authorization_enforced_at_execution_boundary"])
-        self.assertIn("authorization is not yet enforced", " ".join(report["warnings"]))
+        # Boundary authorization is now enforced (scope gate) and the claim
+        # is FUNCTIONALLY verified inside validate_manifest.
+        self.assertTrue(
+            manifest["global_controls"]
+            ["authorization_enforced_at_execution_boundary"])
+        self.assertTrue(
+            manifest["global_controls"]["ssrf_protection_complete"])
+        self.assertNotIn("authorization is not yet enforced",
+                         " ".join(report["warnings"]))
+        self.assertIn("subprocess sandbox is not yet required",
+                      " ".join(report["warnings"]))
         self.assertEqual(report["operator_authority"]["organization"], "unknown")
         self.assertEqual(report["operator_authority"]["research_depth"], "full_apt_team")
         self.assertTrue(manifest["claims"]["full_depth_apt_research"])

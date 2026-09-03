@@ -271,8 +271,19 @@ The plug-in is offensive tooling; its own hygiene is part of the product:
 - The **operator** is the authorization boundary: they declare the target,
   surfaces, and accounts; the plug-in ships no targets and no credentials.
 - Pre-flight runs before any mission work and records its manifest;
-  readiness (`python3 -m tools.readiness`) reports L1 with explicit
-  warnings (authorization not enforced at the execution boundary, no
-  complete SSRF guard, no subprocess sandbox) — read them before real-world
-  use and run inside a scoped, monitored environment.
+  readiness (`python3 -m tools.readiness`) reports L1 and **functionally
+  verifies** its boundary claims at validation time (no network needed —
+  the checks fire before I/O).
+- **Scope gate (deny-by-default).** Mission `run()` binds the gate to the
+  declared target before any dispatch; every HTTP path (`http_probe`), the
+  race engine's raw sockets, the live executor, and the injected browser
+  driver all check it. Out-of-scope requests fail CLOSED (status 0,
+  `scope-blocked`) and are recorded as policy facts, never as tooling
+  gaps. Extend scope with `--scope scope.txt` (one host per line) or a
+  conventional `scope.txt` at the workspace root; the target host and its
+  subdomains are always authorized; loopback only for local targets.
+- Remaining readiness warning: **subprocess sandbox not yet required** —
+  preflight probes a fixed binary allowlist, shell-free, but a full
+  sandbox is still future work; run inside a scoped, monitored
+  environment.
 - Every finding is a hypothesis until an operator reproduces and reviews it.

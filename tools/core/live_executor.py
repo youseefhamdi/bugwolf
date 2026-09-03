@@ -361,6 +361,13 @@ UrlOpen = Callable[..., Any]
 def _send_once(spec: ProbeSpec, *, timeout: float, urlopen: UrlOpen
                ) -> Tuple[int, Dict[str, str], str, float]:
     """One raw HTTP attempt (no retries). Returns (status, headers, body, ms)."""
+    # Execution-boundary scope gate: live probes are target-bound traffic
+    # and obey the operator scope like every other lane (readiness R1).
+    try:
+        from tools.runtime.scope import ScopeViolation, check_url
+        check_url(spec.url)
+    except ScopeViolation as exc:
+        return 0, {}, f"scope-blocked: {exc}", 0.0
     started = time.monotonic()
     try:
         data = None

@@ -49,6 +49,7 @@ ENGINE_MODULES = {
     "oast": "tools.runtime.oast",
     "browser_driver": "tools.runtime.browser_driver",
     "race_engine": "tools.validation.race_engine",
+    "scope_gate": "tools.runtime.scope",
     "fuzz_bridge": "tools.core.fuzz_bridge",
     "benchmark": "tools.benchmark",
     "perf": "tools.perf",

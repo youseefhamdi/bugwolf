@@ -163,10 +163,19 @@ def last_byte_dispatcher(request: RaceRequest
     error carrying ``error: ...`` in the body).
     """
     count = max(1, min(int(request.count), RACE_MAX_WINDOW))
+    # Request-form validation FIRST (a malformed request is not a scope
+    # question), then the execution-boundary scope gate: raw-socket races
+    # obey the same operator scope as every HTTP lane (readiness R1).  Both
+    # follow the engine's transport-error convention (status 0 + error:).
     try:
         full = _build_request_bytes(request)
     except ValueError as exc:
         return [(0, f"error: {exc}")] * count, 0
+    try:
+        from tools.runtime.scope import ScopeViolation, check_url
+        check_url(request.url)
+    except ScopeViolation as exc:
+        return [(0, f"error: scope-blocked: {exc}")] * count, 0
     prefix, final = full[:-1], full[-1:]
 
     parsed = urlparse(request.url)
