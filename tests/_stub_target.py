@@ -202,6 +202,29 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"gateway": "open", "status": "ok"})
         elif path == "/api/rates":
             self._json(200, {"EUR_USD": 1.5, "USD_EUR": 0.6667})
+        elif path == "/abi/app.json":
+            # Web3 lane stub: a minimal ABI (CI regression only).
+            self._json(200, {
+                "target": "stub-vault",
+                "functions": [
+                    {"name": "withdraw", "args": [{"name": "amount",
+                                                   "type": "uint256"}],
+                     "payable": True},
+                    {"name": "transferOwnership", "args": [
+                        {"name": "newOwner", "type": "address"}],
+                     "payable": False},
+                ],
+                "invariants": [],
+                "roles": ["attacker", "owner"],
+            })
+        elif path == "/iam/policy.json":
+            # Cloud lane stub: a policy dump with a passrole privesc (CI only).
+            self._json(200, {
+                "Statement": [
+                    {"Effect": "Allow", "Action": ["sts:AssumeRole",
+                                                   "iam:PassRole"]},
+                ],
+            })
         else:
             self._json(404, {"error": "not found"})
 
@@ -269,6 +292,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, GRAPHQL_SCHEMA)
             else:
                 self._json(200, {"data": {"users": USERS}})
+        elif path == "/api/ai/chat":
+            # LLM lane stub: deliberately vulnerable echo completion surface
+            # (CI regression only).  The prompt is reflected verbatim, so
+            # injection probes produce the echo differential.
+            self._json(200, {"reply": f"echo: {body.get('prompt', '')}"})
         elif path in ("/account/email", "/account/reset"):
             self._json(200, {"changed": True})
         else:

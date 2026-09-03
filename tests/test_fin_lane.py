@@ -151,12 +151,13 @@ class TestFinLane(unittest.TestCase):
                 self.assertTrue(rid.startswith("FIN-"))
 
     def test_clean_and_nonfin_surfaces_produce_no_signals(self):
-        # /api/voucher/redeem is a FIN surface but the matrix techniques that
-        # apply there find nothing beyond the voucher reuse (which the prober
-        # only checks from checkout surfaces); the sweep must NOT flag the
-        # redeem endpoint's 200s as anomalies.
+        # /api/voucher/redeem IS a direct redemption surface: the voucher
+        # reuse confirms there (no single-use state).  The direct-surface
+        # path join must hit the endpoint itself, not a doubled suffix.
         signals = _probe_fin_matrix(self.base, ["/api/voucher/redeem"])
-        self.assertEqual(signals, [])
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["winning_technique"],
+                         "voucher-stacking")
         # Non-FIN surfaces never generate traffic.
         signals = _probe_fin_matrix(self.base, ["/api/users/1", "/graphql"])
         self.assertEqual(signals, [])

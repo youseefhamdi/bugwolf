@@ -189,12 +189,13 @@ class MissionE2ETest(unittest.TestCase):
         report = self._runner(self._mission()).run()
         counts = report["counts"]
         # BOLA template x1 (consolidated: one surface, full technique matrix)
-        # + WAF gateway x1 + FIN checkout x1 + fuzz x3 = 6 findings;
-        # GraphQL stays open (honest generic-class lead).
-        self.assertEqual(counts["findings"], 6)
+        # + WAF gateway x1 + FIN checkout x1 + FIN voucher-redeem x1 (the
+        # direct redemption surface confirms voucher-stacking) + fuzz x3
+        # = 7 findings; GraphQL stays open (honest generic-class lead).
+        self.assertEqual(counts["findings"], 7)
         self.assertEqual(counts["refuted"], 0)
         self.assertEqual(counts["open"], 1)
-        self.assertEqual(counts["total_leads"], 7)
+        self.assertEqual(counts["total_leads"], 8)
         # All 4 lane tasks drained through the scheduler with no rejections.
         self.assertEqual(len(report["tasks"]), 4)
         self.assertFalse([e for e in report["events"]
@@ -253,8 +254,10 @@ class MissionE2ETest(unittest.TestCase):
         store = LeadStore(mission.mission_id).load()
         fin = [l for l in store.list_leads()
                if l.bug_class == "business_logic"]
-        # One consolidated lead per money surface; the stub declares two.
-        self.assertEqual(len(fin), 1)
+        # One consolidated lead per money surface; the stub declares two
+        # (checkout + the direct voucher/redemption surface, which confirms
+        # voucher-stacking since the canary/path fixes).
+        self.assertEqual(len(fin), 2)
         lead = fin[0]
         self.assertEqual(lead.status, "PWNED")
         self.assertIn("/api/checkout", lead.surface)

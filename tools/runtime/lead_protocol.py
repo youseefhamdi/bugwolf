@@ -107,6 +107,21 @@ TECHNIQUE_MATRIX: Dict[str, tuple] = {
         "direct-attempt", "parameter-mutation", "context-switch",
         "encoding-variant",
     ),
+    # Web3 contract lane -- key-for-key with mission_runner CONTRACT_TECHNIQUES.
+    "contract_logic": (
+        "argument-fuzzing", "role-override", "sequence-mutation",
+        "reentrancy-probe", "impact-verb-analysis", "payable-flow",
+    ),
+    # Cloud/CI-CD lane -- key-for-key with mission_runner CLOUD_TECHNIQUES.
+    "cloud_iam": (
+        "policy-dump-analysis", "privesc-graph", "wildcard-scope",
+        "action-mapping", "exposure-review",
+    ),
+    # LLM/agentic lane -- key-for-key with mission_runner LLM_TECHNIQUES.
+    "llm_tooling": (
+        "tool-inventory", "call-site-analysis", "auth-plan-diff",
+        "injection-probe", "context-boundary",
+    ),
 }
 
 # Signal -> ladder response: which tier a recognized signal demands.

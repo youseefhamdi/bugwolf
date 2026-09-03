@@ -1,17 +1,17 @@
 # BugWolf — Repository Audit & File Map (generated)
 
-> Generated on 2026-09-02T18:29:11+00:00 from `main@fb562c5` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
+> Generated on 2026-09-03T07:29:30+00:00 from `main@36c08bc` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
 
 ## 1. Scale
 
-- Python modules under `tools/`: **156** (64393 lines) + **13** `__init__.py` package markers.
+- Python modules under `tools/`: **158** (66107 lines) + **13** `__init__.py` package markers.
 - CLI-capable modules (argparse/`__main__`): **111**
-- Group sizes: core **8**, domains **14**, intelligence **3**, recon **1**, validation **2**
+- Group sizes: core **8**, domains **14**, intelligence **3**, recon **1**, validation **3**
 
 ## 2. Test suite
 
-- Test files: **116**
-- Discovered tests: **1159**
+- Test files: **119**
+- Discovered tests: **1218**
 
 ## 3. References
 
@@ -27,12 +27,12 @@
 
 | Module | Lines | Purpose |
 |---|---|---|
+| `tools/runtime/mission_runner.py` | 2332 | BugWolf mission runner (orchestrator plan v2, Phase 4 exit criterion). |
 | `tools/core/campaign_orchestrator.py` | 2177 | BugWolf Campaign Orchestrator — APT Commander (Stage 2 rebuild). |
 | `tools/paper_intel.py` | 2096 | Offline adapters derived from the supplied 2026 security papers. |
 | `tools/hunt.py` | 1467 | BugWolf Hunt Engine — Auth-aware vulnerability scanner. |
 | `tools/core/research_loop.py` | 1445 | BugWolf Mandatory Deep-Research Loop v1.0.0 |
 | `tools/zero_day.py` | 1398 | BugWolf potentially-novel vulnerability research orchestrator. |
-| `tools/runtime/mission_runner.py` | 1340 | BugWolf mission runner (orchestrator plan v2, Phase 4 exit criterion). |
 | `tools/research_thread.py` | 1012 | BugWolf Research Thread System — self-driven research units. |
 | `tools/campaign.py` | 964 | BugWolf Campaign State Engine — self-driven APT-level research persistence. |
 | `tools/core/stage_controller.py` | 953 | Persistent no-skip workflow controller for BugWolf (APT Commander, Stage 2). |
@@ -64,8 +64,8 @@
 | `tools/retest_scheduler.py` | 571 | BugWolf Autonomous Retest Scheduler v1.0.0 |
 | `tools/opsec.py` | 571 | BugWolf OPSEC Module — Anti-attribution & operational security. |
 | `tools/zero_day_tracks.py` | 571 | Deterministic discovery adapters for the five research surfaces. |
+| `tools/runtime/contracts.py` | 570 | BugWolf Runtime Contracts - Phase 1 of the orchestrator plan. |
 | `tools/chain_orchestrator.py` | 568 | BugWolf full-chain orchestrator. |
-| `tools/runtime/contracts.py` | 565 | BugWolf Runtime Contracts - Phase 1 of the orchestrator plan. |
 | `tools/domains/cloud/iam_privesc_graph.py` | 559 | BugWolf IAM Privilege-Escalation Graph — offline capability analysis (AWS). |
 
 ## 6. Verification notes
