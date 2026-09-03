@@ -24,6 +24,14 @@ import time
 import hashlib
 import urllib.parse
 import subprocess
+
+
+def _sandboxed(cmd, **kw):
+    """Spawn through the subprocess sandbox (kill switch + allowlist + env
+    scrub); curl is preflight-allowlisted, proxies are operator-declared."""
+    from tools.runtime.sandbox import sandboxed_run
+    return sandboxed_run([str(c) for c in cmd], cwd=os.getcwd(),
+                         purpose="hunt", **kw)
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, List, Any
@@ -257,8 +265,7 @@ def curl_fetch(method: str, url: str, session: HuntSession,
     request_config = _curl_config(merged, session.cookies, body)
 
     def _execute():
-        result = subprocess.run(cmd, input=request_config,
-                                capture_output=True, text=True, timeout=20)
+        result = _sandboxed(cmd, input_text=request_config, timeout=20)
         output = result.stdout
         if "|" in output:
             *body_parts, status = output.rsplit("|", 1)
@@ -313,8 +320,7 @@ def curl_fetch_observation(method: str, url: str, session: HuntSession,
     request_config = _curl_config(merged, session.cookies, body)
 
     def _execute():
-        return subprocess.run(cmd, input=request_config,
-                              capture_output=True, text=True, timeout=45).stdout
+        return _sandboxed(cmd, input_text=request_config, timeout=45).stdout
 
     try:
         controller = ACTIVE_CONTROLLER

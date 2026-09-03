@@ -199,13 +199,14 @@ def parse_ipfinder_output(lines: Iterable[str], source: str = "ipfinder",
 def _run_ipfinder(binary: str, query: str, *, timeout: int = 180) -> List[str]:
     """Run one ipfinder facet query; returns the raw ``--source`` lines."""
     try:
-        result = subprocess.run(
-            [binary, "--silent", "--source"], input=query.encode(),
-            capture_output=True, timeout=timeout, check=False,
+        from tools.runtime.sandbox import sandboxed_run
+        result = sandboxed_run(
+            [binary, "--silent", "--source"], cwd=os.getcwd(),
+            input_text=query, timeout=timeout, purpose="asset_intel",
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"ipfinder failed for {query}: {exc}") from exc
-    return [line for line in result.stdout.decode(errors="replace").splitlines() if line.strip()]
+    return [line for line in (result.stdout or "").splitlines() if line.strip()]
 
 
 def _host_from(value: Any) -> str:

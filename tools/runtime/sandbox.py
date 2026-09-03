@@ -246,6 +246,9 @@ def sandboxed_run(command: List[str], *, cwd: str | Path,
                   stdin: Any = subprocess.DEVNULL,
                   root: Optional[str | Path] = None,
                   allow_unlisted: bool = False,
+                  input_text: Optional[str] = None,
+                  text: bool = False,
+                  check: bool = False,
                   purpose: str = "") -> subprocess.CompletedProcess:
     """Run ``command`` under the full sandbox policy.
 
@@ -255,9 +258,12 @@ def sandboxed_run(command: List[str], *, cwd: str | Path,
       3. env scrubbed -> run_bounded_subprocess (timeout + output cap +
          process-group kill on timeout)
 
-    ``allow_unlisted=True`` is for engine self-checks that spawn the
-    interpreter itself (the capability manifest); operator-facing code must
-    never set it.
+    ``text=True`` decodes stdout/stderr to str; ``input_text`` feeds stdin
+    (implies text mode); ``check=True`` raises CalledProcessError on
+    non-zero exit (subprocess.run semantics for migrated callers).
+
+    ``allow_unlisted=True`` is for ENGINE-INTERNAL spawns (the interpreter
+    itself in self-checks).  Operator-facing code must never set it.
     """
     argv = [str(x) for x in command]
     if not argv:
@@ -281,9 +287,24 @@ def sandboxed_run(command: List[str], *, cwd: str | Path,
     merged_env = scrub_env(env)
     _audit(root, "spawn", {"binary": binary, "purpose": purpose,
                            "timeout": timeout})
-    return run_bounded_subprocess(argv, cwd=cwd, timeout=timeout,
-                                  max_output_bytes=max_output_bytes,
-                                  env=merged_env, stdin=stdin)
+    result = run_bounded_subprocess(
+        argv, cwd=cwd, timeout=timeout, max_output_bytes=max_output_bytes,
+        env=merged_env,
+        stdin=stdin if input_text is None else subprocess.PIPE,
+        input_bytes=input_text.encode("utf-8")
+        if input_text is not None else None)
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, argv,
+                                            output=result.stdout,
+                                            stderr=result.stderr)
+    if text or input_text is not None:
+        result = subprocess.CompletedProcess(
+            result.args, result.returncode,
+            (result.stdout or b"").decode("utf-8", "replace")
+            if isinstance(result.stdout, bytes) else result.stdout,
+            (result.stderr or b"").decode("utf-8", "replace")
+            if isinstance(result.stderr, bytes) else result.stderr)
+    return result
 
 
 # ---------------------------------------------------------------------------

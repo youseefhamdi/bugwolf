@@ -25,6 +25,14 @@ import signal
 import hashlib
 import subprocess
 import threading
+
+
+def _sandboxed(cmd, **kw):
+    """Spawn through the subprocess sandbox (kill switch + allowlist + env
+    scrub); bash/python3 are engine-internal runners (allow_unlisted)."""
+    from tools.runtime.sandbox import sandboxed_run
+    return sandboxed_run([str(c) for c in cmd], cwd=os.getcwd(),
+                         purpose="fleet", allow_unlisted=True, **kw)
 import queue
 from pathlib import Path
 from datetime import datetime, timezone
@@ -154,9 +162,8 @@ def run_recon(target: FleetTarget, scope_file: str, confirm_active: bool) -> boo
         cmd = ["bash", str(recon_script), target.name, "--scope-file", scope_file]
         if confirm_active:
             cmd.append("--confirm-active")
-        result = subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=600)
+        result = _sandboxed(
+            cmd, text=True, timeout=600)
 
         if result.returncode == 0:
             # Count results
@@ -199,7 +206,7 @@ def run_hunt(target: FleetTarget, scope_file: str) -> bool:
         if target.auth_file:
             cmd.extend(["--auth-file", target.auth_file])
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = _sandboxed(cmd, text=True, timeout=300)
 
         if result.returncode == 0:
             target.hunt_status = "completed"

@@ -389,10 +389,12 @@ def execute_job(job: RetestJob, scope_file: Optional[str] = None) -> Dict:
 
     try:
         selected_scope = scope_file or job.scope_file
-        result = subprocess.run(
+        from tools.runtime.sandbox import sandboxed_run
+        result = sandboxed_run(
             [sys.executable, str(hunt_script), "--target", job.target,
              "--quick", "--scope-file", selected_scope],
-            capture_output=True, text=True, timeout=300)
+            cwd=os.getcwd(), text=True, timeout=300,
+            allow_unlisted=True, purpose="retest_scheduler")
 
         return {
             "success": result.returncode == 0,

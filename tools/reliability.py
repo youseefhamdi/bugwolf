@@ -227,21 +227,33 @@ def run_bounded_subprocess(command: Sequence[str], *, cwd: str | Path,
                            timeout: float = DEFAULT_TIMEOUT_SECONDS,
                            max_output_bytes: int = DEFAULT_OUTPUT_BYTES,
                            env: Optional[Mapping[str, str]] = None,
-                           stdin: Any = subprocess.DEVNULL) -> subprocess.CompletedProcess[bytes]:
-    """Run argv-only subprocesses with timeout, output cap, and cleanup."""
+                           stdin: Any = subprocess.DEVNULL,
+                           input_bytes: Optional[bytes] = None
+                           ) -> subprocess.CompletedProcess[bytes]:
+    """Run argv-only subprocesses with timeout, output cap, and cleanup.
+
+    ``input_bytes`` feeds the child's stdin (implies PIPE); ``stdin`` is the
+    Popen stdin handle used when no input payload is supplied.
+    """
     if not command or any(not isinstance(item, str) for item in command):
         raise ValueError("command must be a non-empty string argv sequence")
     if timeout <= 0 or timeout > 3600:
         raise ValueError("timeout must be between 0 and 3600 seconds")
     if max_output_bytes <= 0 or max_output_bytes > MAX_ARTIFACT_BYTES:
         raise ValueError("max_output_bytes is outside the supported range")
+    if input_bytes is not None and not isinstance(input_bytes, (bytes, bytearray)):
+        raise ValueError("input_bytes must be bytes")
+    if input_bytes is not None:
+        stdin = subprocess.PIPE
     process: Optional[subprocess.Popen[bytes]] = None
     try:
         process = subprocess.Popen(
             list(command), cwd=str(Path(cwd).expanduser().resolve()),
             stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             start_new_session=True, env=dict(env) if env is not None else None)
-        stdout, stderr = process.communicate(timeout=timeout)
+        stdout, stderr = process.communicate(
+            input=bytes(input_bytes) if input_bytes is not None else None,
+            timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         if process is not None:
             try:

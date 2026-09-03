@@ -228,11 +228,23 @@ def start_interactsh(target: str = "", scope_file: Optional[str] = None,
 
     try:
         # Start interactsh client (uses public interactsh servers by default)
-        # For self-hosted, you'd run interactsh-server separately
+        # For self-hosted, you'd run interactsh-server separately.
+        # Long-lived daemon: the sandbox gate (kill switch + allowlist + env
+        # scrub) is checked BEFORE the raw streaming Popen.
+        from tools.runtime import sandbox as _sandbox
+        if _sandbox.kill_switch_engaged():
+            return {"success": False,
+                    "error": "kill switch engaged: subprocess blocked"}
+        if not _sandbox._is_allowed(Path(interactsh_bin).name, None,
+                                    allow_unlisted=False) and not _sandbox.load_grants():
+            grant_first = Path(interactsh_bin).name
+            return {"success": False,
+                    "error": f"{grant_first} is not allowlisted; grant it via "
+                             f"python3 -m tools.runtime.sandbox grant {grant_first}"}
         proc = subprocess.Popen(
             [interactsh_bin, "-json", "-o", str(config_dir / "interactsh.log")],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True)
+            text=True, env=_sandbox.scrub_env())
 
         # Wait for the OOB URL to appear in output
         time.sleep(3)
@@ -352,11 +364,22 @@ def start_ngrok_tunnel(local_port: int, *, target: str = "",
         return {"success": False, "error": "ngrok not installed"}
 
     try:
-        # Start ngrok in background
+        # Start ngrok in background.  Same sandbox gate as interactsh:
+        # kill switch + allowlist + scrubbed env before the streaming Popen.
+        from tools.runtime import sandbox as _sandbox
+        if _sandbox.kill_switch_engaged():
+            return {"success": False,
+                    "error": "kill switch engaged: subprocess blocked"}
+        if not _sandbox._is_allowed(Path(ngrok_bin).name, None,
+                                    allow_unlisted=False):
+            return {"success": False,
+                    "error": f"{Path(ngrok_bin).name} is not allowlisted; "
+                             f"grant it via python3 -m tools.runtime.sandbox "
+                             f"grant {Path(ngrok_bin).name}"}
         proc = subprocess.Popen(
             [ngrok_bin, "http", str(local_port), "--log=stdout"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True)
+            text=True, env=_sandbox.scrub_env())
 
         # Wait for tunnel URL
         time.sleep(3)

@@ -27,6 +27,7 @@ import hashlib
 import json
 import re
 import shutil
+import os
 import subprocess
 import sys
 import tempfile
@@ -291,13 +292,16 @@ def _extract_js_signals(text: str) -> Dict[str, Any]:
 
 def _run_local_command(argv: Sequence[str], *, timeout: int, input_text: str = "") -> tuple[str, str, int]:
     try:
-        result = subprocess.run(
-            list(argv), input=input_text, text=True, capture_output=True,
-            timeout=timeout, check=False,
+        from tools.runtime.sandbox import sandboxed_run
+        result = sandboxed_run(
+            [str(a) for a in argv], cwd=os.getcwd(), input_text=input_text,
+            timeout=timeout, purpose="js_ct_intel",
         )
         return result.stdout, result.stderr, result.returncode
     except (OSError, subprocess.TimeoutExpired) as exc:
         return "", str(exc), 124
+    except Exception as exc:  # SandboxViolation etc: refusal is data
+        return "", str(exc), 126
 
 
 def _linkfinder_output(path: Path, destination: Path, *, timeout: int = DEFAULT_TIMEOUT) -> ToolResult:

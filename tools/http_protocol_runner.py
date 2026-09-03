@@ -9,6 +9,7 @@ probe is reported as unsupported rather than raising.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -50,10 +51,12 @@ class HTTPProtocolRunner:
     @staticmethod
     def _curl_supports_http3() -> bool:
         try:
-            result = subprocess.run(["curl", "--version"], capture_output=True,
-                                    text=True, timeout=5)
+            from tools.runtime.sandbox import sandboxed_run
+            result = sandboxed_run(["curl", "--version"], cwd=os.getcwd(),
+                                   text=True, timeout=5,
+                                   purpose="http_protocol_runner")
             return "HTTP3" in result.stdout or "quiche" in result.stdout.lower()
-        except (OSError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired, Exception):
             return False
 
     def plan_protocols(self, url: str) -> List[Dict[str, Any]]:

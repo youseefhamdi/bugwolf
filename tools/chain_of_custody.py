@@ -34,6 +34,14 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field, asdict
 
+
+def _sandboxed(cmd, **kw):
+    """Spawn through the subprocess sandbox (kill switch + allowlist + env
+    scrub); pandoc/gpg are operator-granted when custody signing is used."""
+    from tools.runtime.sandbox import sandboxed_run
+    return sandboxed_run([str(c) for c in cmd], cwd=os.getcwd(),
+                         purpose="chain_of_custody", **kw)
+
 try:
     from tools.safety import AuthorizationError, safe_target_name
     from tools.evidence import redact, redact_text
@@ -384,10 +392,10 @@ class ChainOfCustody:
 
             if shutil.which("pandoc"):
                 pdf_path = d / f"custody-{finding_id}.pdf"
-                subprocess.run([
+                _sandboxed([
                     "pandoc", str(txt_path), "-o", str(pdf_path),
                     "--pdf-engine=wkhtmltopdf"
-                ], capture_output=True)
+                ])
                 if pdf_path.exists():
                     return pdf_path
             return txt_path
@@ -459,9 +467,8 @@ class ChainOfCustody:
                 f.write(data)
                 tmp_path = f.name
 
-            result = subprocess.run(
-                ["gpg", "--detach-sign", "--armor", tmp_path],
-                capture_output=True, text=True)
+            result = _sandboxed(
+                ["gpg", "--detach-sign", "--armor", tmp_path], text=True)
             Path(tmp_path).unlink()
 
             if result.returncode == 0:
@@ -483,9 +490,8 @@ class ChainOfCustody:
             sig_path = tmp_path + ".asc"
             Path(sig_path).write_text(signature)
 
-            result = subprocess.run(
-                ["gpg", "--verify", sig_path, tmp_path],
-                capture_output=True, text=True)
+            result = _sandboxed(
+                ["gpg", "--verify", sig_path, tmp_path], text=True)
             return result.returncode == 0
         except Exception:
             return False

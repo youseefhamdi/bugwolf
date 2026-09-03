@@ -282,12 +282,23 @@ The plug-in is offensive tooling; its own hygiene is part of the product:
   gaps. Extend scope with `--scope scope.txt` (one host per line) or a
   conventional `scope.txt` at the workspace root; the target host and its
   subdomains are always authorized; loopback only for local targets.
-- **Subprocess sandbox (required).** Every orchestrator-managed spawn —
-  preflight binary probes, capability-manifest CLI checks — routes through
-  `sandboxed_run` (`tools/runtime/sandbox.py`): kill-switch circuit
-  breaker → preflight-parity binary allowlist → scrubbed environment →
-  bounded execution (timeout, output cap, process-group kill). All
-  decisions are audit-logged to `state/sandbox/audit.jsonl`.
+- **Subprocess sandbox (required, universal).** EVERY spawn in the
+  shipped tree routes through `sandboxed_run`
+  (`tools/runtime/sandbox.py`): preflight binary probes, capability-CLI
+  checks, the crypto vault (`age`), custody signing (`gpg`, `pandoc`),
+  hunt transport (`curl`), formal verification (`certoraRun`, `echidna`),
+  fleet runners, retest dispatch, intel collectors, and release import
+  checks. Long-lived daemons (`interactsh`, `ngrok`, lab fixtures) gate
+  through the sandbox (kill switch + allowlist + scrubbed env) before
+  their streaming Popen. A repository-wide regression test
+  (`tests/test_sandbox_coverage.py`) fails if any raw spawn appears
+  outside the three audited choke points. The kill switch covers
+  engine-internal spawns too: engaging it fails the release import check
+  and the capability manifest CLOSED.
+- **Hook / bridge spawn contract.** The hook shim and the MCP bridge are
+  pinned by test to never spawn subprocesses, open sockets, or fetch URLs
+  — they are pure-stdlib journal/JSON-RPC surfaces. The kill switch
+  therefore covers every executable path the product ships.
 - **Kill switch.** One command stops all subprocess execution in the
   workspace, fail-closed (a corrupt marker counts as ENGAGED):
 

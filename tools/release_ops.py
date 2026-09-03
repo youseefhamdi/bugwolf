@@ -144,12 +144,17 @@ def smoke_imports(root: Optional[str] = None) -> Dict[str, Any]:
             continue
         module = ".".join(rel.with_suffix("").parts)
         try:
-            proc = subprocess.run(
+            from tools.runtime.sandbox import sandboxed_run
+            proc = sandboxed_run(
                 [sys.executable, "-B", "-c",
                  f"import {module}"],
-                cwd=str(base), capture_output=True, timeout=30)
+                cwd=str(base), timeout=30,
+                allow_unlisted=True, purpose="release_import_check")
         except subprocess.TimeoutExpired:
             failed.append(f"{module}: import timed out")
+            continue
+        except Exception as exc:  # SandboxViolation: kill switch is data
+            failed.append(f"{module}: {exc}")
             continue
         if proc.returncode != 0:
             stderr = proc.stderr.decode("utf-8", errors="replace")[-200:]

@@ -350,9 +350,21 @@ class LabManager:
         stderr = stderr_path.open("wb")
         env = os.environ.copy()
         env.update({str(k): str(v) for k, v in (spec.get("env") or {}).items()})
+        # Sandbox gate for long-lived fixtures (kill switch + scrubbed
+        # env); fixtures are lab-registered by the operator, so any binary
+        # is grantable -- but the kill switch ALWAYS applies.  The raw
+        # Popen stays for streaming log capture.
+        from tools.runtime import sandbox as _sandbox
+        if _sandbox.kill_switch_engaged(self.project):
+            stdout.close()
+            stderr.close()
+            raise ResourceLimitError(
+                "kill switch engaged: lab fixture spawn blocked")
+        fixture_cmd = [str(c) for c in spec["command"]]
+        env = _sandbox.scrub_env(env)
         try:
             process = subprocess.Popen(
-                list(spec["command"]), cwd=str(cwd), env=env,
+                fixture_cmd, cwd=str(cwd), env=env,
                 stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
                 start_new_session=True,
             )

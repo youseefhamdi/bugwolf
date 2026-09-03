@@ -25,6 +25,14 @@ import sys
 import json
 import subprocess
 import tempfile
+
+
+def _sandboxed(cmd, **kw):
+    """Spawn through the subprocess sandbox (kill switch + allowlist + env
+    scrub); certoraRun/echidna/halmos are operator-granted Web3 tools."""
+    from tools.runtime.sandbox import sandboxed_run
+    return sandboxed_run([str(c) for c in cmd], cwd=os.getcwd(),
+                         purpose="formal_verify", **kw)
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Any
@@ -324,10 +332,10 @@ def run_certora(spec_path: str, contract_path: str) -> Dict:
         return {"success": False, "error": "certoraRun not installed"}
 
     try:
-        result = subprocess.run(
+        result = _sandboxed(
             ["certoraRun", contract_path,
              "--verify", f"{Path(contract_path).stem}:{spec_path}"],
-            capture_output=True, text=True, timeout=600)
+            text=True, timeout=600)
 
         # Parse Certora output
         output = result.stdout
@@ -353,10 +361,10 @@ def run_echidna(harness_path: str) -> Dict:
         return {"success": False, "error": "echidna not installed"}
 
     try:
-        result = subprocess.run(
+        result = _sandboxed(
             ["echidna", harness_path, "--contract",
              Path(harness_path).stem],
-            capture_output=True, text=True, timeout=600)
+            text=True, timeout=600)
 
         # Parse Echidna output for invariant violations
         output = result.stdout + result.stderr

@@ -117,8 +117,13 @@ def record_target_spec(spec: TargetSpec, *, project_root: Optional[str] = None) 
 
 
 def _git_revision(root: Path) -> str:
-    try: return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True, stderr=subprocess.DEVNULL).strip()
-    except (OSError, subprocess.CalledProcessError): return "unknown"
+    try:
+        from tools.runtime.sandbox import sandboxed_run
+        proc = sandboxed_run(["git", "rev-parse", "HEAD"], cwd=root,
+                             text=True, purpose="target_intake")
+        return (proc.stdout or "").strip()
+    except (OSError, subprocess.CalledProcessError, Exception):
+        return "unknown"
 
 
 def export_academic(*, target: str, output_dir: str, attempts: Iterable[Dict[str, Any]] = (),

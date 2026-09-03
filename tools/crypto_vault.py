@@ -39,6 +39,15 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass, asdict
 
+
+def _sandboxed(cmd, **kw):
+    """Spawn through the subprocess sandbox (kill switch + allowlist + env
+    scrub).  age is granted durably by the operator when the vault is
+    initialized; without a grant this raises SandboxViolation."""
+    from tools.runtime.sandbox import sandboxed_run
+    return sandboxed_run([str(c) for c in cmd], cwd=os.getcwd(),
+                         purpose="crypto_vault", **kw)
+
 try:
     from tools.runtime_paths import workspace_root
 except ImportError:  # direct script execution
@@ -172,14 +181,14 @@ def age_encrypt_file(input_path: Path, output_path: Path,
     else:
         # Generate ephemeral keypair
         keyfile = output_path.with_suffix(".key")
-        subprocess.run([age_bin, "-keygen", "-o", str(keyfile)], check=True)
-        pubkey = subprocess.run(
-            [age_bin, "-y", str(keyfile)], capture_output=True, text=True
+        _sandboxed([age_bin, "-keygen", "-o", str(keyfile)], check=True)
+        pubkey = _sandboxed(
+            [age_bin, "-y", str(keyfile)], text=True
         ).stdout.strip()
         cmd = [age_bin, "-r", pubkey, "-o", str(output_path), str(input_path)]
 
     try:
-        subprocess.run(cmd, check=True, capture_output=True)
+        _sandboxed(cmd, check=True)
         return True
     except subprocess.CalledProcessError:
         return False
@@ -216,11 +225,10 @@ def age_decrypt_file(input_path: Path, output_path: Path,
     cmd.append(str(input_path))
 
     try:
-        subprocess.run(cmd, check=True, capture_output=True)
+        _sandboxed(cmd, check=True)
         return True
     except subprocess.CalledProcessError:
         return False
-
 
 # ---------------------------------------------------------------------------
 # Vault operations
@@ -452,11 +460,10 @@ class Vault:
         key_id = secrets.token_hex(8)
         priv_path = VAULT_ROOT / "keys" / f"{key_id}.key"
 
-        subprocess.run([age_bin, "-keygen", "-o", str(priv_path)],
-                       check=True, capture_output=True)
+        _sandboxed([age_bin, "-keygen", "-o", str(priv_path)], check=True)
         priv_key = priv_path.read_text()
-        pub_key = subprocess.run([age_bin, "-y", str(priv_path)],
-                                  capture_output=True, text=True).stdout.strip()
+        pub_key = _sandboxed([age_bin, "-y", str(priv_path)],
+                             text=True).stdout.strip()
 
         return priv_key, pub_key
 

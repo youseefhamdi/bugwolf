@@ -1,17 +1,17 @@
 # BugWolf — Repository Audit & File Map (generated)
 
-> Generated on 2026-09-03T14:01:22+00:00 from `main@4ee11f6` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
+> Generated on 2026-09-03T14:37:47+00:00 from `main@d22afb0` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
 
 ## 1. Scale
 
-- Python modules under `tools/`: **165** (69165 lines) + **13** `__init__.py` package markers.
+- Python modules under `tools/`: **165** (69287 lines) + **13** `__init__.py` package markers.
 - CLI-capable modules (argparse/`__main__`): **114**
 - Group sizes: core **8**, domains **14**, intelligence **3**, recon **1**, validation **3**
 
 ## 2. Test suite
 
-- Test files: **126**
-- Discovered tests: **1305**
+- Test files: **127**
+- Discovered tests: **1314**
 
 ## 3. References
 
@@ -30,7 +30,7 @@
 | `tools/runtime/mission_runner.py` | 2891 | BugWolf mission runner (orchestrator plan v2, Phase 4 exit criterion). |
 | `tools/core/campaign_orchestrator.py` | 2177 | BugWolf Campaign Orchestrator — APT Commander (Stage 2 rebuild). |
 | `tools/paper_intel.py` | 2096 | Offline adapters derived from the supplied 2026 security papers. |
-| `tools/hunt.py` | 1467 | BugWolf Hunt Engine — Auth-aware vulnerability scanner. |
+| `tools/hunt.py` | 1473 | BugWolf Hunt Engine — Auth-aware vulnerability scanner. |
 | `tools/core/research_loop.py` | 1445 | BugWolf Mandatory Deep-Research Loop v1.0.0 |
 | `tools/zero_day.py` | 1398 | BugWolf potentially-novel vulnerability research orchestrator. |
 | `tools/research_thread.py` | 1012 | BugWolf Research Thread System — self-driven research units. |
@@ -43,7 +43,7 @@
 | `tools/core/live_executor.py` | 829 | BugWolf Live Execution Harness — real probes, real evidence. |
 | `tools/patch_gap.py` | 806 | BugWolf Patch-Gap Exploitation Engine v1.0.0 |
 | `tools/leads.py` | 796 | BugWolf Lead Ledger — persistent state-transition research objects for OPEN LEADs. |
-| `tools/infra_deploy.py` | 763 | BugWolf Infrastructure Auto-Deploy v1.0.0 |
+| `tools/infra_deploy.py` | 786 | BugWolf Infrastructure Auto-Deploy v1.0.0 |
 | `tools/carlini_loop.py` | 752 | BugWolf Carlini Loop Track — per-file brute-force vulnerability analysis. |
 | `tools/capability_registry.py` | 733 | BugWolf Capability Registry v1.0.0 |
 | `tools/trust_map.py` | 720 | BugWolf Trust Map Engine v1.0.0 |
@@ -53,15 +53,15 @@
 | `tools/validation/self_eval_harness.py` | 667 | BugWolf Self-Evaluation Harness — AutoPenBench-style milestone scoring. |
 | `tools/threat_intel.py` | 659 | BugWolf Threat Intelligence Module v1.0.0 |
 | `tools/art_selector.py` | 630 | Adaptive Random Testing (ART) selection for BugWolf's discovery core. |
-| `tools/lab_lifecycle.py` | 605 | BugWolf private-lab lifecycle manager. |
+| `tools/lab_lifecycle.py` | 617 | BugWolf private-lab lifecycle manager. |
 | `tools/program_fit.py` | 604 | BugWolf Program-Fit Gate v1.0.0 |
 | `tools/idor_research.py` | 603 | Offline IDOR/access-control research planning. |
+| `tools/chain_of_custody.py` | 591 | BugWolf Chain of Custody — Tamper-proof audit trail for every finding. |
 | `tools/contract_discovery.py` | 588 | Smart-contract state-space exploration for BugWolf's discovery core. |
-| `tools/chain_of_custody.py` | 585 | BugWolf Chain of Custody — Tamper-proof audit trail for every finding. |
 | `tools/asset_discovery.py` | 584 | BugWolf Asset Discovery Engine — recursive multi-source enumeration. |
-| `tools/js_ct_intel.py` | 573 | BugWolf passive CT and JavaScript intelligence pipeline. |
+| `tools/js_ct_intel.py` | 577 | BugWolf passive CT and JavaScript intelligence pipeline. |
+| `tools/retest_scheduler.py` | 573 | BugWolf Autonomous Retest Scheduler v1.0.0 |
 | `tools/exploit_gen.py` | 572 | BugWolf Exploit Generation Engine — produces weaponized PoCs from findings. |
-| `tools/retest_scheduler.py` | 571 | BugWolf Autonomous Retest Scheduler v1.0.0 |
 | `tools/opsec.py` | 571 | BugWolf OPSEC Module — Anti-attribution & operational security. |
 | `tools/zero_day_tracks.py` | 571 | Deterministic discovery adapters for the five research surfaces. |
 | `tools/runtime/contracts.py` | 570 | BugWolf Runtime Contracts - Phase 1 of the orchestrator plan. |
