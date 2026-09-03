@@ -127,6 +127,36 @@ class TestTaskResult(unittest.TestCase):
         result = _valid_result(summary="anomaly observed in response timing")
         self.assertEqual(validate_task_result(result), [])
 
+    def test_r1_negated_summary_is_not_a_claim(self):
+        """Absence is not an insight: honest negative results validate clean.
+
+        Live-engagement regression (plumsail-r5): machine summaries like
+        "0 leads open; 0 signals hunted deterministically" and
+        "findings=0 refuted=0 open=0" tripped the substring scan and
+        flagged R1 on finding-free runs.
+        """
+        for summary in (
+                "0 leads open; 0 signals hunted deterministically",
+                "findings=0 refuted=0 open=0",
+                "no signals found",
+                "no potential SSRF on /fetch",
+                "verified 0, refuted 0",
+                "no Phase 4 executor for this domain yet"):
+            result = _valid_result(lead_refs=[], summary=summary)
+            self.assertEqual(validate_task_result(result), [],
+                             f"false R1 on negative summary: {summary!r}")
+
+    def test_r1_negation_mixed_summary_still_a_claim(self):
+        """A negated mention followed by a positive claim still needs a lead."""
+        for summary in (
+                "no signals found, but a suspicious pattern on /import",
+                "signals found on /ingest",
+                "findings=1 refuted=0 open=0"):
+            result = _valid_result(lead_refs=[], summary=summary)
+            issues = validate_task_result(result)
+            self.assertTrue(any("R1 violation" in i for i in issues),
+                            f"expected R1 on claim summary: {summary!r}")
+
     def test_r6_completed_with_open_leads_rejected(self):
         result = _valid_result(open_leads=["LEAD-0009"])
         issues = validate_task_result(result)

@@ -2279,6 +2279,7 @@ class MissionRunner:
         self.oast: Optional[OastListener] = None
         self.oast_registry: Optional[OastRegistry] = None
         self.oast_tunnel: Optional[Any] = None
+        self._events: List[Dict[str, Any]] = []   # before any arm logging
         if oast_enabled:
             self.oast_registry = OastRegistry(project_root=project_root)
             self.oast = OastListener(
@@ -2295,7 +2296,7 @@ class MissionRunner:
                     self._log("oast_tunnel_failed", {
                         "note": "listener stays loopback; SSRF callbacks "
                                 "from a remote target will not attribute"})
-        self._events: List[Dict[str, Any]] = []
+        # (events list initialized above, before the OAST block that logs)
         # S1/S2 runtime state (armed in run(); safe defaults for direct
         # lane invocation in tests).
         self._oast_cursor = 0
@@ -2317,6 +2318,8 @@ class MissionRunner:
     # -- helpers -------------------------------------------------------------
 
     def _log(self, event: str, payload: Dict[str, Any]) -> None:
+        if not hasattr(self, "_events"):
+            self._events = []
         self._events.append({"event": event, **payload})
 
     def run(self) -> Dict[str, Any]:
@@ -2875,6 +2878,10 @@ def main() -> int:
                         help="explicitly excluded host(s): a carve-out file "
                              "(one host per line) or a bare host.  Exclusion "
                              "ALWAYS beats the scope wildcard -- repeatable.")
+    parser.add_argument("--oast", action="store_true",
+                        help="arm the OAST canary listener (with "
+                             "BUGWOLF_OAST_TUNNEL=1: via a public route so "
+                             "remote SSRF callbacks attribute)")
     parser.add_argument("--report", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -2913,8 +2920,12 @@ def main() -> int:
     runner = MissionRunner(mission, base_url=args.target,
                            paths=[p for p in args.paths.split(",") if p],
                            scope_hosts=scope_hosts,
-                           deny_entries=deny_entries)
-    report = runner.run()
+                           deny_entries=deny_entries,
+                           oast_enabled=args.oast)
+    try:
+        report = runner.run()
+    finally:
+        runner.close()
     if args.json:
         print(json.dumps(report, indent=2, default=str))
     else:

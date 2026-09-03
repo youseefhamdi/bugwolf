@@ -299,6 +299,53 @@ _INSIGHT_WORDS = (
     "suggests", "possible", "potential", "likely vulnerable", "looks like",
 )
 
+# Absence is not an insight: a summary that only ever *negates* or
+# *zero-counts* an insight word ("no signals found", "findings=0",
+# "0 leads open") is an honest negative result, not an R1 claim.
+# Structured ``hypotheses`` entries keep the strict treatment below --
+# a recorded hypothesis is a durable claim even when phrased negatively.
+_NEGATION_WORDS = frozenset({
+    "no", "not", "none", "without", "zero", "non", "nor", "never",
+    "nothing", "neither", "cannot", "cant", "wont", "isnt",
+    "arent", "wasnt", "werent", "dont", "doesnt", "didnt",
+})
+# "0", "0signals", "0.0findings" -- a zero count attached to (or standing
+# in for) a noun voids any insight meaning that noun carries.
+_ZERO_PREFIX_RE = re.compile(r"^0+(?:\.0+)?$")
+_ZERO_PREFIX_WORD_RE = re.compile(r"^0+(?:\.0+)?(?=[a-z])")
+# "findings=0", "open:0" -- a zeroed count suffix voids the token.
+_ZERO_SUFFIX_RE = re.compile(r"[=:]0+$")
+
+
+def _summary_mentions_insight(summary: str) -> bool:
+    """Negation-aware scan of summary prose for insight claims.
+
+    Rules: negation words and zero-count tokens are void; a token
+    immediately after a negation/zero-count token is void too
+    ("no signals", "0 leads"); a token with a zeroed count suffix
+    ("findings=0") is void itself.  Any surviving token containing an
+    insight word is a claim.  Deliberately conservative: unusual
+    phrasings still flag -- the escape hatch is a lead ref, which is
+    exactly what R1 wants.
+    """
+    words = [re.sub(r"[^a-z0-9.=]", "", w) for w in summary.lower().split()]
+    negators = {
+        i for i, w in enumerate(words)
+        if w and (w in _NEGATION_WORDS
+                  or _ZERO_PREFIX_RE.match(w)
+                  or _ZERO_PREFIX_WORD_RE.match(w))
+    }
+    voided = set(negators)
+    for i, w in enumerate(words):
+        if w and _ZERO_SUFFIX_RE.search(w):
+            voided.add(i)
+    for i, w in enumerate(words):
+        if not w or i in voided or (i - 1) in negators:
+            continue
+        if any(word in w for word in _INSIGHT_WORDS):
+            return True
+    return False
+
 
 def validate_task_result(result: Any) -> List[str]:
     """Strict validation. Returns a list of issue strings (empty = valid).
@@ -330,17 +377,18 @@ def validate_task_result(result: Any) -> List[str]:
         for sub in validate_tool_receipt(receipt):
             issues.append(f"tool_receipts[{i}]: {sub}")
 
-    # R1: every insight must reference a durable Lead.
+    # R1: every insight must reference a durable Lead.  Structured
+    # hypotheses are always claims.  For summary prose, absence is not
+    # an insight: negated/zero-counted mentions ("no signals found",
+    # "findings=0", "0 leads open") do not trigger R1 -- an honest
+    # negative result must validate clean.
     insights: List[str] = []
     for hyp in result.get("hypotheses") or []:
         if isinstance(hyp, dict) and hyp.get("text"):
             insights.append(str(hyp["text"]))
     summary = str(result.get("summary") or "")
-    lowered = summary.lower()
-    for word in _INSIGHT_WORDS:
-        if word in lowered:
-            insights.append(summary)
-            break
+    if _summary_mentions_insight(summary):
+        insights.append(summary)
     if insights and not lead_refs:
         issues.append(
             "R1 violation: result reports insights but carries no lead_refs - "
