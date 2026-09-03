@@ -86,8 +86,30 @@ def _determinism_invariants(dashboard: dict) -> dict:
     }
 
 
+# Re-entrancy guard: the probe's own test-subset step runs the readiness
+# tests, which call validate_manifest -> verify_clean_checkout.  Without a
+# guard, a clone whose manifest already claims L2 recurses forever (probe
+# -> pytest -> validate -> probe -> ...).  The guard variable is set in
+# the probe's own process (inherited by children through the sandbox's
+# BUGWOLF_* passthrough); a nested verifier sees it and defers to the
+# enclosing proof instead of re-probing.
+_REENTRANCY_ENV = "BUGWOLF_L2_PROBE_ACTIVE"
+
+
+def _reentrant() -> bool:
+    return os.environ.get(_REENTRANCY_ENV) == "1"
+
+
 def probe_clean_checkout(*, timeout_seconds: int = 900) -> dict:
     """Full L2 evidence run.  Never raises; failures are report data."""
+    os.environ[_REENTRANCY_ENV] = "1"
+    try:
+        return _probe_inner()
+    finally:
+        os.environ.pop(_REENTRANCY_ENV, None)
+
+
+def _probe_inner() -> dict:
     report = {"schema": "bugwolf-reproducibility/v1",
               "repo_head": "", "steps": [], "ok": False}
     head = _run(["git", "rev-parse", "HEAD"], REPO_ROOT, 15)
@@ -117,6 +139,12 @@ def probe_clean_checkout(*, timeout_seconds: int = 900) -> dict:
         report["steps"].append(step)
 
         # 3. Fast deterministic test subset in the clone.
+        # The subset includes the readiness manifest tests, which call
+        # validate_manifest -> verify_clean_checkout (THIS probe).  That
+        # is safe only because _REENTRANCY_ENV is set in this process and
+        # inherited by children (sandbox passes BUGWOLF_* through): the
+        # nested verifier defers to the enclosing proof.  The guard lives
+        # in committed code, so clones honor it too.
         r = _run([sys.executable, "-m", "pytest", "-q", *_TEST_SUBSET],
                  clone, 600)
         report["steps"].append({
@@ -154,16 +182,73 @@ def probe_clean_checkout(*, timeout_seconds: int = 900) -> dict:
 # process (release gates, test suite); the clone probe runs once.
 _CACHE: dict = {}
 
+# Disk cache: the probe result is a function of HEAD + the code at HEAD,
+# so it is stored per-commit and reused by every gate in the session
+# (readiness CLI, capability manifest, CI).  A cache entry is valid only
+# for the exact HEAD it was produced from and only for one day; anything
+# else triggers a fresh probe.  This keeps the release gates fast without
+# weakening them: the evidence still exists, bound to the commit.
+_CACHE_TTL_SECONDS = 24 * 3600
 
-def verify_clean_checkout() -> tuple:
-    """(ok, detail) verifier for the readiness manifest's L2 claim."""
+
+def _cache_path(project_root) -> Path:
+    return Path(project_root) / "state" / "release" / "l2-probe.json"
+
+
+def _cached_probe(head: str, *, project_root) -> dict | None:
+    import time as _time
     try:
-        if "report" in _CACHE:
-            rep = _CACHE["report"]
-        else:
+        raw = json.loads(_cache_path(project_root).read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("head") != head:
+        return None
+    age = _time.time() - float(raw.get("ts", 0))
+    if age < 0 or age > _CACHE_TTL_SECONDS:
+        return None
+    if not isinstance(raw.get("report"), dict):
+        return None
+    return raw
+
+
+def _store_probe(head: str, report: dict, *, project_root) -> None:
+    import time as _time
+    path = _cache_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(
+        {"schema": "bugwolf-l2-probe-cache/v1", "head": head,
+         "ts": _time.time(), "report": report}, indent=2))
+
+
+def verify_clean_checkout(*, fresh: bool = False) -> tuple:
+    """(ok, detail) verifier for the readiness manifest's L2 claim.
+
+    Runs the probe once per HEAD (disk-cached in state/release/, TTL one
+    day); ``fresh=True`` forces a live re-run.
+    """
+    try:
+        if _reentrant():
+            return True, ("deferred: an enclosing clean-checkout probe is "
+                          "active in this process tree (re-entrancy guard); "
+                          "its result is the proof for this nested check")
+        from tools.runtime_paths import workspace_root
+        root = Path(workspace_root())
+        head_r = _run(["git", "rev-parse", "HEAD"], REPO_ROOT, 15)
+        head = head_r.stdout.strip() if head_r.returncode == 0 else "unknown"
+
+        rep = None
+        if not fresh:
+            cached = _cached_probe(head, project_root=root)
+            if cached is not None:
+                rep = cached["report"]
+                source = f"cached (head {head[:12]})"
+        if rep is None:
             rep = probe_clean_checkout()
-            _CACHE["report"] = rep
-        detail = "; ".join(
+            _store_probe(head, rep, project_root=root)
+            source = "live probe"
+        detail = f"[{source}] " + "; ".join(
             f"{s['step']}: {'ok' if s['ok'] else 'FAIL - ' + str(s.get('detail', ''))[:120]}"
             for s in rep["steps"])
         return bool(rep["ok"]), detail
@@ -176,16 +261,26 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="BugWolf clean-checkout reproducibility probe (L2)")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--fresh", action="store_true",
+                        help="force a live probe even if a valid cache "
+                             "entry exists for HEAD")
     args = parser.parse_args(argv)
-    rep = probe_clean_checkout()
-    if args.json:
-        print(json.dumps(rep, indent=2))
+    if args.fresh:
+        rep = probe_clean_checkout()
     else:
+        ok, detail = verify_clean_checkout()
+        rep = {"ok": ok, "detail": detail}
+    if args.json:
+        print(json.dumps(rep, indent=2, default=str))
+    elif "steps" in rep:
         for step in rep["steps"]:
             print(f"  {step['step']:14s} {'ok' if step['ok'] else 'FAIL'}"
                   f"  {str(step.get('detail', ''))[:100]}")
         print(f"clean-checkout reproducible: {'YES' if rep['ok'] else 'NO'}"
               f"  (head {rep['repo_head'][:12]})")
+    else:
+        print(f"clean-checkout reproducible: {'YES' if rep['ok'] else 'NO'}")
+        print(f"  {rep.get('detail', '')}")
     return 0 if rep["ok"] else 1
 
 

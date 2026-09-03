@@ -1,5 +1,84 @@
 # Changelog
 
+## v1.3.0 — Boundary-hardened orchestrator: scope gate, sandbox, OAST tunnel, L2 readiness
+
+The Phase 0-8 orchestrator plan (BUGWOLF_ORCHESTRATOR_PLAN_V2) is complete
+and release-gated: readiness **L2 (clean-checkout reproducible), VALID,
+zero warnings**; capability manifest `releasable: YES`; all 13 §5.3 perf
+targets measured and met.
+
+### Execution boundary (readiness R1-R3 closed, functionally proven)
+- **Operator scope gate (`tools/runtime/scope.py`, NEW)**: deny-by-default
+  authorization at the execution boundary. The mission target's host is
+  authorized (operator-declared), everything else is blocked with
+  `--scope` allowlists and `--exclude` deny-entries (exclusions ALWAYS
+  beat the wildcard — found live on the Plumsail engagement where the
+  program excludes `beta.`/`community.`). Enforced at every network
+  choke point: `http_probe`, the race engine's raw sockets, the live
+  executor, and the injected browser driver; out-of-scope requests fail
+  CLOSED and are recorded as policy facts.
+- **Subprocess sandbox (`tools/runtime/sandbox.py`, NEW)**: every spawn
+  in the shipped tree routes through `sandboxed_run` — binary
+  allowlist, scrubbed env, kill-switch circuit breaker, output caps,
+  process-group timeout kills. Operator CLI
+  (`python3 -m tools.runtime.sandbox status|kill|arm|grant|revoke|verify`);
+  an engaged kill switch fails the release gates CLOSED. Long-lived
+  daemons (interactsh, ngrok, lab fixtures) gate before their streaming
+  Popen; the hook shim and MCP bridge are pinned spawn-free; a
+  repo-wide sweep test fails on any raw spawn outside the audited
+  choke points.
+
+### Remote-campaign attribution
+- **OAST public tunnel (`tools/runtime/oast_tunnel.py`, NEW)**:
+  `BUGWOLF_OAST_TUNNEL=1` auto-arms an SSH reverse tunnel (serveo) so
+  the canary listener's public route works for REMOTE targets — SSRF
+  leads close on attributed callbacks. Verified end-to-end: a public
+  fetch through the tunnel attributes 100%.
+
+### Mission runner hardening (live-engagement fixes)
+- **R1 negation-aware validation**: honest negative summaries ("0 leads
+  open", "findings=0") no longer false-positive the anti-satisficing
+  validator; structured hypotheses stay strictly gated.
+- **Credential redaction at the persistence boundary**: `--accounts`
+  passwords/tokens never reach `graph.json`; a resumed mission treats
+  redacted values as absent (degrade with disclosure, never replay).
+- **Race engine TLS on by default**; hook journal input allowlist; OAST
+  public-route override (`BUGWOLF_OAST_PUBLIC_URL`) splitting bind from
+  advertisement; runner event-log init before OAST arming; `--oast`
+  mission CLI flag; deterministic listener teardown.
+
+### Lanes
+- Contract / cloud / LLM domain lanes; auth A/B/C account-matrix
+  differential lane; FIN business-logic lane with the race engine bound
+  to voucher/replay techniques; pass@k technique-matrix swarms for the
+  WAF-bypass family.
+
+### Measured performance (§5.3: 13/13, each with `measurement_basis`)
+- All targets now measured offline on the deterministic harness,
+  including the four former NOT_MEASURED ones: first specialist
+  dispatch 0.02s (<10s), signal-to-escalation 0.008s (<5s), context
+  duplication 0.0 (<20%), frontier-call reduction 0.51 (≥40%, P3
+  router vs keyword baseline over a discordant-bucket population). The
+  operator-environment residual (model inference) is excluded by the
+  documented basis and audited during live campaigns.
+
+### Readiness L2 (clean-checkout reproducible)
+- **`tools/reproducibility.py` (NEW)**: a bare clone of HEAD reproduces
+  the deterministic product — offline preflight, the deterministic test
+  subset, and two perf runs with identical outcome fields (latency
+  values are deliberately not invariants). `validate_manifest`
+  re-proves the claim on every validation: L2 without the control is an
+  ERROR; the control without working code is an ERROR. Probe results
+  are disk-cached per HEAD (TTL 1 day) so release gates stay fast; the
+  probe carries a re-entrancy guard (env + committed-code check) so its
+  own test subset can include the manifest tests safely.
+
+### Tests & gates
+- 1331 passing (up from 940 at v1.2.11): scope gate, sandbox coverage,
+  OAST tunnel, reproducibility (incl. live full probe), negation-aware
+  contracts, audit-fix pins. Perf gate PASS; capability manifest 34
+  modules + 10 commands, `releasable: YES`.
+
 ## v1.2.11 — Carlini Loop track: per-file brute-force discovery
 
 - **`tools/carlini_loop.py` (NEW)**: applies the 2026 per-file brute-force

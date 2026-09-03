@@ -1,6 +1,6 @@
 # BugWolf — Repository Audit & File Map (generated)
 
-> Generated on 2026-09-03T17:20:39+00:00 from `main@88225d9` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
+> Generated on 2026-09-03T17:41:55+00:00 from `main@0719104` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
 
 ## 1. Scale
 
