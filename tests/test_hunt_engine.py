@@ -94,6 +94,70 @@ class TestIdorEngine(unittest.TestCase):
         self.assertEqual(set(methods), {"GET"})
 
 
+class TestScopeGateChokePoint(unittest.TestCase):
+    """The 2026-09-03 audit gap: hunt.py's curl paths are the live-replay
+    transport for differential_runner, header_trust, and cache_traversal, so
+    they must obey the operator scope like every other HTTP lane."""
+
+    def setUp(self):
+        import tools.runtime.scope as scope
+        scope.reset()
+        self.addCleanup(scope.reset)
+
+    def test_curl_fetch_blocks_out_of_scope_url_fail_closed(self):
+        from tools.runtime.scope import bind_target
+        import tools.hunt as hunt
+        bind_target("https://target.example")
+        session = HuntSession(name="anon", target="target.example")
+        status, body = hunt.curl_fetch(
+            "GET", "https://evil.example/x", session)
+        self.assertEqual(status, -2)
+        self.assertIn("scope-blocked", body)
+
+    def test_curl_fetch_allows_target_host_and_records_auto_bind(self):
+        import tools.hunt as hunt
+        from tools.runtime.scope import gate_state
+        session = HuntSession(name="anon", target="example.com")
+        status, _ = hunt.curl_fetch("GET", "https://example.com/x", session)
+        self.assertEqual(status, -2)  # denied: no execution controller bound
+        self.assertIn("execution controller is required", _)
+        self.assertTrue(gate_state()["bound"])
+        self.assertFalse(gate_state()["explicit"])  # auto-bind, standalone
+
+    def test_curl_fetch_observation_blocks_out_of_scope_url(self):
+        from tools.runtime.scope import bind_target
+        import tools.hunt as hunt
+        bind_target("https://target.example")
+        session = HuntSession(name="anon", target="target.example")
+        obs = hunt.curl_fetch_observation(
+            "GET", "https://evil.example/x", session)
+        self.assertEqual(obs.status, 0)
+        self.assertIn("scope-blocked", obs.error)
+
+    def test_explicit_mission_bind_wins_over_earlier_auto_bind(self):
+        # A standalone probe auto-binds non-explicitly; a later mission bind
+        # replaces it only via force=True (the gate's documented rule: force
+        # replaces an AUTO-bind, never an explicit mission bind).
+        import tools.hunt as hunt
+        from tools.runtime.scope import bind_target, gate_state
+        session = HuntSession(name="anon", target="example.com")
+        hunt.curl_fetch("GET", "https://example.com/x", session)
+        self.assertFalse(gate_state()["explicit"])
+        bind_target("https://mission.example", force=True)
+        self.assertTrue(gate_state()["explicit"])
+        status, body = hunt.curl_fetch(
+            "GET", "https://example.com/x", session)
+        self.assertEqual(status, -2)
+        self.assertIn("scope-blocked", body)
+
+    def test_force_cannot_replace_an_explicit_mission_bind(self):
+        import tools.hunt as hunt
+        from tools.runtime.scope import bind_target
+        bind_target("https://mission.example")
+        with self.assertRaises(RuntimeError):
+            bind_target("https://other.example", force=True)
+
+
 class TestFindingPromotionBoundary(unittest.TestCase):
     def test_unvalidated_quick_check_is_an_observation(self):
         args = argparse.Namespace(active=False, idor_only=False)

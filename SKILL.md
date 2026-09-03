@@ -31,7 +31,10 @@ Do not autonomously discover targets outside the supplied spec. Inside the opera
 
 Academic research campaigns additionally export seeds, pinned tool/model versions, environment hashes, methodology in Markdown and LaTeX, aggregate/anonymized datasets, pass@k and baseline-vs-technique statistics, and citation-ready evidence appendices with `tools/target_intake.py --export-academic`.
 
-Local VulnBank, Anvil, LocalStack, and stub fixtures are for validating the pipeline only and are not production targets.
+BugWolf ships no vulnerable labs. Anvil, LocalStack, compose services, and
+test stubs are for pipeline validation only and are never production targets;
+campaigns run only against operator-declared targets recorded via
+`tools/target_intake.py`.
 
 ## STRICT WORKFLOW, UNCENSORED EXECUTION
 
@@ -168,18 +171,20 @@ Verify the toolchain before hunting:
 ```bash
 python3 tools/environment_profile.py --location unknown --json
 python3 -m unittest discover -s tests   # self-test the installed toolchain
+```
 
 `tests/test_e2e_deep_dive_campaign.py` is the end-to-end integration test:
-it boots the `lab/vulnbank` fixture in-process on an ephemeral port and
-drives the full U1–U5 pipeline (pass@k variants, artifact bridging, strict
-F0.5 gate, fast-path hooks, model routing, 12-stage workflow, live probe
-pass, fuzz-to-thread reproduce cycle, exploit-with-impact + operator-approved bypass, 10-task eval)
-asserting 10/10 tasks at
-100% milestones — it runs a real probe pass against the lab (signal + clean
-verdicts with recorded evidence) and a genuine fuzz→spawn→reproduce cycle on
-the lab's crash endpoint, and skips cleanly when `lab/` is not shipped
-(e.g. inside a bundle).
-```
+it boots the deterministic operator-target stand-in `tests/_stub_target.py`
+in-process on an ephemeral port and drives the full U1–U5 pipeline (pass@k
+variants, artifact bridging, strict F0.5 gate, fast-path hooks, model
+routing, 12-stage workflow, live probe pass, fuzz-to-thread reproduce cycle,
+exploit-with-impact + operator-approved bypass, 10-task eval) asserting
+10/10 tasks at 100% milestones — it runs a real probe pass against the stub
+(signal + clean verdicts with recorded evidence) and a genuine
+fuzz→spawn→reproduce cycle on the stub's crash endpoint. BugWolf ships no
+labs: production campaigns run only against operator-declared targets
+(recorded via `tools/target_intake.py`), and the suite skips cleanly when
+the stub is absent (e.g. inside a release bundle).
 
 ## ENVIRONMENT PREFLIGHT — ASK BEFORE STARTING
 

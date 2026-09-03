@@ -13,7 +13,7 @@
 4. Keep planning deterministic wherever possible.
 5. Make failures explicit instead of silently continuing.
 6. Keep research memory quarantined and provenance-bound.
-7. Validate improvements with offline tests and the local VulnBank fixture.
+7. Validate improvements with offline tests and the deterministic stub target (`tests/_stub_target.py`).
 8. Avoid modifying unrelated user changes.
 
 ## Current baseline

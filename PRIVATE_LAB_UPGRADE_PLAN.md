@@ -570,7 +570,7 @@ This plan does not promise:
 7. Add raw-evidence encryption and explicit redacted-export validation.
 8. Add pass@k campaign metrics to the self-evaluation harness.
 9. Create a local disclosed-finding corpus and behavior-based near-duplicate index.
-10. Run the complete upgrade against the local VulnBank fixture before adding external lab fixtures.
+10. Run the complete upgrade against the deterministic stub target (`tests/_stub_target.py`) before adding external lab fixtures.
 
 ## 10. Final readiness target
 

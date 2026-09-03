@@ -1,17 +1,17 @@
 # BugWolf — Repository Audit & File Map (generated)
 
-> Generated on 2026-09-03T17:41:55+00:00 from `main@0719104` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
+> Generated on 2026-09-03T20:55:45+00:00 from `main@297d520` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
 
 ## 1. Scale
 
-- Python modules under `tools/`: **167** (70161 lines) + **13** `__init__.py` package markers.
+- Python modules under `tools/`: **167** (70281 lines) + **13** `__init__.py` package markers.
 - CLI-capable modules (argparse/`__main__`): **116**
 - Group sizes: core **8**, domains **14**, intelligence **3**, recon **1**, validation **3**
 
 ## 2. Test suite
 
 - Test files: **129**
-- Discovered tests: **1333**
+- Discovered tests: **1339**
 
 ## 3. References
 
@@ -30,7 +30,7 @@
 | `tools/runtime/mission_runner.py` | 2942 | BugWolf mission runner (orchestrator plan v2, Phase 4 exit criterion). |
 | `tools/core/campaign_orchestrator.py` | 2177 | BugWolf Campaign Orchestrator — APT Commander (Stage 2 rebuild). |
 | `tools/paper_intel.py` | 2096 | Offline adapters derived from the supplied 2026 security papers. |
-| `tools/hunt.py` | 1473 | BugWolf Hunt Engine — Auth-aware vulnerability scanner. |
+| `tools/hunt.py` | 1498 | BugWolf Hunt Engine — Auth-aware vulnerability scanner. |
 | `tools/core/research_loop.py` | 1445 | BugWolf Mandatory Deep-Research Loop v1.0.0 |
 | `tools/zero_day.py` | 1398 | BugWolf potentially-novel vulnerability research orchestrator. |
 | `tools/research_thread.py` | 1012 | BugWolf Research Thread System — self-driven research units. |

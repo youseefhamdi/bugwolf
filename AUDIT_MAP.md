@@ -1,12 +1,15 @@
 # BugWolf — Complete File Map & Line-by-Line Audit
 
-> Hand-compiled engineering map of the full BugWolf plugin, **v1.2.11**
-> (`VERSION`), working tree on `main` (`06b08ff` + uncommitted changes).
+> Hand-compiled engineering map of the full BugWolf plugin, **v1.3.0**
+> (`VERSION`), working tree on `main` (`297d520`, clean).
 > Every tracked source file is listed with its line count, purpose, and key
 > definitions (class/function with starting line). Companion to the
 > auto-generated `AUDIT.md` (run `python3 scripts/generate_audit.py`).
-> Verified 2026-08-26: **920 tests pass**, `compileall` clean,
-> `recon_engine.sh` syntax OK.
+> Verified 2026-09-03: **1,334 tests pass (2 skipped)**, `compileall` clean,
+> `recon_engine.sh` + all `scripts/*.sh` syntax OK.
+> Regenerated after the v1.2.11 → v1.3.0 release: the orchestrator runtime
+> (`tools/runtime/`), MCP bridge (`bridge/`), and the operator-target model
+> (no shipped labs) are new since the previous revision of this file.
 
 ---
 
@@ -14,73 +17,97 @@
 
 | Area | Files | Lines |
 |---|---|---|
-| `tools/` Python (all) | 123 (111 modules + 12 `__init__.py`) | 55,093 |
-| `tests/` | 70 test files, 920 tests | 15,141 |
+| `tools/` Python (all) | 180 (167 modules + 13 `__init__.py`) | 70,161 + 13 |
+| — `tools/runtime/` (v1.3.0 mission layer) | 13 | 9,252 |
+| — `tools/core/` | 9 | 6,283 |
+| — `tools/domains/` (14 modules) | 21 | 5,726 + 7 |
+| — `tools/intelligence/` | 4 | 1,080 + 1 |
+| — `tools/recon/` | 2 | 460 + 1 |
+| — `tools/validation/` | 4 | 1,391 + 1 |
+| — `tools/*.py` top-level | 126 | 47,611 |
+| `tests/` | 130 test files, 1,334 tests (2 skipped) | 22,691 |
 | `references/` | 53 docs (22 hacking-agents, 8 attack-vectors) | — |
-| `scripts/` | 5 | ~3,600 |
-| `configs/` | 7 | ~1,300 |
-| `lab/` | 1 fixture (vulnbank) | 274 |
-| Runtime state (`state/`, `$WS/`, `.bugwolf/`, `recon/`, `research/`, `dist/`) | ignored by git | — |
-| **Total tracked source** | **~270 files** | **~142,400** |
+| `scripts/` | 6 | ~940 |
+| `configs/` | 10 | ~1,270 |
+| `bridge/` | 1 (MCP stdio server) | 175 |
+| `commands/` | 9 slash-command prompts | — |
+| `hooks/` | 2 (hooks.json + stop/session hook) | ~170 |
+| Runtime state (`state/`, `.bugwolf/`, `recon/`, `research/`, `dist/`) | ignored by git | — |
+| **Total tracked source** | **~440 files** | **~142,000** |
 
 Top-level layer map:
 
 ```
-README/SKILL/CHANGELOG/AUDIT/MISSION/READYNESS/ENHANCEMENT/DEPENDENCIES/VERSION  → docs & plans
-configs/                     → JSON contracts (readiness, benchmark, harness, deepseek)
-scripts/                     → build / install / CI / audit generators
-tools/                       → 123 Python modules (the engine)
-  tools/core/                → 8 modules: orchestrator, stage controller, research loop,
-                               live executor, fuzz bridge, agent bus, signal bus, model router
-  tools/domains/             → 14 modules: api, auth, cloud, llm, mobile, smart_contracts, web
+README/SKILL/CHANGELOG/AUDIT/AUDIT_MAP/*PLAN*/DEPENDENCIES/VERSION  → docs & plans
+.claude-plugin/plugin.json   → manifest: 9 commands, hooks, SKILL.md
+commands/                    → /bugwolf + 8 subcommand prompts
+hooks/                       → SessionStart preflight digest + Stop freeze shim
+bridge/bugwolf-mcp.py        → MCP (JSON-RPC over stdio) server: status/plan/run/leads/mode
+configs/                     → JSON contracts (readiness, benchmark, fin_logic, models,
+                               harness, freebuff-deepseek)
+scripts/                     → build / install / CI / audit generators / lab compose
+tools/                       → 167 Python modules (the engine)
+  tools/runtime/             → 13 modules (9,252 lines): mission runner, task-graph
+                               scheduler, contracts, scope gate, sandbox, preflight,
+                               lead protocol, persistent modes, accounts, OAST
+  tools/core/                → 9 modules: campaign orchestrator, stage controller,
+                               research loop, live executor, fuzz bridge, agent bus,
+                               signal bus, model router
+  tools/domains/             → 14 leaf modules: api, auth, cloud, llm, mobile,
+                               smart_contracts, web
   tools/intelligence/        → 3: chain_graph_ai, failure_learning, seed_advisor
   tools/recon/               → 1: historical_asset_delta
-  tools/validation/          → 2: self_eval_harness, verification_lab
-  tools/*.py                 → ~90 top-level tools (hunt, zero_day, campaign, …)
-tests/                       → 70 unittest files
-lab/vulnbank/server.py       → intentionally-vulnerable local fixture
+  tools/validation/          → 3: race_engine, self_eval_harness, verification_lab
+  tools/*.py                 → ~120 top-level tools (hunt, zero_day, leads, paper_intel, …)
+tests/                       → 130 unittest files (stub-target e2e suite)
 references/                  → 53 markdown knowledge docs (agents, vectors, methodology)
 ```
 
 **Architecture in one sentence:** a *strict workflow layer* (12-stage
 hash-chained stage controller + 7-checkpoint mandatory research loop +
 evidence/human-review gates) sitting on top of a *boundary-enforced
-execution layer* (since v1.3.0: `tools/runtime/scope.py` enforces the
-declared scope deny-by-default at every network choke point,
-`tools/runtime/sandbox.py` wraps every spawn with allowlist + kill
-switch; `--scope-file`/`--confirm-active` are operator declarations
-recorded for provenance), with domain modules publishing typed events onto
+execution layer* — `tools/runtime/scope.py` enforces the operator-declared
+scope deny-by-default at every network choke point, `tools/runtime/sandbox.py`
+wraps every spawn with a binary allowlist + env scrub + kill switch, and
+`tools/runtime/mission_runner.py` drives domain lanes as durable task graphs
+with lead ladders — while domain modules publish typed events onto
 `core/signal_bus.py` that the campaign orchestrator subscribes to.
 
 ---
 
-## 2. Root documentation & plans (10 files)
+## 2. Root documentation & plans
 
 | File | Lines | Purpose |
 |---|---|---|
-| `README.md` | 754 | Product overview, APT Commander architecture, install (npx/offline), per-tool usage, live harness loop, bugwolf.xyz |
-| `SKILL.md` | 2,699 | The skill definition: universal harness contract `BUGWOLF-HARNESS-CONTRACT-V2`, strict workflow/uncensored execution, 6+ agents, deep-hunt tool suite map, PoC execution, reporting |
-| `CHANGELOG.md` | 545 | v1.0.0 → v1.2.10; latest: operator-approved bypass exploitation, exploit→zero-day feedback, exploit→chain feedback, live execution loop |
-| `AUDIT.md` | ~100 (generated) | Auto-generated inventory by `scripts/generate_audit.py` — do not hand-edit |
+| `README.md` | 891 | Product overview, APT Commander architecture, install (npx/offline), per-tool usage, live harness loop, bugwolf.xyz |
+| `SKILL.md` | 2,705 | The skill definition: universal harness contract `BUGWOLF-HARNESS-CONTRACT-V2`, target intake + attestation, strict workflow, 12-stage pipeline, 5-pillar maps, lead ledger, wild-mode doctrine, research loop R1–R7, deep-hunt tool suite |
+| `CHANGELOG.md` | 649 | v1.0.0 → v1.3.0 (latest: enforced scope gate, sandbox kill switch, OAST public tunnel, FIN lane, L2 readiness) |
+| `AUDIT.md` | 82 (generated) | Auto-generated inventory by `scripts/generate_audit.py` — do not hand-edit |
 | `AUDIT_MAP.md` | this file | Full hand-compiled file map |
-| `MISSION_PLAN.md` | 231 | v1.2.10 mission: capability truth/readiness telemetry, execution reliability, evidence-state hardening |
+| `BUGWOLF_ORCHESTRATOR_PLAN_V2.md` | 550 | Orchestrator plan v2: task graph, lead ladder, modes, preflight, sandbox/scope (sections cited by `tools/runtime/`) |
+| `BUGWOLF_OMC_UPGRADE_PLAN.md` | 834 | Oh-My-Codebase upgrade plan |
+| `PRIVATE_LAB_UPGRADE_PLAN.md` | 592 | Private-lab upgrade plan (compose stack, doctor, lifecycle) |
 | `READYNESS_PLAN.md` | 644 | Full-power APT readiness: depth never reduced by gates; authorization = recorded context |
-| `ENHANCEMENT_PLAN.md` | 372 | 2026 research-window enhancement roadmap (OpenAnt, WAFFLED, IAM privesc, agentic AI) |
-| `DEPENDENCIES.md` | 136 | AST-verified import graph: leaf modules publish to `core/signal_bus.py`, nothing imports them |
-| `VERSION` | 1 | `1.2.11` |
+| `ENHANCEMENT_PLAN.md` | 372 | 2026 research-window enhancement roadmap (WAFFLED, IAM privesc, agentic AI) |
+| `MISSION_PLAN.md` | 231 | Mission plan: capability truth/readiness telemetry, execution reliability, evidence-state hardening |
+| `PLAN_AUDIT.md` | 84 | Plan-vs-implementation audit notes |
+| `DEPENDENCIES.md` | 135 | AST-verified import graph: leaf modules publish to `core/signal_bus.py`, nothing imports them |
+| `VERSION` | 1 | `1.3.0` |
 | `LICENSE` | — | project license |
 | `.gitignore` | 14 | ignores state/, .private/, vault/, recon/, research/, dist/, __pycache__/, .bugwolf/ |
 
 ---
 
-## 3. `configs/` — JSON contracts (7 files)
+## 3. `configs/` — JSON contracts (10 files)
 
 | File | Lines | Purpose |
 |---|---|---|
-| `configs/benchmark.json` | 74 | Versioned benchmark corpus for the VulnBank lab: case → bug_class/method/path/expected finding+severity (BOLA, mass-assignment, negative controls) |
-| `configs/readiness.json` | 148 | Machine-readable readiness contract: `L1-controlled-active-researcher`, release status, execution profiles, per-target-class entrypoints/evidence/limitations |
-| `configs/freebuff-deepseek.json` | 54 | Freebuff/DeepSeek deployment contract: install paths, model tiers (V4 Flash default, V4 Pro, MiMo fallback), harness guard commands, verification list |
-| `configs/freebuff/AGENTS.md` | ~110 | Freebuff project contract (harness-neutral) |
+| `configs/readiness.json` | 238 | Machine-readable readiness contract: `L2-reproducible-research-harness`, release status `experimental-human-supervised`, execution profiles, per-target-class entrypoints/evidence/limitations |
+| `configs/benchmark.json` | 119 | Versioned benchmark corpus (v2): case → bug_class/method/path/expected finding+severity, business_logic `signal_check`, requires `--base-url` (operator target, no hardcoded lab endpoint) |
+| `configs/fin_logic.json` | 50 | Canonical 41-entry FIN-* business-logic technique registry (TOCTOU/PARAM/REPLAY/ROUND/NUM/VOUCHER/CRYPTO/TESTDATA/ARIBITRAGE) |
+| `configs/models.json` | 40 | Model routing tiers for `tools/core/model_router.py` |
+| `configs/freebuff-deepseek.json` | 54 | Freebuff/DeepSeek deployment contract: install paths, model tiers, harness guard commands, verification list |
+| `configs/freebuff/AGENTS.md` | 98 | Freebuff project contract (harness-neutral) |
 | `configs/harness/AGENTS.md` | 114 | Universal project contract for any harness |
 | `configs/harness/CLAUDE.md` | 91 | Claude Code-specific contract |
 | `configs/harness/BUGWOLF.md` | 212 | The short reloadable operating contract (deep-hunt tool suite + mandatory research order) |
@@ -92,311 +119,397 @@ recorded for provenance), with domain modules publishing typed events onto
 
 | File | Lines | Purpose |
 |---|---|---|
-| `scripts/build_skill.sh` | 73 | Builds both release bundles: `dist/bugwolf-v<V>.skill` (SKILL.md at root, Claude.ai) and `dist/bugwolf-v<V>.freebuff.zip` (`.agents/skills/bugwolf/` layout) |
+| `scripts/build_skill.sh` | 78 | Builds both release bundles: `dist/bugwolf-v<V>.skill` (SKILL.md at root, Claude.ai) and `dist/bugwolf-v<V>.freebuff.zip` (`.agents/skills/bugwolf/` layout) |
 | `scripts/ci_bundle_check.sh` | 469 | CI: rebuild bundles, content-verify (self-eval harness ships, VERSION matches, no .pyc), extract freebuff bundle and run its own self-eval → must score 100% |
 | `scripts/generate_audit.py` | 231 | Deterministic AUDIT.md generator (AST counts, module stats, CLI detection) |
-| `scripts/install_freebuff.sh` | ~60 | Offline install into `.agents/skills/bugwolf/` + install BUGWOLF.md/AGENTS.md/CLAUDE.md if absent + init harness manifest |
-| `scripts/install_harness_contract.sh` | ~40 | Install only the short harness contract + init manifest (no skill copy) |
-| `.github/workflows/ci.yml` | 22 | GitHub Actions: unittest suite + bundle check + artifact upload (python 3.12) |
+| `scripts/install_freebuff.sh` | 60 | Offline install into `.agents/skills/bugwolf/` + install BUGWOLF.md/AGENTS.md/CLAUDE.md if absent + init harness manifest |
+| `scripts/install_harness_contract.sh` | 31 | Install only the short harness contract + init manifest (no skill copy) |
+| `scripts/lab_setup.sh` | 56 | Optional compose stack up/down (browser, Android, Anvil, Ollama, MCP, LocalStack) for local validation only — never a production boundary |
+| `.github/workflows/ci.yml` | 52 | GitHub Actions: unittest suite + bundle check + artifact upload (python 3.12) |
 
 ---
 
-## 5. `lab/` — VulnBank fixture (1 file)
-
-| File | Lines | Purpose |
-|---|---|---|
-| `lab/vulnbank/server.py` | 274 | Intentionally-vulnerable stdlib-only local app (binds 127.0.0.1, port 8077). Endpoints: `/api/users/<id>` BOLA, `POST /api/users` mass-assignment, `POST /graphql` batching, `POST /login` HS256 JWT (weak secret), `/account/email`+`/account/reset` ATO leads, `/openapi.json`, `/tech.json`, `/api/ingest` deterministic 500 crash for fuzzing, `/api/gateway` WAF 403 unless `X-Original-URL` bypass header |
-
----
-
-## 6. `tools/core/` — the engine's nervous system (8 modules, 6,583 lines)
+## 5. `tools/runtime/` — the v1.3.0 mission layer (13 modules, 9,252 lines)
 
 | Module | Lines | Purpose & key definitions |
 |---|---|---|
-| `tools/core/campaign_orchestrator.py` | 2,089 | **The plugin's brain.** Full lifecycle: receive target → discover assets → prioritize → research threads → live execution → exploit feedback → self-eval. `CampaignPhase`@81, `OrchestratorContext`@113, `CampaignOrchestrator`@133 (workflow_status, complete_workflow_stage, _auto_advance_workflow, initialize, get_context), `main`@1891 |
-| `tools/core/research_loop.py` | 1,445 | Mandatory deep-research loop v1.0.0. `ResearchTask`@49, dynamic/sub checkpoints, `ResearchLoop`@375, `ResearchExecutor`@688 (execute/execute_sequential, `_offline_search`@533, `search_web`@627), `run_mandatory_research`@1045, `fast_path_signals`@1088, sequence verification `verify_sequence`@1165 |
-| `tools/core/stage_controller.py` | 953 | Persistent no-skip workflow controller. 12 stages (`setup→…→report`), hash-chained artifact prerequisites, append-only artifact integrity. `WorkflowController`@320, `_mandatory_ordered_subsequence`@72, artifact digests, `main`@881 |
-| `tools/core/live_executor.py` | 801 | Real HTTP probes + replayable evidence. `ProbeSpec`@143, `build_probe_specs`@217, `ProbeResult`@413, `detect_waf`@437, `classify_probe`@510, `execute_probe`@542, `execute_exploit`@665, `verify_reproducibility`@731 |
-| `tools/core/fuzz_bridge.py` | 379 | Coverage-aware fuzz loop feeding research threads. `FuzzObservation`@64, `FuzzSummary`@84, `classify_fuzz`@150, `run_fuzzing_campaign`@218, publishes FINDING_DISCOVERED |
-| `tools/core/signal_bus.py` | 334 | Event-driven bus ("nervous system"): typed events (`RECON_COMPLETE`, `FINDING_DISCOVERED`, `WAF_BLOCKED`, `CHAIN_PROPOSAL`, …), persisted JSONL, replay, `publish_or_warn`@248. `Event`@101, `SignalBus`@134 |
-| `tools/core/agent_bus.py` | 356 | Agent-addressed signal passing (from_agent/to_agents), JSONL persisted + replayed. `Signal`@44, `AgentBus`@79 (send/receive/receive_all/find_chains) |
-| `tools/core/model_router.py` | 226 | Routes tasks to cheapest model tier. `RoutingDecision`@82, `classify`@120, `route`@147, `route_unit`@167 |
+| `tools/runtime/mission_runner.py` | 2,942 | **Mission runner — the orchestrator brain.** Domain lanes as probe swarms: BOLA (direct/enumeration/scope/role/mass-assignment/hidden), header-trust, WAF bypass (X-Original-URL, path obfuscation, encoding, parser differential, case rotation, payload splitting), A/B/C auth matrix, FIN business-logic matrix (incl. a hand-rolled SHA-256 length-extension attack), contract/cloud/LLM matrices; verify lane replays winning techniques; lead ladder R1–T4. `http_probe`@93 (scope-gated), `replay_bola_technique`@267, `replay_bypass_technique`@665, `replay_auth_technique`@936, `_length_extend`@1411, `replay_fin_technique`@1523, `MissionRunner`@2242, `main`@2860 |
+| `tools/runtime/contracts.py` | 618 | Structural result contracts, all hash-digested: rejects TaskResults that mention an "insight" without a lead ref. `ContractViolation`@116, `ToolReceipt`@183, `TaskSpec`@218, `validate_task_result`@350, `MissionSpec`@432, `parse_mission`@509, `record_task_result`@591, `main`@606 |
+| `tools/runtime/scheduler.py` | 490 | Durable task-graph scheduler: fingerprinted nodes, credential redaction on save, preflight gate before any dispatch, resume re-dispatches open leads first. `task_fingerprint`@59, `_redact_mission_credentials`@139, `Scheduler`@171 (`plan_mission`@249, `record_preflight`@396, `resume`@423, `status`@451), `main`@462 |
+| `tools/runtime/sandbox.py` | 446 | Subprocess sandbox + kill switch: binary allowlist + operator grants, scrubbed env, output caps, fail-closed audit (`state/sandbox/audit.jsonl`); kill switch fails CLOSED incl. corrupt marker. `engage_kill_switch`@114, `sandboxed_run`@243, `verify_sandbox`@327, `main`@386 |
+| `tools/runtime/lead_protocol.py` | 449 | Anti-satisficing lead ladder (R1 insights→LeadSpec, R2 three terminal states PWNED/REFUTED/BUDGET-EXHAUSTED, R3 technique matrix recorded-tried, R4 research refresh, R5 append-only JSONL, R6 resume re-dispatch); composes `tools/leads.py` |
+| `tools/runtime/preflight.py` | 419 | Mandatory pre-flight PF capability discovery (binaries, modules, MCP connections) with cached manifest + digest (read by the SessionStart hook, <10 ms). `inventory`@297, `run_preflight`@334, `capability_digest`@324, `main`@397 |
+| `tools/runtime/accounts.py` | 401 | Operator-supplied A/B/C account matrix (attacker/victim/admin); tokens memory-only, redacted to `{kind}:<first4>...({len})`, `__redacted__` sentinel never replayed. `redact`@56 |
+| `tools/runtime/modes.py` | 348 | Persistent modes engine (research/verify/deep-dive/coverage/report) with JSONL journal + replay on stop/resume; zero-open-leads report gate. `ModeEngine`@94 (`enter`@176, `tick`@208, `stop`@140, `resume`@150) |
+| `tools/runtime/oast.py` | 254 | Self-hosted OAST: per-lead canary tokens (`oast<sha256(lead)[:12]>`), durable interaction registry, `OAST_CALLBACK` signal publication; unregistered canaries recorded but never attributed. `_canary_token`@52 |
+| `tools/runtime/oast_tunnel.py` | 239 | Auto-armed SSH reverse tunnel so remote-target SSRF leads close on attributed public callbacks (`--oast` + `BUGWOLF_OAST_TUNNEL=1`). `OastTunnel`@46, `arm_from_env`@162, `selftest`@184 |
+| `tools/runtime/scope.py` | 293 | **Deny-by-default operator scope gate.** Target host + explicit `--scope` entries allowed; `--exclude` carve-outs ALWAYS beat wildcards; fail-closed `ScopeViolation`; process-global, idempotent re-bind, refuses target mixing. `ScopeGate`@56 (`check`@124), `bind_target`@196, `check_url`@209, `load_scope_file`@229 |
+| `tools/runtime/browser_driver.py` | 162 | Client-side validation behind a `BrowserDriver` protocol; no driver bound → `blocked-browser` evidence lead, never a fabricated result. Scope-gated. `validate_client_side`@103, `blocked_browser_evidence`@156 |
+| `tools/runtime/__init__.py` | 0 | package marker |
+
+**Scope-gate choke points (verified):** `check_url` runs in
+`runtime/mission_runner.http_probe`@100, `core/live_executor`@367,
+`validation/race_engine`@175 (raw sockets), `runtime/browser_driver`@122, and
+`hunt._scope_check`@248 (both hunt-engine curl paths — the live-replay
+transport for differential_runner, header_trust, cache_traversal);
+`recon_engine.sh` validates per-URL before each curl probe.
+
+---
+
+## 6. `tools/core/` — the engine's nervous system (9 modules, 6,283 lines)
+
+| Module | Lines | Purpose & key definitions |
+|---|---|---|
+| `tools/core/campaign_orchestrator.py` | 2,177 | **The plugin's brain.** Full lifecycle: receive target → discover assets → prioritize → research threads → live execution → exploit feedback → self-eval. `CampaignPhase`@81, `OrchestratorContext`@113, `CampaignOrchestrator`@134, `main`@~1979 |
+| `tools/core/research_loop.py` | 1,445 | Mandatory deep-research loop (R1–R7 checkpoints). `ResearchTask`@49, `ResearchLoop`@375, `ResearchExecutor`@688, `run_mandatory_research`@~1045 |
+| `tools/core/stage_controller.py` | 953 | Persistent no-skip workflow controller. 12 stages (`setup→…→report`), hash-chained artifact prerequisites, append-only artifact integrity. `WorkflowController`@320, `main`@881 |
+| `tools/core/live_executor.py` | 829 | Real HTTP probes + replayable evidence; scope-gated at @367. `ProbeSpec`@147, `detect_waf`, `execute_probe`, `verify_reproducibility` |
+| `tools/core/fuzz_bridge.py` | 441 | Coverage-aware fuzz loop feeding research threads; publishes FINDING_DISCOVERED. `FuzzObservation`@64 |
+| `tools/core/signal_bus.py` | 365 | Event-driven bus ("nervous system"): typed events (`RECON_COMPLETE`, `FINDING_DISCOVERED`, `WAF_BLOCKED`, `OAST_CALLBACK`, `CHAIN_PROPOSAL`, …), persisted JSONL, replay. `SignalBus`@165 |
+| `tools/core/agent_bus.py` | 356 | Agent-addressed signal passing (from_agent/to_agents), JSONL persisted + replayed. `AgentBus`@79 |
+| `tools/core/model_router.py` | 334 | Deterministic complexity-tier routing (deterministic / local_slm / frontier) with advisory `model_preference` hints; tiers from `configs/models.json` |
 | `tools/core/__init__.py` | 1 | package marker |
 
 ---
 
-## 7. `tools/` top-level — the ~90 tool modules
+## 7. `tools/` top-level — ~120 tool modules (47,611 lines)
 
 ### 7.1 Hunt / execution pipeline
 
 | Module | Lines | Purpose & key definitions |
 |---|---|---|
-| `tools/hunt.py` | 1,467 | **Hunt Engine** — auth-aware scanner: quick checks, IDOR, active injection, chain-state refresh. `HuntSession`@111, `HuntResult`@174, `build_curl_cmd`@191, `curl_fetch`@240, `run_follow_up`@377, `run_quick_checks`@534, `run_idor_check`@592, `classify_response`@741, `run_active_injection`@866, `main`@1010 |
-| `tools/zero_day.py` | 1,398 | **Potentially-novel research orchestrator** — candidate generation, refinement, sequential rounds, chain hypotheses, exploit feedback. `ZeroDayResearchEngine`@525 (prioritize/chain_candidates/sequential_research/register/research_candidate), `derive_refinements`@459, `_bump_severity`@1175, `build_ranked_output`@1218, `main`@1256 |
-| `tools/research_thread.py` | 1,011 | Self-driven research units (threads) with deterministic artifact resolution. `ThreadBuilder`@411 (generate_threats/build_threads_for_asset/get_next_research_unit) |
-| `tools/campaign.py` | 963 | Campaign state engine — persistent APT-level research state. `CampaignState`@338, `CampaignManager`@462 (initialize/load/save/add_asset), `AssetRecord`@124, `ThreadRecord`@216 |
-| `tools/kill_chain.py` | 907 | Autonomous kill-chain builder from confirmed findings. `KillChainBuilder`@381 (score_chain/build_all_chains/auto_test_chain), `discover_novel_chains`@747 |
-| `tools/ledger.py` | 904 | Ledger verifier — every finding has evidence, coverage gaps, trigger-stream integrity. `LedgerVerifier`@148 (verify_finding/verify_all/_find_coverage_gaps) |
-| `tools/observation.py` | 861 | Oracle validation layer — raw responses can't silently refute. `OracleValidator`@379 (rules R1–R7: transport/status/timing/redirect/body/header divergence), `HttpObservation`@87, `ObservationRecord`@179 |
-| `tools/patch_gap.py` | 806 | CVE disclosure→patch window exploitation. `PatchGapMonitor`@530, `fetch_cves_by_tech`@109, `launch_poc`@478 |
-| `tools/leads.py` | 795 | Lead ledger — persistent OPEN-LEAD state machines. `Lead`@123, `create_lead`@230, `mutate_lead`@320, `promote_to_finding`@399, `derive_data_unlock_classes`@573, `chain_hypotheses_from_exploit`@601 |
-| `tools/infra_deploy.py` | 763 | Callback infra: HTTP callback server, DNS exfil listener, interactsh, ngrok. `CallbackServer`@142, `DNSExfilListener`@275, `InfraManager`@425 |
-| `tools/agent_isolation.py` | 711 | Checks each agent operates within its domain/scope/permission boundaries. `AgentIsolationChecker`@241 |
-| `tools/adversary_emulation.py` | 699 | Maps agent actions → MITRE-style coverage. `AdversaryEmulation`@433 (classify_finding/map_findings/compute_coverage) |
-| `tools/refutation.py` | 517 | F0.5 precision-first refutation engine: deterministic confidence, reproducible-evidence requirement, `verify_reproducibility`@ (replays via live executor). `RefutationEngine`@201, `confidence_score`@150 |
-| `tools/exploit_gen.py` | 572 | Weaponized PoC generation: curl/Python/Burp/Metasploit/nuclei/Solidity templates. `generate_exploit`@478 |
-| `tools/fleet.py` | 451 | Parallel multi-target hunting. `FleetExecutor`@232, `PatternMemory`@105, `parse_targets`@328 |
-| `tools/retest_scheduler.py` | 571 | Autonomous retest on scope/CVE/dependency changes. `RetestDaemon`@440, `execute_job`@376 |
-| `tools/opsec.py` | 571 | Anti-attribution: proxy pool, UA rotation, header order, jitter, Tor detection. `FreshProxyPool`@117, `OpsecRotator`@272, `build_stealth_request`@503 |
-| `tools/recon_exec.py` | 78 | Uncensored recon command runner (pass-through) |
+| `tools/hunt.py` | 1,476 | **Hunt Engine** — auth-aware scanner: quick checks, IDOR, active injection, chain-state refresh. All spawns pass the sandbox AND the scope gate (`_scope_check`@248 fails closed with a `scope-blocked:` sentinel in both `curl_fetch`@267 and `curl_fetch_observation`@319 — the audit-2026-09-03 choke-point gap closure); curl credentials go via `--config` stdin, never argv. `build_curl_cmd`@199, `curl_fetch`@267, `curl_fetch_observation`@319, `classify_response`@772, `main`@1041 |
+| `tools/zero_day.py` | 1,398 | **Potentially-novel research orchestrator** — candidate generation, refinement, sequential rounds, chain hypotheses, exploit feedback. `ZeroDayResearchEngine`@525, `derive_refinements`@459, `main`@1256 |
+| `tools/research_thread.py` | 1,011 | Self-driven research units (threads) with deterministic artifact resolution. `ThreadBuilder`@411 |
+| `tools/campaign.py` | 963 | Campaign state engine — persistent APT-level research state. `CampaignState`@338, `CampaignManager`@462 |
+| `tools/kill_chain.py` | 907 | Autonomous kill-chain builder from confirmed findings. `KillChainBuilder`@381, `discover_novel_chains`@747 |
+| `tools/ledger.py` | 904 | Ledger verifier — evidence, coverage gaps, trigger-stream integrity. `LedgerVerifier`@148 |
+| `tools/observation.py` | 861 | Oracle validation layer — raw responses can't silently refute (rules R1–R7). `HttpObservation`@87, `OracleValidator`@379 |
+| `tools/patch_gap.py` | 806 | CVE disclosure→patch window planning. `PatchGapMonitor`@530 |
+| `tools/leads.py` | 795 | Lead ledger — persistent OPEN-LEAD state machines (OPEN/MUTATING/FINDING/PARKED/KILLED; kill guard auto-parks one-half refutations). `Lead`@123, `create_lead`@230, `mutate_lead`@320 |
+| `tools/agent_isolation.py` | 711 | Verifies each agent operates within its domain/scope/permission boundaries. `AgentIsolationChecker`@241 |
+| `tools/adversary_emulation.py` | 699 | Agent actions → MITRE-style coverage. `AdversaryEmulation`@433 |
+| `tools/infra_deploy.py` | 786 | Callback infra plans: HTTP callback server, DNS listener, interactsh, ngrok. `CallbackServer`@142, `InfraManager`@425 |
+| `tools/carlini_loop.py` | 752 | Carlini Loop track — per-file brute-force analysis: unit emission, offline sink-catalog floor, harness-finding intake (idempotent, novelty-deduped) |
+| `tools/perf.py` | 734 | Performance harness (orchestrator plan v2 §5.3/§7): the 13 measured perf targets |
+| `tools/capability_registry.py` | 733 | Catalog of discovered primitives. `CapabilityRegistry`@223 |
+| `tools/exploit_gen.py` | 572 | PoC generation: curl/Python/Burp/Metasploit/nuclei/Solidity templates. `generate_exploit`@478 |
+| `tools/retest_scheduler.py` | 573 | Autonomous retest on scope/CVE/dependency changes. `RetestDaemon`@440 (spawn goes through the sandbox) |
+| `tools/opsec.py` | 571 | Anti-attribution: proxy pool, UA rotation, header order, jitter. `OpsecRotator`@272, `build_stealth_request`@503 |
+| `tools/refutation.py` | 517 | F0.5 precision-first refutation: deterministic confidence, `require_reproducible` forces CONFIRMED to need replayable proof. `RefutationEngine`@201 |
+| `tools/fleet.py` | 458 | Parallel multi-target hunting. `FleetExecutor`@232 |
+| `tools/lab_lifecycle.py` | 617 | Private-lab lifecycle manager (compose profiles, doctor, readiness) |
+| `tools/reliability.py` | 305 | Execution-reliability telemetry (plan v2 §6) |
+| `tools/reproducibility.py` | 288 | Deterministic re-execution of recorded commands (sandboxed) |
+| `tools/benchmark.py` | 264 | Runs benchmark corpus (v2) against the operator-declared `--base-url`. `run_benchmark`@125 |
+| `tools/capability_manifest.py` | 242 | Sandboxed capability self-test manifest |
+| `tools/operator_dashboard.py` | 146 | Operator-facing mission/coverage dashboard data |
+| `tools/recon_exec.py` | 109 | Uncensored recon command runner (pass-through allowlist) |
+| `tools/lab_doctor.py` | 74 | Runtime readiness doctor for the six optional compose services |
+| `tools/lab_runtime_adapters.py` | 118 | Adapters degrade MISSING runtimes to explicit diagnostics — never fake results |
 
 ### 7.2 Recon / asset intelligence
 
 | Module | Lines | Purpose & key definitions |
 |---|---|---|
-| `tools/asset_discovery.py` | 583 | Recursive multi-source asset discovery. `AssetDiscoveryEngine`@260, `build_research_unit`@451 |
-| `tools/asset_intel.py` | 414 | Offline external-asset intel: provider query plans (Amass/Shodan/Censys/FOFA/ZoomEye/SpiderFoot), shodan facets, ipfinder, export diffing. `diff_assets`@295 |
-| `tools/js_ct_intel.py` | 573 | Passive cert-transparency + JS intelligence pipeline. `collect_certificate_records`@198, `analyze_javascript`@381, `run_pipeline`@484 |
-| `tools/js_token_forge.py` | 252 | Static client-side token-forging analyzer (HMAC/secret reuse). `analyze_text`@107, `build_plans`@141 |
-| `tools/tech_fingerprint.py` | 491 | Post-recon tech fingerprinting (manifests, headers, Dockerfiles, CI). `TechFingerprinter`@318 (scan_path/scan_url/stack_csv) |
-| `tools/schema_extractor.py` | 506 | Auto-discovers OpenAPI/Swagger/GraphQL schemas from recon output. `SchemaDiscovery`@90, `discover`@140, `fetch_schemas`@364 |
-| `tools/chain_analyzer.py` | 273 | Offline high-impact static chain analysis (SQLi→impact, XXE, deserialization, header sinks). `analyze_paths`@247 |
-| `tools/defensive_detection.py` | 159 | Offline defensive/lateral-movement/EDR-evasion *detection* hypotheses from logs |
-| `tools/identity_cloud.py` | 450 | Identity/MFA/OAuth/SAML/cloud posture + CVE triage + nuclei template intake. `analyze_paths`@386 |
-| `tools/ai_defense.py` | 141 | AI/MCP defense analysis (prompt injection, tool auth, IFC, MCP OAuth). `analyze_paths`@115 |
-| `tools/paper_intel.py` | 2,096 | **Largest module** — offline adapters from 2026 security papers: skill-chain risk, provenance bottleneck, CTI→Sigma, binary RE planning, STAR HTTPS metadata privacy, agent control-plane audit. 20+ analyzers (`scan_skill_chain`@348, `investigate_provenance`@471, `ground_cti_to_sigma`@622, `analyze_https_fingerprint`@948, `assess_agent_control_plane`@1102, `match_cve_candidates`@1433, …) |
-| `tools/threat_intel.py` | 659 | HackerOne hacktivity fetch, CVE→target mapping, ransomware mentions. `ThreatIntel`@443, `IntelMonitor`@543 |
-| `tools/recon_engine.sh` | 718 | Bash recon engine: subdomain/DNS/port/tech collection + research hooks (NOT Python; shell syntax verified) |
-| `tools/trust_map.py` | 720 | Directed trust graph across target. `TrustMap`@126 (add_node/add_edge/attach_capability), `bootstrap_from_recon`@539 |
+| `tools/asset_discovery.py` | 583 | Recursive multi-source asset discovery. `AssetDiscoveryEngine`@260 |
+| `tools/asset_intel.py` | 415 | Offline provider query plans (Amass/Shodan/Censys/FOFA/ZoomEye/SpiderFoot), ipfinder facets, export diffing. `diff_assets`@~295 |
+| `tools/js_ct_intel.py` | 577 | Passive cert-transparency + JS intelligence pipeline. `collect_certificate_records`@198, `analyze_javascript`@~381 |
+| `tools/js_token_forge.py` | 252 | Static client-side token-forging analyzer; stores only SHA-256 fingerprints of matched lines. `analyze_text`@107 |
+| `tools/tech_fingerprint.py` | 491 | Post-recon tech fingerprinting. `TechFingerprinter`@318 |
+| `tools/schema_extractor.py` | 506 | Auto-discovers OpenAPI/Swagger/GraphQL schemas from recon output. `SchemaDiscovery`@90 |
+| `tools/chain_analyzer.py` | 273 | Offline high-impact static chain analysis. `analyze_paths`@247 |
+| `tools/defensive_detection.py` | 159 | Defensive/lateral-movement/EDR-evasion *detection* hypotheses from logs |
+| `tools/identity_cloud.py` | 450 | Identity/MFA/OAuth/SAML/cloud posture + CVE triage. `analyze_paths`@386 |
+| `tools/ai_defense.py` | 141 | AI/MCP defense analysis. `analyze_paths`@115 |
+| `tools/paper_intel.py` | 2,096 | **Largest module** — offline adapters from 2026 security papers (skill-chain, provenance, CTI→Sigma, binary RE, STAR HTTPS privacy, agent control-plane audit) |
+| `tools/threat_intel.py` | 659 | HackerOne hacktivity fetch, CVE→target mapping. `ThreatIntel`@443 |
+| `tools/trust_map.py` | 720 | Directed trust graph. `TrustMap`@126, `bootstrap_from_recon`@539 |
+| `tools/recon_engine.sh` | 718 | Bash recon engine: subdomain/DNS/port/tech collection + research hooks; per-URL scope validation before each curl probe |
 | `tools/recon/historical_asset_delta.py` | 460 | Passive-DNS/CRT churn tracker. `compute_delta`@238, `ingest_historical`@322 |
 
 ### 7.3 Discovery core (Web/API)
 
 | Module | Lines | Purpose & key definitions |
 |---|---|---|
-| `tools/surface_model.py` | 869 | Structured Web/API attack-surface model from OpenAPI/GraphQL/URLs. `SurfaceModel`@132, `parse_openapi`@331, `parse_graphql`@410, `parse_urls`@487, `infer_vhost_candidates`@736 |
-| `tools/mutator.py` | 468 | Structure-aware mutation plans (one variable at a time). `Mutator`@199 (_boundary/_mass_assignment/_pollution/_injection/_state_mutations) |
-| `tools/discovery_scheduler.py` | 419 | Coverage-aware, impact-ranked scheduling of mutations + oracle loop. `DiscoveryScheduler`@140 (rank/allocate/follow_up_step/run) |
-| `tools/art_selector.py` | 630 | ART4SQLi payload selection (Zhang et al.): TF-IDF token vectors, `1/cosine` spacing. `PayloadSpace`@225, `select_next`@407, `f_measure`@519 |
-| `tools/differential.py` | 198 | Differential divergence detector (rule 4). `DifferentialDetector`@72 |
-| `tools/differential_runner.py` | 366 | Live sibling-differential replay (v1/v2 surfaces). `DifferentialRunner`@149, `score_divergence`@82 |
-| `tools/header_trust.py` | 679 | Forwarded/trust-header taxonomy + probe planner + live replay. `HeaderTrustRunner`@490, `build_probes`@336, `build_host_confusion_probes`@373 |
-| `tools/contract_discovery.py` | 588 | Smart-contract state-space exploration (invariants, sequences, minimization). `ContractDiscoveryScheduler`@406, `ContractExecutor`@301 |
-| `tools/cache_traversal.py` | 521 | Cache-key path-traversal track (CVE-2026-18051 class). `TraversalRunner`@333, `build_plan`@235, `classify_replay`@304 |
-| `tools/graphql_gid.py` | 455 | GraphQL `node(id:)` global-id harvesting + bounded candidates. `analyze_introspection`@115, `harvest_gids`@184, `build_candidates`@244 |
+| `tools/surface_model.py` | 869 | Structured Web/API attack-surface model. `SurfaceModel`@132, `infer_vhost_candidates`@736 |
+| `tools/mutator.py` | 468 | Structure-aware mutation plans (one variable at a time). `Mutator`@199 |
+| `tools/discovery_scheduler.py` | 419 | Coverage-aware, impact-ranked scheduling + oracle loop. `DiscoveryScheduler`@140 |
+| `tools/art_selector.py` | 630 | ART4SQLi payload selection (TF-IDF, 1/cosine spacing, FSCS). `PayloadSpace`@225, `f_measure`@519 |
+| `tools/differential.py` | 198 | Differential divergence detector. `DifferentialDetector`@72 |
+| `tools/differential_runner.py` | 366 | Live sibling-differential replay (via `hunt.curl_fetch_observation`). `DifferentialRunner`@149 |
+| `tools/header_trust.py` | 679 | Forwarded/trust-header taxonomy + probe planner + live replay. `HeaderTrustRunner`@490 |
+| `tools/contract_discovery.py` | 588 | Smart-contract state-space exploration + minimization. `ContractExecutor`@301, `ContractDiscoveryScheduler`@406 |
+| `tools/cache_traversal.py` | 521 | Cache-key path-traversal track (CVE-2026-18051 class). `TraversalRunner`@333 |
+| `tools/graphql_gid.py` | 455 | GraphQL `node(id:)` global-id harvesting (redacted) + bounded candidates. `analyze_introspection`@115 |
 
 ### 7.4 Research / candidate track
 
 | Module | Lines | Purpose & key definitions |
 |---|---|---|
-| `tools/research_core.py` | 537 | Coverage-guided state-aware research substrate: `CoverageTracker`@74, `CorpusManager`@158, `CrashRegistry`@254, `StateCoverage`@372 |
-| `tools/research_model.py` | 208 | Shared candidate data model: `ResearchCandidate`@103 (stable_id/transition/add_evidence/has_impact_evidence) |
-| `tools/research_sources.py` | 237 | Provenance-bound research registry: `SourceRegistry`@112, `strip_instructions`@67 |
-| `tools/zero_day_tracks.py` | 571 | Deterministic adapters for 5 surfaces: `WebApiTrack`@228, `SmartContractTrack`@407, `CloudCicdTrack`@465, `LlmAgenticTrack`@499, `MobileBinaryTrack`@531, `synthesize_chains`@155 |
-| `tools/novelty.py` | 279 | Novelty assessment (exact/near matches, never claims zero-day). `NoveltyEngine`@126 (assess/apply/research_sequential/parallel) |
-| `tools/impact_focus.py` | 284 | Criticality router — focus on high/critical first. `CriticalityRouter`@175 |
-| `tools/impact_validation.py` | 299 | Candidate evidence-state machine (hypothesis→signal→candidate→reproduced→…). `CandidateStateMachine`@127 |
-| `tools/triage.py` | 205 | Triage + disclosure gates. `CandidateTriage`@63 (evaluate/quarantine/enter_review/approve/report) |
-| `tools/adaptive_learning.py` | 466 | Quarantined learning memory (records, not code). `AdaptiveMemory`@127 (ingest/review/mark_used), `learn_from_journey`@307 |
-| `tools/methodology_playbook.py` | 540 | 2026 methodology → human-validation tasks + non-executing tool plans. `build_validation_tasks`@335, `build_tool_plans`@351 |
-| `tools/idor_research.py` | 603 | Offline IDOR/BFLA planning across 10+ reference classes. `build_idor_matrix`@480, `build_bfla_matrix`@337 |
-| `tools/post_finding_trigger.py` | 467 | Post-finding/signal triggers: receipts, chain-graph refresh, queue. `trigger_after_finding`@190, `trigger_after_signal`@270 |
+| `tools/research_core.py` | 537 | Coverage-guided research substrate. `CoverageTracker`@74, `CorpusManager`@158 |
+| `tools/research_model.py` | 208 | Shared candidate data model. `ResearchCandidate`@103 |
+| `tools/research_sources.py` | 237 | Provenance-bound research registry. `SourceRegistry`@112 |
+| `tools/zero_day_tracks.py` | 571 | Deterministic adapters for 5 surfaces + chain synthesis. `WebApiTrack`@228, `synthesize_chains`@155 |
+| `tools/zero_day_pipeline.py` | 206 | Zero-day pipeline glue (intake→novelty→evidence) |
+| `tools/novelty.py` | 279 | Novelty assessment (exact/near matches; never claims zero-day). `NoveltyEngine`@126 |
+| `tools/novelty_pipeline.py` | 206 | Novelty pipeline wiring |
+| `tools/impact_focus.py` | 284 | Criticality router. `CriticalityRouter`@175 |
+| `tools/impact_validation.py` | 299 | Candidate evidence state machine. `CandidateStateMachine`@127 |
+| `tools/triage.py` | 205 | Triage + disclosure gates. `CandidateTriage`@63 |
+| `tools/adaptive_learning.py` | 466 | Quarantined learning memory (records, operator-reviewed only). `AdaptiveMemory`@127 |
+| `tools/methodology_playbook.py` | 540 | 2026 methodology → human-validation tasks + non-executing tool plans. `build_tool_plans`@351 |
+| `tools/idor_research.py` | 603 | Offline IDOR/BFLA planning across 10+ reference classes. `build_bfla_matrix`@337, `build_idor_matrix`@480 |
+| `tools/post_finding_trigger.py` | 467 | Post-finding/signal triggers. `trigger_after_finding`@190 |
+| `tools/candidate_lifecycle.py` | 254 | Candidate lifecycle transitions |
+| `tools/candidate_cli.py` | 73 | Candidate CLI |
+| `tools/mutation_lineage.py` | 93 | Mutation lineage graph |
+| `tools/lineage_graph.py` | 125 | Evidence lineage graph (tool calls, parents) |
 
-### 7.5 Governance, evidence, safety, support
+### 7.5 Web/API protocol & workflow surfaces
+
+| Module | Lines | Purpose |
+|---|---|---|
+| `tools/web_api_research.py` | 141 | Web/API research adapter |
+| `tools/web_api_protocol.py` | 115 | Web/API protocol runner |
+| `tools/web_api_workflow.py` | 109 | Workflow skip/repeat/reorder candidate extraction |
+| `tools/http_protocol_runner.py` | 102 | curl probes over HTTP/1.1–3 (h3 gated on quiche build) |
+| `tools/protocol_adapters.py` | 111 | Protocol fixture adapters |
+| `tools/protocol_differential_fixture.py` | 161 | Deterministic protocol differential fixture |
+| `tools/multitenant_workflow.py` | 104 | Multi-tenant workflow surfaces |
+| `tools/graphql_workflow.py` | 68 | GraphQL workflow candidates |
+| `tools/claude_workflow.py` | 66 | Four-domain Claude Code workflow entry |
+| `tools/cross_domain.py` | 161 | Cross-domain candidate correlation |
+| `tools/multi_agent_fixture.py` | 86 | Multi-agent fixture runner |
+
+### 7.6 Web3
+
+| Module | Lines | Purpose |
+|---|---|---|
+| `tools/web3_protocol_fixture.py` | 131 | Web3 protocol fixture (test-only) |
+| `tools/web3_research.py` | 90 | Web3 research adapter |
+| `tools/web3_tool_adapter.py` | 85 | Web3 tool adapter |
+| `tools/web3_fixture_runner.py` | 81 | Web3 fixture runner |
+
+### 7.7 AI / LLM surfaces
+
+| Module | Lines | Purpose |
+|---|---|---|
+| `tools/llm_attack_surface.py` | 384 | LLM/agentic AI attack-surface scanner. `LLMAttackSurfaceScanner`@209 |
+| `tools/llm_sandbox.py` | 104 | LLM tool-call sandbox trace analysis |
+| `tools/ai_red_team_adapter.py` | 112 | AI red-team adapter |
+| `tools/ai_tool_adapters.py` | 99 | AI tool adapters |
+| `tools/supply_chain_analyzer.py` | 94 | Supply-chain static analysis |
+| `tools/red_team_runner.py` | 93 | Red-team runner |
+
+### 7.8 Governance, evidence, safety, harness, support
 
 | Module | Lines | Purpose & key definitions |
 |---|---|---|
-| `tools/safety.py` | 123 | **UNCENSORED pass-through** — all authorization functions unconditional (`target_in_scope` always True, `require_authorized_target` always passes) |
-| `tools/execution_controller.py` | 154 | **UNCENSORED controller** — all gates removed; operational budget fields only (max_requests/max_seconds). `ExecutionPolicy`@36, `ActiveExecutionController`@73 |
-| `tools/evidence.py` | 227 | Redacted evidence + deterministic replay artifacts. `EvidenceStore`@118 (add/add_replay_fixture/verify), `redact`@84 |
-| `tools/state.py` | 511 | JSONL session state engine. `SessionState`@102, `add_finding`@300, `rotate_state`@407, `find_chain_candidates`@443 |
-| `tools/chain_of_custody.py` | 585 | Tamper-proof per-finding audit trail (hash chain). `ChainOfCustody`@111 (init_chain/log_event/verify_chain) |
-| `tools/crypto_vault.py` | 539 | Encrypted artifact store + secure deletion (AES/age). `Vault`@246 |
-| `tools/chain_orchestrator.py` | 568 | Full-chain orchestrator: nodes/edges from leads, chain scoring, validation queue. `orchestrate`@325, `refresh_target`@424 |
-| `tools/deep_chain.py` | 216 | Multi-hop chain synthesis beyond pairwise patterns. `DeepChainSynthesizer`@104 |
-| `tools/capability_registry.py` | 733 | Catalog of discovered primitives. `CapabilityRegistry`@223 |
-| `tools/program_fit.py` | 604 | Program-fit gate (HackerOne/Bugcrowd/etc. scope/noise filter). `ProgramFitGate`@188 |
-| `tools/formal_verify.py` | 544 | Smart-contract formal verification bridge (Certora/Echidna harness generation). `FormalVerifyBridge`@384 |
-| `tools/pii_firewall.py` | 325 | Deterministic PII masking before egress (nested JSON/XML, reversible in-memory tokens). `PIIFirewall`@206 |
-| `tools/data_governance.py` | 153 | Schema field classification + Kafka encryption/ACL/retention plans |
-| `tools/engagement_context.py` | 274 | Recorded execution context (accountability, never a gate). `record_context`@96, `stamp_operation`@146 |
-| `tools/environment_profile.py` | 221 | Environment preflight (local/VPS/container). `EnvironmentProfile`@47, `collect_environment`@130 |
-| `tools/harness_guard.py` | 304 | Session contract verifier (`--verify --json` → ready true/false). `initialize`@144, `verify`@171 |
+| `tools/execution_semantics.py` | 127 | **Deliberate pass-through** ("uncensored lab semantics"): validates URL/path SHAPE only; `target_in_scope` always True; `load_authorized_scope` injects `authorized: true`. The real enforcement lives in `tools/runtime/scope.py` + `sandbox.py` |
+| `tools/execution_controller.py` | 154 | **Deliberate pass-through** controller — request/time/action budgets only, no authorization gates. `ExecutionPolicy`@36, `ActiveExecutionController`@73 |
+| `tools/safety.py` | 31 | **Compatibility shim** → `tools.execution_semantics` (legacy import surface) |
+| `tools/evidence.py` | 229 | Redacted evidence + replay fixtures. `EvidenceStore`@118 |
+| `tools/state.py` | 528 | JSONL session state engine. `SessionState`@102, `find_chain_candidates`@443 |
+| `tools/chain_of_custody.py` | 591 | Tamper-proof hash-chained per-finding audit trail (sandboxed replay). `ChainOfCustody`@111 |
+| `tools/crypto_vault.py` | 546 | Encrypted artifact store + secure deletion. `Vault`@246 |
+| `tools/chain_orchestrator.py` | 568 | Full-chain orchestrator. `orchestrate`@325 |
+| `tools/deep_chain.py` | 216 | Multi-hop chain synthesis. `DeepChainSynthesizer`@104 |
+| `tools/program_fit.py` | 604 | Program-fit gate (platform scope/noise filter). `ProgramFitGate`@188 |
+| `tools/formal_verify.py` | 552 | Certora/Echidna harness generation bridge. `FormalVerifyBridge`@384 |
+| `tools/pii_firewall.py` | 325 | Deterministic PII masking before egress. `PIIFirewall`@206 |
+| `tools/data_governance.py` | 153 | Schema classification + Kafka encryption/ACL/retention plans |
+| `tools/engagement_context.py` | 273 | Recorded execution context (accountability, never a gate). `record_context`@96 |
+| `tools/environment_profile.py` | 221 | Environment preflight (declaration + optional OS scan). `collect_environment`@130 |
+| `tools/harness_guard.py` | 304 | Session contract verifier (`--verify --json`). `initialize`@144, `verify`@171 |
 | `tools/harness_command.py` | 171 | Parses `bugwolf --full attack this target …` invocations. `parse_invocation`@74 |
 | `tools/harness_intelligence.py` | 210 | Offline reasoning brief builder. `build_brief`@120 |
-| `tools/readiness.py` | 289 | Validates `configs/readiness.json` vs the live tree. `validate_manifest`@87 |
-| `tools/reporting.py` | 351 | Review/reporting/disclosure gate. `ReportingGate`@140 (check/review/disclose) |
-| `tools/release_ops.py` | 208 | SBOM build, bundle check, smoke imports |
-| `tools/benchmark.py` | 244 | Runs benchmark corpus vs VulnBank. `run_benchmark`@125 |
+| `tools/readiness.py` | 289 | Validates `configs/readiness.json` vs the live tree; probes scope gate + sandbox for real |
+| `tools/reporting.py` | 351 | Review/reporting/disclosure gate. `ReportingGate`@140 |
+| `tools/release_ops.py` | 213 | SBOM build, bundle check, smoke imports |
 | `tools/wordlist_gen.py` | 538 | Dynamic wordlist generation (no static lists). `generate`@418 |
-| `tools/llm_attack_surface.py` | 384 | LLM/agentic AI attack-surface scanner. `LLMAttackSurfaceScanner`@209 |
-| `tools/static_bridge.py` | 359 | Static analysis / patch-gap bridge: source fingerprinting, patch analysis, dep verification. `SourceFingerprinter`@104 |
-| `tools/runtime_paths.py` | 40 | Workspace/slug helpers used by every module (`target_slug`, `workspace_root`, `runtime_path`) |
-| `tools/stage_controller.py` | 21 | **Compatibility shim** → `tools.core.stage_controller` |
-| `tools/research_loop.py` | 21 | **Compatibility shim** → `tools.core.research_loop` |
-| `tools/campaign_orchestrator.py` | 20 | **Compatibility shim** → `tools.core.campaign_orchestrator` |
-| `tools/agent_bus.py` | 20 | **Compatibility shim** → `tools.core.agent_bus` |
+| `tools/static_bridge.py` | 359 | Static analysis / patch-gap bridge. `SourceFingerprinter`@104 |
+| `tools/nvd_ingester.py` | 194 | NVD data ingest |
+| `tools/dependency_map.py` | 72 | Dependency map extraction |
+| `tools/target_intake.py` | 182 | Operator target spec recording + academic export (git rev-parse via sandbox) |
+| `tools/digest_canary.py` | 45 | Canary canary-leak checks (`check_output_leakage`@41) |
+| `tools/mcp_fixture.py` | 100 | Stdio MCP fixture (local validation) |
+| `tools/sarif_export.py` | 56 | SARIF export |
+| `tools/passk_metrics.py` | 57 | pass@k metrics |
+| `tools/runtime_paths.py` | 40 | Workspace/slug helpers used by every module |
+
+### 7.9 Compatibility shims
+
+| Module | Lines | Purpose |
+|---|---|---|
+| `tools/stage_controller.py` | 21 | shim → `tools.core.stage_controller` |
+| `tools/research_loop.py` | 21 | shim → `tools.core.research_loop` |
+| `tools/campaign_orchestrator.py` | 20 | shim → `tools.core.campaign_orchestrator` |
+| `tools/agent_bus.py` | 20 | shim → `tools.core.agent_bus` |
 
 ---
 
-## 8. `tools/domains/` — leaf domain modules (14, publish onto signal bus)
+## 8. `tools/domains/` — leaf domain modules (14, 5,726 lines)
 
 ### api (2)
 | Module | Lines | Purpose |
 |---|---|---|
-| `tools/domains/api/bopla_matrix.py` | 450 | BOPLA (OWASP API3) object-property-level authz matrix from OpenAPI schemas. `build_matrix`@206 |
-| `tools/domains/api/graphql_batch_analyzer.py` | 452 | GraphQL batching/DoS/introspection abuse plans. `_introspection_plans`@165, `analyze`@364 |
+| `tools/domains/api/bopla_matrix.py` | 450 | BOPLA (OWASP API3) object-property-level authz matrix. `build_matrix`@206 |
+| `tools/domains/api/graphql_batch_analyzer.py` | 452 | GraphQL batching/DoS/introspection abuse plans. `analyze`@364 |
 
 ### auth (3)
 | Module | Lines | Purpose |
 |---|---|---|
-| `tools/domains/auth/jwt_forgery.py` | 305 | Offline JWT analysis: alg header inventory + forgery plans (alg=none, confusion, weak HMAC). `analyze`@172 |
-| `tools/domains/auth/oauth_flow_analyzer.py` | 436 | OAuth/OIDC endpoint/flow parsing from recon artifacts + validation plans. `analyze`@183 |
-| `tools/domains/auth/ato_chain_planner.py` | 378 | Account-takeover chain synthesis from leads (email/reset/MFA/session/OAuth/JWT + enablers). `plan_chains`@282 |
+| `tools/domains/auth/jwt_forgery.py` | 305 | Offline JWT analysis + forgery plans. `analyze`@172 |
+| `tools/domains/auth/oauth_flow_analyzer.py` | 436 | OAuth/OIDC flow parsing + validation plans. `analyze`@183 |
+| `tools/domains/auth/ato_chain_planner.py` | 378 | ATO chain synthesis. `plan_chains`@282 |
 
 ### cloud (1)
 | Module | Lines | Purpose |
 |---|---|---|
-| `tools/domains/cloud/iam_privesc_graph.py` | 559 | AWS IAM privilege-escalation graph (21 Rhino methods) — offline capability analysis. `IamPrivescAnalysis`@370, `analyze`@435, `parse_policy_dump`@391 |
+| `tools/domains/cloud/iam_privesc_graph.py` | 559 | AWS IAM privilege-escalation graph (21 Rhino methods). `analyze`@435 |
 
 ### llm (2)
 | Module | Lines | Purpose |
 |---|---|---|
-| `tools/domains/llm/agentic_tool_auth.py` | 382 | Tool-call sites × attacker-influenced args → "tool X with attacker-controlled Y" plans. `analyze`@164 |
-| `tools/domains/llm/rag_memory_poisoning.py` | 390 | RAG/agent-memory poisoning vector ranking. `analyze`@173 |
+| `tools/domains/llm/agentic_tool_auth.py` | 382 | Tool-call sites × attacker-controlled args. `analyze`@164 |
+| `tools/domains/llm/rag_memory_poisoning.py` | 390 | RAG/memory poisoning vector ranking. `analyze`@173 |
 
 ### mobile (2)
 | Module | Lines | Purpose |
 |---|---|---|
-| `tools/domains/mobile/deep_link_analyzer.py` | 449 | Android manifest/iOS plist deep-link surface planning. `parse_android_manifest`@156, `parse_ios_links`@212, `analyze`@259 |
-| `tools/domains/mobile/mobile_policy_checker.py` | 370 | Deterministic static manifest/plist policy checks (cleartext, backup, exports, …). `analyze`@272 |
+| `tools/domains/mobile/deep_link_analyzer.py` | 449 | Android/iOS deep-link surface planning. `analyze`@259 |
+| `tools/domains/mobile/mobile_policy_checker.py` | 370 | Static manifest/plist policy checks. `analyze`@272 |
 
 ### smart_contracts (2)
 | Module | Lines | Purpose |
 |---|---|---|
-| `tools/domains/smart_contracts/llm_contract_triage.py` | 365 | Exploitability ranking of static smart-contract findings (OpenAnt-style). `triage`@239 |
-| `tools/domains/smart_contracts/price_manipulation_analyzer.py` | 336 | DeFi oracle/price manipulation lifecycle plans. `analyze`@259 |
+| `tools/domains/smart_contracts/llm_contract_triage.py` | 365 | Exploitability ranking of static SC findings. `triage`@239 |
+| `tools/domains/smart_contracts/price_manipulation_analyzer.py` | 336 | DeFi oracle/price-manipulation lifecycle plans. `analyze`@259 |
 
 ### web (2)
 | Module | Lines | Purpose |
 |---|---|---|
-| `tools/domains/web/http_smuggling_detector.py` | 471 | HTTP request smuggling probe generator + oracle (CL.TE, TE.CL, TE.TE, H2.CL, H2.TE, 0.CL…). `build_plan`@246, `evaluate`@321 |
-| `tools/domains/web/parser_differential.py` | 383 | WAFFLED-style WAF-bypass payload family generator. `generate`@236, `make_waf_blocked_listener`@290 |
+| `tools/domains/web/http_smuggling_detector.py` | 471 | HTTP smuggling probe generator + oracle. `build_plan`@246 |
+| `tools/domains/web/parser_differential.py` | 383 | WAFFLED-style WAF-bypass payload families. `generate`@236 |
 
 ---
 
-## 9. `tools/intelligence/` · `recon/` · `validation/` (6 modules)
+## 9. `tools/intelligence/` · `recon/` · `validation/` (7 modules, 2,931 lines)
 
 | Module | Lines | Purpose & key definitions |
 |---|---|---|
-| `tools/intelligence/chain_graph_ai.py` | 336 | Missing-link chain proposals on the deep_chain graph. `propose`@134 |
-| `tools/intelligence/failure_learning.py` | 408 | Blocker → bypass-candidate feedback loop + **operator approval gate**. `BypassCandidate`@155, `learn`@189, `approve_candidate`@293, `make_blocked_listener`@344 |
-| `tools/intelligence/seed_advisor.py` | 336 | Seed/mutation probe proposals for research units. `advise`@222 |
-| `tools/recon/historical_asset_delta.py` | 460 | Passive-DNS/CRT churn tracking (see §7.2) |
-| `tools/validation/self_eval_harness.py` | 667 | AutoPenBench-style milestone scoring against fixed task set. `Milestone`@76, `EvalTask`@86, `evaluate`@137 (10 tasks, 100% = pass) |
-| `tools/validation/verification_lab.py` | 393 | Disposable dynamic-validation lab plans (container/dir spec, setup→reproduce→verify→cleanup). `plan_labs`@276 |
+| `tools/intelligence/chain_graph_ai.py` | 336 | Missing-link chain proposals. `propose`@134 |
+| `tools/intelligence/failure_learning.py` | 408 | Blocker → bypass-candidate feedback + **operator approval gate**. `approve_candidate`@293 |
+| `tools/intelligence/seed_advisor.py` | 336 | Seed/mutation probe proposals. `advise`@222 |
+| `tools/recon/historical_asset_delta.py` | 460 | Passive-DNS/CRT churn tracker. `compute_delta`@238, `ingest_historical`@322 |
+| `tools/validation/race_engine.py` | 331 | Race-condition raw-socket engine (scope-gated at @175) |
+| `tools/validation/self_eval_harness.py` | 667 | AutoPenBench-style milestone scoring (10 tasks, 100% = pass). `evaluate`@137 |
+| `tools/validation/verification_lab.py` | 393 | Disposable dynamic-validation lab plans. `plan_labs`@276 |
 
 ---
 
-## 10. `tests/` — 70 files, 920 tests, 15,141 lines
+## 10. `bridge/`, `commands/`, `hooks/`, `wordlists/`
 
-### 10.1 End-to-end / integration (largest)
-| Test file | Lines | Covers |
+| File | Lines | Purpose |
 |---|---|---|
-| `tests/test_zero_day_research.py` | 957 | Zero-day candidate lifecycle, tracks, novelty, sequential rounds, exploit feedback |
-| `tests/test_e2e_deep_dive_campaign.py` | 608 | Full campaign against in-process VulnBank: probe→observe→adapt→exploit→eval |
-| `tests/test_live_feedback_loop.py` | 604 | Live probe→observation→adaptation cycle + WAF bypass approval cycle |
-| `tests/test_apt_commander_week1.py` | 480 | Week-1 APT workflow: stage gating, artifacts, research freshness |
-| `tests/test_ci_bundle_check.py` | 452 | Bundle content + self-eval-pass check (incl. tamper failure path) |
-| `tests/test_research_loop.py` | 425 | Mandatory research sequence execution + freshness verification |
-| `tests/test_observation.py` | 417 | Oracle rules R1–R7, hash integrity, follow-ups |
-| `tests/test_discovery_core.py` | 409 | Surface model + mutator + scheduler coverage loop |
-| `tests/test_leads.py` | 407 | Lead state machines, mutations, promotion, data-unlock/chain hypotheses |
-| `tests/test_paper_intel.py` | 390 | Paper-derived analyzers (skill-chain, provenance, HTTPS privacy, control plane) |
-| `tests/test_f05_strict_validation.py` | 337 | F0.5 strict-mode triage/refutation gates |
-| `tests/test_live_executor.py` | 328 | Probe planning/execution, WAF detection, reproducible evidence |
-| `tests/test_week8_selfeval_workflow_integrity.py` | 326 | Self-eval harness + workflow integrity interplay |
-| `tests/test_week3_cloud_mobile_recon.py` | 305 | IAM privesc graph, mobile analyzers, recon delta |
-| `tests/test_week2_bfa_graphql_oauth.py` | 305 | BOPLA matrix, GraphQL batch, OAuth flow analyzers |
-| `tests/test_week6_ato_failurelearning_chaingraph.py` | 285 | ATO chains, failure learning + approval, chain graph AI |
-| `tests/test_art_selector.py` | 284 | ART4SQLi tokenization/distance/F-measure |
-| `tests/test_packaging.py` | 254 | Installer/bundle layout verification |
-
-### 10.2 Unit suites (remaining 50+ files, grouped)
-- **Workflow/gates:** `test_stage_controller` (247), `test_campaign_orchestrator` (242), `test_f05_campaign_gate` (180), `test_f05_quarantine_integrity` (196), `test_phases_2_5_6` (143), `test_phases_7_8` (109), `test_pipeline` (149), `test_fast_path_engine` (146), `test_engagement_context` (108), `test_environment_profile` (57), `test_safety_boundaries` (195)
-- **Research/novelty:** `test_week4_llm_smartcontract_verification` (241), `test_week5_advisor_dynamic_checkpoints_pricemanip` (213), `test_deep_tools` (205), `test_safe_research_tracks` (191), `test_llm_attack_surface` (195), `test_batch_tracks` (164), `test_research_core` (108), `test_elicitation_bridge` (177), `test_adaptive_learning` (106), `test_pass_at_k` (180)
-- **Domains:** `test_graphql_gid` (178), `test_cache_traversal` (173), `test_header_trust` (194), `test_contract_discovery` (212), `test_differential_runner` (107), `test_vhost_grouping` (119), `test_hunt_engine` (128), `test_hunt_chain_integration` (39), `test_schema_extractor` (146)
-- **Infra/tooling:** `test_hardening` (241), `test_integrity` (149), `test_integrity_hardening` (133), `test_trigger_ledger_integrity` (81), `test_chain_orchestrator` (109), `test_chain_ai` (97), `test_harness_guard` (113), `test_harness_command` (60), `test_harness_intelligence` (60), `test_readiness` (112), `test_benchmark` (86), `test_agent_bus_trigger` (114), `test_model_router` (126), `test_opsec` (150), `test_wordlist_gen` (219), `test_methodology_playbook` (84), `test_post_finding_trigger` (102), `test_privacy_governance` (54), `test_js_ct_intel` (97), `test_js_token_forge` (94), `test_tech_fingerprint` (199)
-- **Fixture:** `tests/fixtures/agent-inventory-security-gaps.json` — synthetic agent inventory for `paper_intel.assess_agent_control_plane` (test-only, no real data)
+| `bridge/bugwolf-mcp.py` | 175 | MCP server (JSON-RPC 2.0 over stdio): `bugwolf_status/plan/run/leads/mode`; never crashes — failed calls return error objects. `dispatch`@~139, `main`@~158 |
+| `commands/bugwolf.md` | — | Mission start: MissionSpec parse → preflight → scheduler run |
+| `commands/bugwolf-plan.md` | — | Scheduler dry-run (graph + preflight gate, no dispatch) |
+| `commands/bugwolf-run.md` | — | Execute/resume mission (open leads first, finished work never re-runs) |
+| `commands/bugwolf-status.md` | — | Graph + lead ledger + mode journal + preflight digest |
+| `commands/bugwolf-review.md` | — | Adversarial lead review (verify-lane replay, disproof checklist) |
+| `commands/bugwolf-report.md` | — | Report assembly (requires ZERO open leads; redaction + provenance) |
+| `commands/bugwolf-stop.md` | — | Freeze mode state via the stop hook |
+| `commands/bugwolf-resume.md` | — | Replay JSONL tail; open leads → chains → new recon |
+| `commands/bugwolf-sandbox.md` | — | Sandbox status/kill/arm/grant/revoke/verify (never auto-arm) |
+| `hooks/hooks.json` | 24 | SessionStart → preflight digest (cached); Stop → persistent-mode freeze |
+| `hooks/bugwolf_stop_hook.py` | 100 | Thin stdlib shim: one JSON event in → one JSONL journal line (allowlisted scalar keys only) → one JSON decision out; a hook failure is logged and swallowed so it can never stall the harness |
+| `wordlists/resolvers.txt` | 24 | Public DNS resolvers used by recon |
 
 ---
 
-## 11. `references/` — 53 knowledge docs
+## 11. `tests/` — 130 files, 1,334 tests, 22,691 lines
 
-### 11.1 Top-level (25)
+**Fixtures / stand-ins:**
+- `tests/_stub_target.py` — deterministic stdlib-only operator-target stand-in for CI (the v1.3.0 replacement for the removed shipped labs); suites skip cleanly when absent.
+- `tests/fixtures/agent-inventory-security-gaps.json` — synthetic agent inventory for `paper_intel.assess_agent_control_plane` (test-only).
+
+**End-to-end / integration (boot the stub target in-process):**
+`test_e2e_deep_dive_campaign.py` (full U1–U5 pipeline: pass@k, artifact bridging, strict F0.5, 12-stage workflow, probe pass, fuzz→spawn→reproduce, 10-task eval), `test_mission_runner_e2e.py`, `test_live_feedback_loop.py`, `test_fin_lane.py`, `test_auth_lane.py`, `test_domain_lanes.py`, `test_phase5_oast_browser.py`, `test_phase6_modes_ladder.py`, `test_apt_commander_week1.py`, `test_ci_bundle_check.py`, `test_packaging.py`, `test_doc_consistency.py` (pins AUDIT_MAP.md ↔ `tools/recon/` contract).
+
+**Unit suites (remaining ~110 files, grouped):**
+- **Workflow/gates:** stage_controller, campaign_orchestrator, f05_* (gate/quarantine/strict), phases_2_5_6, phases_7_8, pipeline, fast_path_engine, engagement_context, environment_profile, safety_boundaries, week8_selfeval_workflow_integrity
+- **Research/novelty:** zero_day_research (957 lines — largest test), research_loop, research_core, week4_llm_smartcontract_verification, week5_advisor_dynamic_checkpoints_pricemanip, deep_tools, safe_research_tracks, batch_tracks, adaptive_learning, pass_at_k, passk_metrics, near_duplicate_clustering, novelty_pipeline, candidate_lifecycle, mutation_lineage, lineage_graph, carlini_loop
+- **Runtime/orchestrator:** runtime_contracts, runtime_scheduler, mission_runner_e2e, orchestrator_preflight, operator_dashboard, target_intake, sandbox, sandbox_coverage, scope_gate, accounts_matrix, oast_tunnel, ai_sandbox
+- **Discovery/domains:** discovery_core, surface/schema tests, art_selector, header_trust, vhost_grouping, graphql_gid, cache_traversal, contract_discovery, differential_runner, hunt_engine, hunt_chain_integration, schema_extractor, week2_bfa_graphql_oauth, week3_cloud_mobile_recon, week6_ato_failurelearning_chaingraph, week4, week5
+- **Infra/tooling:** hardening, integrity, integrity_hardening, trigger_ledger_integrity, chain_orchestrator, chain_ai, harness_guard, harness_command, harness_intelligence, readiness, benchmark, agent_bus_trigger, model_router (+config), opsec, wordlist_gen, methodology_playbook, post_finding_trigger, privacy_governance, js_ct_intel, js_token_forge, tech_fingerprint, release_hardening, perf_gate, reproducibility, reliability, observation, leads, multitenant/web_api/graphql workflow suites, http_protocol_runner, protocol_adapters, protocol_differential_fixture, web3_* suites, ai_tool_adapters, ai_red_team_adapter, supply_chain, red_team_runner, llm_attack_surface, multi_agent_fixture, cross_domain, nvd_fetch, nvd_ingester, digest_canary, sarif_export, lab_doctor, lab_lifecycle, deep_tools, elicitation_bridge
+
+---
+
+## 12. `references/` — 53 knowledge docs
+
+### 12.1 Top-level (23)
 `adaptive-learning.md`, `al-mizaan-gates.md`, `bug-bounty-intelligence-mcp.md`, `chain-analysis.md`, `cvss-guide.md`, `cwe-knowledge-base.md`, `defensive-intelligence.md`, `discovery-core.md`, `isolation.md`, `judging.md`, `knowledge.md`, `local-tooling.md`, `methodology.md`, `paper-intelligence.md`, `privacy-governance.md`, `recon-tooling.md`, `report-formatting.md`, `research-loop.md`, `setup.md`, `sis-intelligence.md`, `supervisor.md`, `wild-mode.md`, `zero-day-research.md`
 
-### 11.2 `references/hacking-agents/` (22)
+### 12.2 `references/hacking-agents/` (22)
 `access-control-agent`, `browser-automation-agent`, `business-logic-agent`, `cache-poisoning-agent`, `counter-intelligence-agent`, `credential-leak-agent`, `crypto-math-agent`, `economic-security-agent`, `graphql-agent`, `http-smuggling-agent`, `llm-ai-agent`, `mobile-client-agent`, `race-condition-agent`, `recon-agent`, `regression-agent`, `rogue-agent`, `shared-rules`, `smart-contract-agent`, `supply-chain-agent`, `temp-email-agent`, `waf-bypass-agent`, `web-api-agent` (all `.md`)
 
-### 11.3 `references/attack-vectors/` (8)
+### 12.3 `references/attack-vectors/` (8)
 `business-logic-vectors`, `cloud-vectors`, `llm-ai-vectors`, `mobile-vectors`, `smart-contract-vectors`, `spel-injection-vectors`, `web-api-vectors`, `zerodays` (all `.md`)
 
 ---
 
-## 12. Runtime/state directories (git-ignored)
+## 13. No shipped labs (v1.3.0 policy)
 
-| Dir | Contents |
-|---|---|
-| `state/` | Runtime state: `learning/<target>.jsonl`, `chains/<target>/orchestration.{json,jsonl}`, sessions, signals, context, environment.json |
-| `$WS/` | Example workspace: full `research/synth.example/` tree (pre-hunt→pre-report, wordlists, sources) + `.bugwolf/workflows/synth.example.json` |
-| `.bugwolf/` | Persistent workflow state per target (`workflows/<target>.json`, `.jsonl`) |
-| `recon/` | Recon output (e.g. `vulnbank.local/discovery/graphql-plans.json`, `ato-chain-plans.json`) |
-| `research/` | Research checkpoints per target (`<target>/pre-hunt|post-recon|post-maps|bypass|post-findings|escalation|pre-report` with SUMMARY.md/results.json/sources/) |
-| `dist/` | Built bundles: `bugwolf-v1.2.10.skill` + `bugwolf-v1.2.10.freebuff.zip` |
-| `.private/`, `vault/` | reserved (empty) |
-| `wordlists/resolvers.txt` | 24 public DNS resolvers used by recon |
+As of `70712dc` ("feat: FIN business-logic lane + remove shipped labs
+(real-world plugin)") the repo ships **no vulnerable lab fixtures**. The
+former `lab/vulnbank/server.py` (274 lines) and `lab/web3` fixture were
+deleted: the plugin binds exclusively to **operator-declared targets**
+(`tools/target_intake.py` records the target spec + attestation; the
+v1.3.0 scope gate enforces the declared boundary). `tests/_stub_target.py`
+stands in as a deterministic operator target for CI regression only, and
+`scripts/lab_setup.sh` + `docker-compose.lab.yml` remain available for
+optional local runtime validation (never a production boundary). Historical
+mentions of VulnBank in `CHANGELOG.md` and the older plan documents are
+records of past releases, not current structure.
 
 ---
 
-## 13. Dependency architecture (from `DEPENDENCIES.md`, AST-verified)
+## 14. Runtime/state directories (git-ignored)
 
-- **Leaf isolation:** `domains/`, `intelligence/`, `recon/`, `validation/` are imported by **nothing**; they publish typed events onto `core/signal_bus.py` (`publish_or_warn`) and are invoked as standalone CLIs.
-- **Only 2 direct leaf imports:** `core/campaign_orchestrator.py → intelligence/failure_learning.py` + `intelligence/seed_advisor.py`.
-- **Orchestrator fan-in:** imports asset_discovery, campaign, chain_orchestrator, leads, mutator, refutation, research_model, research_thread, stage_controller, zero_day, core/{fuzz_bridge, live_executor, model_router, signal_bus, research_loop}, intelligence/{failure_learning, seed_advisor}.
-- **Core internals:** `stage_controller → harness_guard, paper_intel`; `fuzz_bridge → live_executor, signal_bus, mutator, schema_extractor`; `research_loop → adaptive_learning, wordlist_gen`; `agent_bus → evidence, post_finding_trigger, safety`; `live_executor/signal_bus → runtime_paths`.
+| Dir | Contents |
+|---|---|
+| `state/` | Runtime state: `orchestrator/<mission>/` (graph.json, leads.jsonl, modes.jsonl, hooks.jsonl, report.json), `preflight/manifest.json`, `learning/<target>.jsonl`, `sessions/<target>/` (probes.jsonl, leads.jsonl, maps/), `signals/events/`, `sandbox/audit.jsonl`, `environment.json` |
+| `.bugwolf/` | Persistent workflow state per target (`workflows/<target>.json`) |
+| `recon/` | Recon output (discovery plans, js-intel, methodology, …) |
+| `research/` | Research checkpoints per target (`<target>/pre-hunt|post-recon|post-maps|bypass|post-findings|escalation|pre-report`) |
+| `dist/` | Built bundles: `bugwolf-v<V>.skill` + `bugwolf-v<V>.freebuff.zip` |
+| `.private/`, `vault/` | reserved (empty) |
+
+---
+
+## 15. Dependency architecture (from `DEPENDENCIES.md`, AST-verified)
+
+- **Leaf isolation:** `domains/`, `intelligence/`, `recon/`, `validation/` are imported by **nothing** (2 exceptions: `core/campaign_orchestrator.py → intelligence/{failure_learning, seed_advisor}.py`); they publish typed events onto `core/signal_bus.py` (`publish_or_warn`) and run as standalone CLIs.
+- **Runtime boundary:** `runtime/scope.py` is consulted at the four network choke points (mission_runner, live_executor, race_engine, browser_driver); `runtime/sandbox.sandboxed_run` is the spawn path for 16 modules (hunt, fleet, capability_manifest, preflight, oast_tunnel, asset_intel, js_ct_intel, crypto_vault, chain_of_custody, formal_verify, retest_scheduler, release_ops, target_intake, reproducibility, http_protocol_runner, readiness).
+- **Orchestrator fan-in:** mission_runner ↔ scheduler/contracts/lead_protocol/preflight/modes/accounts/oast; campaign_orchestrator imports asset_discovery, campaign, chain_orchestrator, leads, mutator, refutation, research_model, research_thread, stage_controller, zero_day, core/{fuzz_bridge, live_executor, model_router, signal_bus, research_loop}.
+- **Core internals:** `stage_controller → harness_guard, paper_intel`; `fuzz_bridge → live_executor, signal_bus, mutator, schema_extractor`; `research_loop → adaptive_learning, wordlist_gen`; `agent_bus → evidence, post_finding_trigger, execution_semantics`.
 - **Upward coupling:** all leaf modules → `runtime_paths.py` for workspace resolution.
 
 ---
 
-## 14. Working-tree delta (uncommitted, 86 files, +4,783/−1,059)
-
-Largest uncommitted changes since `06b08ff`:
-- `tools/core/campaign_orchestrator.py` **+897** — exploit feedback wiring (`_feed_exploit_to_chains`/`_feed_exploit_to_zero_day`), bypass-approval exploitation, self-eval integration
-- `tools/zero_day.py` **+475** — `hunt_exploit_feedback`, impact-bounded unlocks, exploit provenance stamping
-- `tools/refutation.py` **+398** — F0.5 strict gates expansion
-- `tools/validation/self_eval_harness.py` **+305** — 10-task eval, bypass-approval milestone
-- `tools/research_thread.py` **+231** — deterministic artifact attachment
-- `tools/state.py` **+142** — session-state hardening
-- `tests/test_zero_day_research.py` **+292**, `tests/test_ci_bundle_check.py` **+132**, `tests/test_apt_commander_week1.py` **+96**
-- `tools/intelligence/failure_learning.py` **+98** — `approve_candidate` operator gate
-- `tools/leads.py` **+117** — `derive_data_unlock_classes`/`chain_hypotheses_from_exploit`
-- Plus small (+3/+4) additions to nearly all domain/intelligence modules (signal-bus publish wiring)
-- `lab/vulnbank/server.py` +31 — `/api/gateway` WAF surface
-- Docs: `CHANGELOG.md` +373, `AUDIT.md` regenerated, `README.md` +37, `SKILL.md` +35, `VERSION` → 1.2.10
-
----
-
-## 15. Verification status (2026-08-26)
+## 16. Verification status (2026-09-03)
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py'   → Ran 920 tests, OK
-python3 -m compileall -q tools tests lab               → clean
-bash -n tools/recon_engine.sh                          → syntax OK
-python3 scripts/generate_audit.py                      → AUDIT.md regenerated
+python3 -m unittest discover -s tests -p 'test_*.py'   → Ran 1334 tests, OK (skipped=2)
+python3 -m compileall -q tools tests                    → clean
+bash -n tools/recon_engine.sh scripts/*.sh              → all OK
+python3 scripts/generate_audit.py                       → AUDIT.md regenerated
 ```
 
 **Notable observations:**
-1. `safety.py`, `execution_controller.py`, `recon_exec.py` are deliberately pass-through ("uncensored") — authorization is operator-declared context, enforced by workflow artifacts (stage prerequisites, evidence, human review) rather than target/scope rejection. This is the documented design intent (`README`, `SKILL.md`, `configs/readiness.json`).
-2. The engineering-control layer is strong: evidence redaction (`evidence.py`), PII firewall, chain of custody, tamper-evident workflows, quarantined learning memory, replayable evidence requirements before CONFIRMED.
+1. `tools/execution_semantics.py`, `tools/execution_controller.py`, and the `tools/safety.py` shim are deliberately pass-through ("uncensored" lab semantics — shape validation only). Real enforcement lives in exactly two places: `tools/runtime/scope.py` (deny-by-default, checked at every network choke point) and `tools/runtime/sandbox.py` (spawn allowlist + kill switch). This is the documented design intent (README, SKILL.md, `configs/readiness.json`).
+2. The engineering-control layer is strong: evidence redaction (`evidence.py`), PII firewall, chain of custody, tamper-evident workflows, quarantined learning memory with an operator approval gate, replayable-evidence requirement before CONFIRMED, credential redaction in the scheduler and account matrix.
 3. Runtime state, research output, and bundles are git-ignored; the tracked tree is pure source + docs.
+4. Closed gap (audit 2026-09-03, fixed same day): `tools/hunt.py`'s `curl_fetch`/`curl_fetch_observation` previously did not consult the scope gate; both now run `_scope_check` (fail-closed `scope-blocked:` sentinel, auto-bind for standalone use) ahead of the sandbox spawn, so live replays routed through them (`differential_runner`, `header_trust`, `cache_traversal`) obey the operator scope. Pinned by `tests/test_hunt_engine.py::TestScopeGateChokePoint`.

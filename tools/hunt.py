@@ -245,10 +245,32 @@ def _curl_config(headers: Dict[str, str], cookies: Dict[str, str],
     return "\\n".join(lines) + ("\\n" if lines else "")
 
 
+def _scope_check(url: str) -> Optional[str]:
+    """Execution-boundary scope gate for the hunt engine's curl paths.
+
+    Closes the choke-point gap from the 2026-09-03 audit: the hunt engine is
+    the live-replay transport for differential_runner, header_trust, and
+    cache_traversal, so it must obey the operator scope like every other HTTP
+    lane (readiness R1).  Same convention as the other choke points
+    (http_probe, live_executor, race_engine, browser_driver): fail closed
+    with a 'scope-blocked:' sentinel on ScopeViolation; auto-bind on the
+    first host seen for standalone use.  Returns None when authorized.
+    """
+    try:
+        from tools.runtime.scope import ScopeViolation, check_url
+        check_url(url)
+    except ScopeViolation as exc:
+        return f"scope-blocked: {exc}"
+    return None
+
+
 def curl_fetch(method: str, url: str, session: HuntSession,
                extra_headers: Dict = None, body: str = None,
                rotator=None, read_only_post: bool = False) -> tuple:
     """Execute one request through the mandatory execution controller."""
+    blocked = _scope_check(url)
+    if blocked:
+        return (-2, blocked)
     cmd = ["curl", "-sk", "-X", method, url,
            "-w", "|%{http_code}", "--max-time", "15", "--config", "-"]
 
@@ -304,6 +326,9 @@ def curl_fetch_observation(method: str, url: str, session: HuntSession,
     """
     if not HAS_OBSERVATION:
         return HttpObservation(status=0, error="observation layer unavailable")
+    blocked = _scope_check(url)
+    if blocked:
+        return HttpObservation(status=0, error=blocked)
     cmd = ["curl", "-sk", "-i", "-X", method, url,
            "--max-time", "30", "-w", _BF_TRAILER, "--config", "-"]
 
