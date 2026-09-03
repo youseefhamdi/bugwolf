@@ -44,10 +44,12 @@ references/                  → 53 markdown knowledge docs (agents, vectors, me
 
 **Architecture in one sentence:** a *strict workflow layer* (12-stage
 hash-chained stage controller + 7-checkpoint mandatory research loop +
-evidence/human-review gates) sitting on top of a deliberately *pass-through
-execution layer* (`safety.py`, `execution_controller.py`, `recon_exec.py`
-accept `--scope-file`/`--confirm-active` as declarations and never reject a
-target), with domain modules publishing typed events onto
+evidence/human-review gates) sitting on top of a *boundary-enforced
+execution layer* (since v1.3.0: `tools/runtime/scope.py` enforces the
+declared scope deny-by-default at every network choke point,
+`tools/runtime/sandbox.py` wraps every spawn with allowlist + kill
+switch; `--scope-file`/`--confirm-active` are operator declarations
+recorded for provenance), with domain modules publishing typed events onto
 `core/signal_bus.py` that the campaign orchestrator subscribes to.
 
 ---

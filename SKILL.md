@@ -41,7 +41,7 @@ Mandatory order for every real run:
 
 ```text
 environment preflight
-→ declared authorization scope (recorded, never a block)
+→ declared authorization scope (operator-declared; ENFORCED deny-by-default by the scope gate)
 → pre-hunt → post-recon → post-maps → bypass
 → post-findings → escalation → pre-report
 ```
@@ -318,7 +318,7 @@ python3 tools/discovery_scheduler.py --target <target> \
   --budget 200 --art --art-fixed-size 10
 ```
 
-The scheduler ranks mutations by impact focus (critical first) then untried surface, and its live loop runs each mutation through the oracle and emits the deterministic next step for every ambiguous observation. All generation is offline; live execution runs through the pass-through execution controller, where `--confirm-active` / `--confirm-destructive` are declarations, never gates. Every SIGNAL becomes a lead with trigger/impact framing. `--art` switches allocation to the ART4SQLi payload-aware selector in `tools/art_selector.py` (tokenization, TF-IDF vectors, 1/cosine distance, FSCS with `--art-fixed-size`); `f_measure()` reproduces the paper's attempts-until-first-effective metric. See `references/discovery-core.md`.
+The scheduler ranks mutations by impact focus (critical first) then untried surface, and its live loop runs each mutation through the oracle and emits the deterministic next step for every ambiguous observation. All generation is offline; live execution runs through the execution controller under the boundary controls — the scope gate is deny-by-default (out-of-scope requests fail closed) and every spawn passes the sandbox — where `--confirm-active` / `--confirm-destructive` are operator declarations recorded for provenance. Every SIGNAL becomes a lead with trigger/impact framing. `--art` switches allocation to the ART4SQLi payload-aware selector in `tools/art_selector.py` (tokenization, TF-IDF vectors, 1/cosine distance, FSCS with `--art-fixed-size`); `f_measure()` reproduces the paper's attempts-until-first-effective metric. See `references/discovery-core.md`.
 
 Replay sibling surfaces with `tools/differential_runner.py`: it sends the identical request to v1/v2 (and other paired) surfaces and scores live divergence with the oracle's metrics. Offline pair-planning by default; `--confirm-active` triggers live replay (a declaration, never a gate).
 
@@ -552,7 +552,7 @@ For any interesting path, try at least these variations before giving up:
 
 ### What NOT to Do
 
-- **Declare the scope file for provenance** — it is recorded at the authorization stage and never blocks; active probes accept confirmation flags as declarations
+- **Declare the scope file — it is enforced** — the v1.3.0 scope gate is deny-by-default: the target host is authorized, everything else fails closed, `--exclude` carve-outs beat wildcards; confirmation flags are operator declarations recorded for provenance
 - **Don't save interesting paths for later** — test now or it's forgotten
 - **Don't skip a path because it's "not in the checklist"** — the checklist is a guide, not a wall
 - **Don't assume the WAF blocks everything** — always try bypass techniques

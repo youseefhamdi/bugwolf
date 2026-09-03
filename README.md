@@ -21,7 +21,9 @@
 
 > **AI Pentesting Tool:** Run isolated, cloud-hosted pentesting sandboxes at **[bugwolf.xyz](https://bugwolf.xyz)** — your AI key, your Firecracker microVM, your report. Pipeline: recon → hunt → triage → H1-ready report. AI slop gets you rate-limited; BugWolf gets you paid.
 
-> **New in v1.0.0:** LLM / Agentic AI security track (OWASP GenAI LLM Top 10 2026 + Agentic Top 10 ASI01–ASI10), RAG & embedding attacks, MCP security, mobile + cloud-native vectors, and a zero-day LLM attack-surface detector. See [CHANGELOG.md](CHANGELOG.md).
+> **New in v1.3.0 — boundary-hardened orchestrator:** the Phase 0–8 plan is complete — operator scope gate (deny-by-default, enforced at every network choke point), universal subprocess sandbox with a one-command kill switch, OAST public tunnel so SSRF leads close on attributed callbacks from REMOTE targets, auth A/B/C + FIN business-logic + contract/cloud/LLM lanes, all 13 §5.3 performance targets measured, and readiness level **L2 (clean-checkout reproducible)** with zero warnings. See [CHANGELOG.md](CHANGELOG.md).
+
+> **Also in this series:** v1.0.0 brought the LLM / Agentic AI security track (OWASP GenAI LLM Top 10 2026 + Agentic Top 10 ASI01–ASI10), RAG & embedding attacks, MCP security, mobile + cloud-native vectors, and a zero-day LLM attack-surface detector.
 
 > **Operating mode:** Production campaigns run only from an operator-supplied target specification and attestation. The operator defines the exact boundary and Rules of Engagement; BugWolf records that provenance and applies maximum capability inside it. BugWolf ships **no labs**: deterministic stubs under `tests/` (plus optional Anvil/LocalStack on the operator's own machine) validate the pipeline in CI only; they are never the production boundary.
 
@@ -33,24 +35,28 @@ BugWolf is architected as an **APT Commander**: a strict workflow layer that
 enforces **depth and methodology**, sitting on top of an execution layer that is
 deliberately **uncensored** for operational freedom.
 
-- **The workflow enforces depth, not authorization.** The 12-stage pipeline
+- **The workflow enforces depth, not bureaucracy.** The 12-stage pipeline
   (`setup → environment-preflight → authorization → passive-recon →
   asset-intelligence → technology-fingerprint → maps → research →
   coverage-plan → validation → triage → report`) blocks advancement only when
-  **artifacts are missing or research is stale** — never because a target or URL
-  is outside a declared scope. Every stage has a hash-chained artifact
-  prerequisite; tampered or missing artifacts stop the workflow.
-- **The 7-checkpoint research loop is mandatory.** `pre-hunt → post-recon →
-  post-maps → bypass → post-findings → escalation → pre-report` must complete
-  in order; `latest_ready: false` blocks validation and chaining, forcing deep
-  exploration instead of stopping at a surface scan.
-- **The execution layer is pass-through.** `safety.py` and
-  `execution_controller.py` accept `--scope-file`, `--confirm-active`, and
-  `--confirm-destructive` as operator declarations and never reject a target.
-  The authorization stage records the declared scope for provenance only.
+  **artifacts are missing or research is stale**. Every stage has a hash-chained
+  artifact prerequisite; tampered or missing artifacts stop the workflow.
+- **The execution boundary enforces the operator's scope — deny-by-default.**
+  Since v1.3.0, `tools/runtime/scope.py` authorizes the mission target's host
+  (operator-declared) plus explicit `--scope` entries, blocks everything else
+  at every network choke point (`http_probe`, the race engine's raw sockets,
+  the live executor, the browser driver), and honors `--exclude` carve-outs
+  (exclusions ALWAYS beat a wildcard — e.g. a bug-bounty program that excludes
+  `beta.`/`community.` hosts). Out-of-scope requests fail CLOSED and are
+  recorded as policy facts, never as tooling gaps.
+- **Every subprocess runs under the sandbox.** `tools/runtime/sandbox.py`
+  wraps all spawns: binary allowlist, scrubbed environment, output caps, and
+  an operator kill switch (`python3 -m tools.runtime.sandbox kill`) that
+  fails the whole release CLOSED.
 - **Authorization is the operator's responsibility.** BugWolf is for
   authorized security research; only run it against targets you have explicit
-  permission to test.
+  permission to test. The scope gate enforces what you declared — it cannot
+  authorize what you did not.
 
 ## Operator-Supplied Target Intake
 
@@ -131,7 +137,8 @@ bugwolf --solidity review this target PROJECT
 The harness parses the target and mode, verifies or initializes the contract,
 starts and inspects the staged workflow, and continues through the existing
 workflow gates. It asks only for a missing target or environment declaration;
-scope files and confirmations are recorded declarations that never block.
+scope files and confirmations are recorded operator declarations, and the
+v1.3.0 scope gate enforces them (deny-by-default) at every network choke point.
 “attack” means authorized assessment — the remaining gates are artifact,
 evidence, and human-review gates. Its reasoning remains creative through boundary
 flips, differential comparisons, state/time and failure-path checks,
@@ -162,11 +169,15 @@ validation when current research is unavailable. It also blocks `hunt.py` until
 validation and `zero_day.py` until coverage planning. “APT-level”
 means complete, methodical, authorized coverage of the full target surface and
 all trust/identity/state/capability boundaries—not unlimited traffic. Scope
-files and confirmation flags are declarations that never block execution.
+files and confirmation flags are operator declarations, recorded for
+provenance; the execution boundary itself is enforced by the v1.3.0 scope
+gate (deny-by-default) and the sandbox kill switch.
 
-## Lab Runtime Setup
+## Lab Runtime Setup (optional, CI/local validation only)
 
-The optional runtime stack is fully local and isolated. It is not required for static analysis, but runtime-backed validation reports a missing dependency instead of fabricating results.
+The optional runtime stack is fully local and isolated. It is not part of
+any production boundary — BugWolf ships no targets — and runtime-backed
+validation reports a missing dependency instead of fabricating results.
 
 ```bash
 # Start all supplied container runtimes
@@ -270,7 +281,9 @@ python3 tools/adaptive_learning.py --target T --review-id ID --decision approve 
 
 See [`references/adaptive-learning.md`](references/adaptive-learning.md).
 
-Live validation runs through the pass-through execution controller; scope files and confirmation flags are accepted declarations and never block. Request budgets remain bounded. See [`references/zero-day-research.md`](references/zero-day-research.md).
+Live validation runs through the execution controller under the v1.3.0
+boundary controls: the scope gate blocks out-of-scope requests (fail-closed,
+recorded as policy facts) and every spawn passes the sandbox. Request budgets remain bounded. See [`references/zero-day-research.md`](references/zero-day-research.md).
 
 The cache-key path traversal track (`tools/cache_traversal.py`, CVE-2026-18051 class) plans directory-escape probes from the target's cache-key construction and replays them against a lab with unique marker files:
 
@@ -404,7 +417,7 @@ python3 tools/discovery_scheduler.py --target example.com --openapi openapi.json
   --output-dir recon/example.com/discovery --budget 200 --min-focus medium
 ```
 
-The scheduler orders mutations by impact focus (critical first) then untried surface, and its live loop runs each mutation through the oracle and emits the deterministic next step for every ambiguous result. Live execution runs through the pass-through execution controller; confirmation flags are declarations, never gates. See [`references/discovery-core.md`](references/discovery-core.md).
+The scheduler orders mutations by impact focus (critical first) then untried surface, and its live loop runs each mutation through the oracle and emits the deterministic next step for every ambiguous result. Live execution runs through the execution controller under the boundary controls (scope gate deny-by-default; sandbox on every spawn). See [`references/discovery-core.md`](references/discovery-core.md).
 
 Add `--art` to switch budget allocation to the ART4SQLi selection method (Zhang et al., IEEE Trans. Reliability): SQLi payloads are tokenized, embedded as TF-IDF vectors, and spaced by the `1/cosine` distance, so each probe is picked farthest from everything already evaluated — effective payloads cluster in token space, and the paper measures ~26% fewer attempts before the first successful injection versus random. `--art-fixed-size` (default 10) controls the FSCS candidate-set size; `tools/art_selector.py` also exposes the tokenizer, the payload space, and the paper's F-measure metric for comparing selection strategies.
 
@@ -666,27 +679,52 @@ check this contract for vulns --platform h1 --cvss
 
 ### Web / API target
 
-Optionally declare an authorization scope (recorded by the workflow; never a block):
+Declare the authorized scope — the gate **enforces** it (deny-by-default; the
+target host is always authorized, everything else is blocked):
 
 ```json
 {
   "authorized": true,
   "in_scope_domains": ["example.com"],
   "in_scope_wildcards": ["*.api.example.com"],
-  "out_of_scope_domains": []
+  "out_of_scope_domains": ["beta.example.com", "community.example.com"]
 }
 ```
 
-Then provide the scope file to the skill:
+Then run a mission — the orchestrator plans the task graph, runs the
+mandatory pre-flight, and enforces the scope on every request:
+
+```bash
+python3 -m tools.runtime.mission_runner --mission-id demo-001 \
+  --target https://api.target.com --paths /api,/ingest \
+  --scope scope.json --oast --json
+```
+
+Scope extensions and carve-outs (exclusions always beat a wildcard):
+
+```bash
+# extra authorized hosts beyond the target
+python3 -m tools.runtime.mission_runner ... --scope scope.txt
+# program-excluded hosts, even if a wildcard would match them
+python3 -m tools.runtime.mission_runner ... --exclude excluded.txt
+```
+
+Remote targets attribute out-of-bounds callbacks through the public
+tunnel (`--oast` + `BUGWOLF_OAST_TUNNEL=1`); every SSRF lead can close
+on an attributed callback instead of staying a hypothesis.
+
+Emergency stop — one command halts every subprocess the engine may
+spawn, fail-closed:
+
+```bash
+python3 -m tools.runtime.sandbox kill --note "incident"
+python3 -m tools.runtime.sandbox status   # inspect / re-arm / verify
+```
+
+Skill-level flow (Claude Code / Freebuff) is unchanged:
 
 ```
 /bugwolf on https://api.target.com --scope-file scope.json
-```
-
-Confirmation flags are accepted declarations and never block execution:
-
-```
-/bugwolf on https://api.target.com --scope-file scope.json --active --confirm-active
 ```
 
 ```
@@ -717,9 +755,9 @@ generate immunefi report --cvss: [describe the vuln]
 | `--cvss` | Include full CVSS 3.1 vector string + justification |
 | `--file-output` | Save report to `bugwolf-report-[timestamp].md` |
 | `--full` | Run all applicable agents regardless of detected file type |
-| `--scope-file scope.json` | Optional declared scope recorded at the authorization stage (never blocks) |
-| `--confirm-active` | Accepted declaration; never blocks execution |
-| `--confirm-destructive` | Accepted declaration for state-changing IDOR methods; never blocks execution |
+| `--scope-file scope.json` | Declared scope — enforced by the v1.3.0 scope gate (deny-by-default) |
+| `--confirm-active` | Operator declaration for active testing (recorded; active probes obey the scope gate) |
+| `--confirm-destructive` | Operator declaration for state-changing IDOR methods; approved environments only |
 
 ---
 
@@ -781,6 +819,15 @@ bugwolf/
 ├── SKILL.md                          # Main orchestrator
 ├── VERSION                           # Current version
 ├── CHANGELOG.md                      # Release notes
+├── tools/runtime/                    # Orchestrator runtime (v1.3.0)
+│   ├── mission_runner.py             # Mission lanes + lead protocol
+│   ├── scope.py                      # Deny-by-default operator scope gate
+│   ├── sandbox.py                    # Subprocess sandbox + kill switch
+│   ├── scheduler.py                  # Durable task-graph scheduler
+│   ├── preflight.py                  # Mandatory pre-flight (PF1-PF4)
+│   ├── lead_protocol.py              # R1/R3 anti-satisficing lead ladder
+│   ├── oast.py / oast_tunnel.py      # Canary attribution + public tunnel
+│   └── contracts.py                  # Structural result validation
 └── references/
     ├── judging.md                    # 4-gate evaluation rules
     ├── supervisor.md                 # Detailed triage supervisor system

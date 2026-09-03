@@ -113,6 +113,24 @@ class ReleaseTruthTest(unittest.TestCase):
                       "capability_manifest"):
             self.assertIn(phase, guide, phase)
 
+    def test_docs_do_not_claim_pass_through_execution(self):
+        """The v1.3.0 boundary is ENFORCED (scope gate deny-by-default,
+        sandbox on every spawn).  Docs claiming pass-through execution
+        or 'never blocks' scopes contradict the shipped product -- they
+        are release lies and fail this test."""
+        stale = ("pass-through execution", "never a block",
+                 "never blocks", "never block execution", "never reject a")
+        for rel in ("README.md", "SKILL.md", "AUDIT.md", "AUDIT_MAP.md",
+                    "docs/OPERATOR_RUNBOOK.md"):
+            text = (REPO / rel).read_text(encoding="utf-8").lower()
+            for phrase in stale:
+                self.assertNotIn(phrase, text,
+                                 f"{rel} still claims '{phrase}'")
+        # The enforced posture must be present where operators read it.
+        readme = (REPO / "README.md").read_text(encoding="utf-8")
+        self.assertIn("deny-by-default", readme)
+        self.assertIn("v1.3.0", readme)
+
 
 if __name__ == "__main__":
     unittest.main()
