@@ -2271,15 +2271,30 @@ class MissionRunner:
         # move to blocked-browser semantics (open + re-dispatch later).
         self.browser_driver = browser_driver
         # OAST service (plan S1): opt-in self-hosted canary listener with
-        # per-lead tokens and restart-safe callback attribution.
+        # per-lead tokens and restart-safe callback attribution.  With
+        # BUGWOLF_OAST_TUNNEL=1 (and no explicit BUGWOLF_OAST_PUBLIC_URL),
+        # an SSH reverse tunnel re-aims the advertised route at a public
+        # URL so REMOTE targets can call back (SSRF leads close on
+        # attributed callbacks).
         self.oast: Optional[OastListener] = None
         self.oast_registry: Optional[OastRegistry] = None
+        self.oast_tunnel: Optional[Any] = None
         if oast_enabled:
             self.oast_registry = OastRegistry(project_root=project_root)
             self.oast = OastListener(
                 self.oast_registry,
                 public_base_url=os.environ.get("BUGWOLF_OAST_PUBLIC_URL", ""))
             self.oast.start()
+            if str(os.environ.get("BUGWOLF_OAST_TUNNEL", "")).lower() in (
+                    "1", "true", "yes") and not (
+                    os.environ.get("BUGWOLF_OAST_PUBLIC_URL", "").strip()):
+                from tools.runtime.oast_tunnel import arm_from_env
+                self.oast_tunnel = arm_from_env(
+                    self.oast_registry, self.oast, log=self._log)
+                if self.oast_tunnel is None:
+                    self._log("oast_tunnel_failed", {
+                        "note": "listener stays loopback; SSRF callbacks "
+                                "from a remote target will not attribute"})
         self._events: List[Dict[str, Any]] = []
         # S1/S2 runtime state (armed in run(); safe defaults for direct
         # lane invocation in tests).
@@ -2288,7 +2303,13 @@ class MissionRunner:
         self._client_side_dispatched = False
 
     def close(self) -> None:
-        """Release the OAST listener (tests / CLI shutdown)."""
+        """Release the OAST listener + tunnel (tests / CLI shutdown)."""
+        if self.oast_tunnel is not None:
+            try:
+                self.oast_tunnel.stop()
+            except Exception:  # noqa: BLE001 - shutdown is best effort
+                pass
+            self.oast_tunnel = None
         if self.oast is not None:
             self.oast.stop()
             self.oast = None

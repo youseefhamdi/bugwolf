@@ -258,8 +258,15 @@ The plug-in is offensive tooling; its own hygiene is part of the product:
 - **Race traffic validates TLS by default** (`RaceRequest.verify_tls=True`);
   opting out is an explicit operator decision per request.
 - **The OAST listener binds loopback** by default. Point a remote target at
-  it only via `BUGWOLF_OAST_PUBLIC_URL` (a tunnel/reverse proxy you own) —
-  canary URLs advertise that public route, and attribution stays 100%.
+  it via `BUGWOLF_OAST_PUBLIC_URL` (a reverse proxy YOU own), or set
+  `BUGWOLF_OAST_TUNNEL=1` to auto-open a zero-credential SSH reverse tunnel
+  (serveo.net; `BUGWOLF_OAST_TUNNEL_HOST` overrides) — canary URLs then
+  advertise the public route and attribution stays 100%. Verify with
+  `python3 -m tools.runtime.oast_tunnel --selftest` (real public fetch →
+  attributed callback). **Transport caveat:** the auto-tunnel is a
+  THIRD-PARTY route; for strict evidence-chain engagements run your own
+  interactsh-server or a VPS tunnel and set `BUGWOLF_OAST_PUBLIC_URL` —
+  the explicit URL always wins and the tunnel is skipped.
 - **Hook journals are allowlisted.** The stop/resume shim records only
   `mission_id / session_id / reason / trigger / source` — caller payloads
   cannot turn `state/orchestrator/<mission>/hooks.jsonl` into a dump.

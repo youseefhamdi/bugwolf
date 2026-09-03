@@ -34,12 +34,14 @@ REPO = Path(__file__).resolve().parent.parent
 #   * tools/reliability.py            -- the bounded executor itself
 #   * tools/infra_deploy.py           -- long-lived daemons, gated pre-Popen
 #   * tools/lab_lifecycle.py          -- long-lived fixtures, gated pre-Popen
+#   * tools/runtime/oast_tunnel.py    -- ssh tunnel (kill-switch + scrub env,
+#                                        pty required for the URL banner)
 # Test/scripts trees spawn subprocesses to TEST the engine itself (pytest
 # harness, audit generator) -- they are operator-side tooling, not shipped
 # product code paths, so the shipped-code sweep covers tools/ + bridge/ +
 # hooks/ only.
 _ALLOWED_RAW = ("tools/reliability.py", "tools/infra_deploy.py",
-                "tools/lab_lifecycle.py")
+                "tools/lab_lifecycle.py", "tools/runtime/oast_tunnel.py")
 _SWEEP_ROOTS = ("tools", "bridge", "hooks")
 
 
