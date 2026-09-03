@@ -12,7 +12,12 @@ class TestReadinessManifest(unittest.TestCase):
         manifest = load_manifest()
         report = validate_manifest(manifest)
         self.assertTrue(report["valid"])
-        self.assertEqual(report["readiness_level"], "L1-controlled-active-researcher")
+        # L2: the harness is clean-checkout reproducible (proven by the
+        # functional verifier inside validate_manifest, not asserted).
+        self.assertEqual(report["readiness_level"],
+                         "L2-reproducible-research-harness")
+        self.assertTrue(
+            manifest["global_controls"]["clean_checkout_reproducible"])
         self.assertFalse(manifest["claims"]["zero_day_guarantee"])
         # Boundary authorization is now enforced (scope gate) and the claim
         # is FUNCTIONALLY verified inside validate_manifest.

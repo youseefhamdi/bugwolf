@@ -1,17 +1,17 @@
 # BugWolf — Repository Audit & File Map (generated)
 
-> Generated on 2026-09-03T16:00:48+00:00 from `main@e684393` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
+> Generated on 2026-09-03T17:20:39+00:00 from `main@88225d9` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
 
 ## 1. Scale
 
-- Python modules under `tools/`: **166** (69606 lines) + **13** `__init__.py` package markers.
-- CLI-capable modules (argparse/`__main__`): **115**
+- Python modules under `tools/`: **167** (70161 lines) + **13** `__init__.py` package markers.
+- CLI-capable modules (argparse/`__main__`): **116**
 - Group sizes: core **8**, domains **14**, intelligence **3**, recon **1**, validation **3**
 
 ## 2. Test suite
 
-- Test files: **128**
-- Discovered tests: **1321**
+- Test files: **129**
+- Discovered tests: **1333**
 
 ## 3. References
 
@@ -20,14 +20,14 @@
 ## 4. Scripts & configs
 
 - Shell scripts under `scripts/`: **5**
-- readiness level: `L1-controlled-active-researcher`
+- readiness level: `L2-reproducible-research-harness`
 - release status: `experimental-human-supervised`
 
 ## 5. Tool map (largest modules)
 
 | Module | Lines | Purpose |
 |---|---|---|
-| `tools/runtime/mission_runner.py` | 2931 | BugWolf mission runner (orchestrator plan v2, Phase 4 exit criterion). |
+| `tools/runtime/mission_runner.py` | 2942 | BugWolf mission runner (orchestrator plan v2, Phase 4 exit criterion). |
 | `tools/core/campaign_orchestrator.py` | 2177 | BugWolf Campaign Orchestrator — APT Commander (Stage 2 rebuild). |
 | `tools/paper_intel.py` | 2096 | Offline adapters derived from the supplied 2026 security papers. |
 | `tools/hunt.py` | 1473 | BugWolf Hunt Engine — Auth-aware vulnerability scanner. |
@@ -45,6 +45,7 @@
 | `tools/leads.py` | 796 | BugWolf Lead Ledger — persistent state-transition research objects for OPEN LEADs. |
 | `tools/infra_deploy.py` | 786 | BugWolf Infrastructure Auto-Deploy v1.0.0 |
 | `tools/carlini_loop.py` | 752 | BugWolf Carlini Loop Track — per-file brute-force vulnerability analysis. |
+| `tools/perf.py` | 734 | BugWolf performance harness (orchestrator plan v2, sections 5.3 + 7). |
 | `tools/capability_registry.py` | 733 | BugWolf Capability Registry v1.0.0 |
 | `tools/trust_map.py` | 720 | BugWolf Trust Map Engine v1.0.0 |
 | `tools/agent_isolation.py` | 711 | Agent Isolation Checker — verifies each BugWolf agent operates within |
@@ -53,6 +54,7 @@
 | `tools/validation/self_eval_harness.py` | 667 | BugWolf Self-Evaluation Harness — AutoPenBench-style milestone scoring. |
 | `tools/threat_intel.py` | 659 | BugWolf Threat Intelligence Module v1.0.0 |
 | `tools/art_selector.py` | 630 | Adaptive Random Testing (ART) selection for BugWolf's discovery core. |
+| `tools/runtime/contracts.py` | 618 | BugWolf Runtime Contracts - Phase 1 of the orchestrator plan. |
 | `tools/lab_lifecycle.py` | 617 | BugWolf private-lab lifecycle manager. |
 | `tools/program_fit.py` | 604 | BugWolf Program-Fit Gate v1.0.0 |
 | `tools/idor_research.py` | 603 | Offline IDOR/access-control research planning. |
@@ -64,9 +66,7 @@
 | `tools/exploit_gen.py` | 572 | BugWolf Exploit Generation Engine — produces weaponized PoCs from findings. |
 | `tools/opsec.py` | 571 | BugWolf OPSEC Module — Anti-attribution & operational security. |
 | `tools/zero_day_tracks.py` | 571 | Deterministic discovery adapters for the five research surfaces. |
-| `tools/runtime/contracts.py` | 570 | BugWolf Runtime Contracts - Phase 1 of the orchestrator plan. |
 | `tools/chain_orchestrator.py` | 568 | BugWolf full-chain orchestrator. |
-| `tools/domains/cloud/iam_privesc_graph.py` | 559 | BugWolf IAM Privilege-Escalation Graph — offline capability analysis (AWS). |
 
 ## 6. Verification notes
 

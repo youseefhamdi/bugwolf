@@ -4,7 +4,7 @@
   "product": "BugWolf",
   "release_version_file": "VERSION",
   "release_version": "1.2.11",
-  "readiness_level": "L1-controlled-active-researcher",
+  "readiness_level": "L2-reproducible-research-harness",
   "release_status": "experimental-human-supervised",
   "execution_profiles": {
     "authorized_live": {
@@ -37,59 +37,148 @@
   "target_classes": {
     "web_api": {
       "status": "supported",
-      "modes": ["offline", "planned_active", "controlled_active"],
-      "entrypoints": ["tools/hunt.py", "tools/core/live_executor.py", "tools/core/fuzz_bridge.py"],
-      "evidence": ["request_response", "replay", "state_transition", "human_review"],
+      "modes": [
+        "offline",
+        "planned_active",
+        "controlled_active"
+      ],
+      "entrypoints": [
+        "tools/hunt.py",
+        "tools/core/live_executor.py",
+        "tools/core/fuzz_bridge.py"
+      ],
+      "evidence": [
+        "request_response",
+        "replay",
+        "state_transition",
+        "human_review"
+      ],
       "fixture": "tests/_stub_target.py (CI regression only; production binds operator targets)",
-      "limitations": ["scope enforcement is not yet a production security boundary", "impact requires human review"]
+      "limitations": [
+        "scope enforcement is not yet a production security boundary",
+        "impact requires human review"
+      ]
     },
     "source_repository": {
       "status": "partial",
-      "modes": ["offline", "static_analysis"],
-      "entrypoints": ["tools/chain_analyzer.py", "tools/tech_fingerprint.py", "tools/paper_intel.py"],
-      "evidence": ["source_fingerprint", "static_path", "human_review"],
+      "modes": [
+        "offline",
+        "static_analysis"
+      ],
+      "entrypoints": [
+        "tools/chain_analyzer.py",
+        "tools/tech_fingerprint.py",
+        "tools/paper_intel.py"
+      ],
+      "evidence": [
+        "source_fingerprint",
+        "static_path",
+        "human_review"
+      ],
       "fixture": "",
-      "limitations": ["no complete multi-language CodeQL adapter", "static findings are not runtime proof"]
+      "limitations": [
+        "no complete multi-language CodeQL adapter",
+        "static findings are not runtime proof"
+      ]
     },
     "smart_contract": {
       "status": "partial",
-      "modes": ["offline", "local_simulation"],
-      "entrypoints": ["tools/contract_discovery.py", "tools/formal_verify.py"],
-      "evidence": ["invariant", "sequence", "minimized_reproducer", "human_review"],
+      "modes": [
+        "offline",
+        "local_simulation"
+      ],
+      "entrypoints": [
+        "tools/contract_discovery.py",
+        "tools/formal_verify.py"
+      ],
+      "evidence": [
+        "invariant",
+        "sequence",
+        "minimized_reproducer",
+        "human_review"
+      ],
       "fixture": "",
-      "limitations": ["chain-specific fork validation is incomplete", "economic impact requires domain review"]
+      "limitations": [
+        "chain-specific fork validation is incomplete",
+        "economic impact requires domain review"
+      ]
     },
     "mobile": {
       "status": "partial",
-      "modes": ["offline", "static_analysis"],
-      "entrypoints": ["tools/idor_research.py", "tools/domains/mobile/deep_link_analyzer.py", "tools/domains/mobile/mobile_policy_checker.py"],
-      "evidence": ["manifest_analysis", "static_plan", "human_review"],
+      "modes": [
+        "offline",
+        "static_analysis"
+      ],
+      "entrypoints": [
+        "tools/idor_research.py",
+        "tools/domains/mobile/deep_link_analyzer.py",
+        "tools/domains/mobile/mobile_policy_checker.py"
+      ],
+      "evidence": [
+        "manifest_analysis",
+        "static_plan",
+        "human_review"
+      ],
       "fixture": "",
-      "limitations": ["no integrated emulator execution boundary"]
+      "limitations": [
+        "no integrated emulator execution boundary"
+      ]
     },
     "binary_native": {
       "status": "planned",
-      "modes": ["offline"],
+      "modes": [
+        "offline"
+      ],
       "entrypoints": [],
       "evidence": [],
       "fixture": "",
-      "limitations": ["coverage-guided native fuzzing adapters are not integrated"]
+      "limitations": [
+        "coverage-guided native fuzzing adapters are not integrated"
+      ]
     },
     "cloud_iac": {
       "status": "partial",
-      "modes": ["offline", "static_analysis"],
-      "entrypoints": ["tools/identity_cloud.py", "tools/asset_intel.py", "tools/chain_analyzer.py"],
-      "evidence": ["source_fingerprint", "static_plan", "human_review"],
+      "modes": [
+        "offline",
+        "static_analysis"
+      ],
+      "entrypoints": [
+        "tools/identity_cloud.py",
+        "tools/asset_intel.py",
+        "tools/chain_analyzer.py"
+      ],
+      "evidence": [
+        "source_fingerprint",
+        "static_plan",
+        "human_review"
+      ],
       "fixture": "",
-      "limitations": ["no production cloud mutation or validation; local fixtures required"]
+      "limitations": [
+        "no production cloud mutation or validation; local fixtures required"
+      ]
     },
     "llm_agentic": {
       "status": "partial",
-      "modes": ["offline", "static_analysis", "local_simulation"],
-      "entrypoints": ["tools/llm_attack_surface.py", "tools/ai_defense.py", "tools/domains/llm/agentic_tool_auth.py", "tools/domains/llm/rag_memory_poisoning.py"],
-      "evidence": ["control_plane", "policy_gap", "human_review"],
+      "modes": [
+        "offline",
+        "static_analysis",
+        "local_simulation"
+      ],
+      "entrypoints": [
+        "tools/llm_attack_surface.py",
+        "tools/ai_defense.py",
+        "tools/domains/llm/agentic_tool_auth.py",
+        "tools/domains/llm/rag_memory_poisoning.py"
+      ],
+      "evidence": [
+        "control_plane",
+        "policy_gap",
+        "human_review"
+      ],
       "fixture": "",
-      "limitations": ["requires disposable model/tool fixtures for behavioral proof"]
+      "limitations": [
+        "requires disposable model/tool fixtures for behavioral proof"
+      ]
     }
   },
   "global_controls": {
@@ -116,6 +205,7 @@
     "authorization_enforced_at_execution_boundary": true,
     "ssrf_protection_complete": true,
     "subprocess_sandbox_required": true,
+    "clean_checkout_reproducible": true,
     "evidence_redaction": "heuristic_with_regression_tests",
     "replay_requires_recorded_status_and_block_state": true,
     "canonical_finding_ledger": true,

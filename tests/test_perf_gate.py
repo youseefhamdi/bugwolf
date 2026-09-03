@@ -104,10 +104,20 @@ class PerfGateTest(EnvMixin, unittest.TestCase):
         statuses = {t["status"] for t in report["targets"]}
         self.assertIn("MET", statuses)
         self.assertNotIn("UNMET", statuses)
-        # Honesty rule: live-campaign targets listed, with reasons.
+        # Honesty rule (updated): every 5.3 target is measured offline on
+        # the deterministic harness, and each measured number carries the
+        # basis it was taken on.  A basis-less measurement is a gate bug.
+        measured = [t for t in report["targets"]
+                    if t["status"] in ("MET", "UNMET")]
+        self.assertTrue(measured)
+        self.assertTrue(
+            all(t.get("measurement_basis") for t in measured),
+            json.dumps([t["target"] for t in measured
+                        if not t.get("measurement_basis")]))
+        # A failed measurement still surfaces as NOT_MEASURED with a
+        # reason and fails the gate (never silently dropped).
         not_measured = [t for t in report["targets"]
                         if t["status"] == "NOT_MEASURED"]
-        self.assertTrue(not_measured)
         self.assertTrue(all(t.get("reason") for t in not_measured))
         # Dashboard persisted.
         dashboard = Path(self._td.name, "state", "perf", "dashboard.json")

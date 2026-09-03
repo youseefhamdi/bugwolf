@@ -198,6 +198,17 @@ def _verify_subprocess_sandbox() -> tuple:
         return False, f"{type(exc).__name__}: {exc}"
 
 
+def _verify_clean_checkout() -> tuple:
+    """Prove the L2 claim: a bare clone of HEAD reproduces the product's
+    deterministic behavior (preflight, deterministic test subset, two-run
+    perf determinism).  Process-cached; runs entirely in temp dirs."""
+    try:
+        from tools.reproducibility import verify_clean_checkout
+        return verify_clean_checkout()
+    except Exception as exc:  # noqa: BLE001 - verification failure is data
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 def load_manifest(root: Optional[str] = None) -> Dict[str, Any]:
     path = _root(root) / "configs" / "readiness.json"
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -366,6 +377,30 @@ def validate_manifest(manifest: Dict[str, Any], *, root: Optional[str] = None) -
                 errors.append(
                     f"subprocess_sandbox_required claim is not verifiable: "
                     f"{detail}")
+        # L2 claim: clean-checkout reproducibility.  The level may only be
+        # L2 (or above) while this control is true AND functionally
+        # verified; spoofing the JSON without the code is a hard ERROR.
+        if not controls.get("clean_checkout_reproducible"):
+            if str(manifest.get("readiness_level", "")).startswith("L2"):
+                errors.append(
+                    "readiness_level is L2 but clean_checkout_reproducible "
+                    "is not claimed -- L2 requires a bare clone of HEAD to "
+                    "reproduce the deterministic behavior")
+            else:
+                warnings.append(
+                    "clean-checkout reproducibility is not yet proven")
+        else:
+            ok, detail = _verify_clean_checkout()
+            if not ok:
+                errors.append(
+                    f"clean_checkout_reproducible claim is not verifiable: "
+                    f"{detail}")
+            elif not str(manifest.get("readiness_level", "")).startswith("L2"):
+                warnings.append(
+                    "clean_checkout_reproducible is proven but the "
+                    f"readiness level is still "
+                    f"{manifest.get('readiness_level')!r} -- the manifest "
+                    f"understates the achieved level")
 
     required = manifest.get("required_before_l4")
     if not isinstance(required, list) or not required:

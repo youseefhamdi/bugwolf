@@ -278,9 +278,9 @@ The plug-in is offensive tooling; its own hygiene is part of the product:
 - The **operator** is the authorization boundary: they declare the target,
   surfaces, and accounts; the plug-in ships no targets and no credentials.
 - Pre-flight runs before any mission work and records its manifest;
-  readiness (`python3 -m tools.readiness`) reports L1 and **functionally
-  verifies** its boundary claims at validation time (no network needed —
-  the checks fire before I/O).
+  readiness (`python3 -m tools.readiness`) reports **L2 (clean-checkout
+  reproducible)** and **functionally verifies** its boundary claims at
+  validation time (no network needed — the checks fire before I/O).
 - **Scope gate (deny-by-default).** Mission `run()` binds the gate to the
   declared target before any dispatch; every HTTP path (`http_probe`), the
   race engine's raw sockets, the live executor, and the injected browser
@@ -318,7 +318,24 @@ The plug-in is offensive tooling; its own hygiene is part of the product:
   ```
 
   An engaged kill switch fails the release capability gate CLOSED.
-- Readiness: **VALID, zero warnings** — all three boundary claims
-  (scope gate, SSRF choke points, subprocess sandbox) are functionally
-  verified at validation time, no network needed.
+- Readiness: **VALID, zero warnings, level L2** — the boundary claims
+  (scope gate, SSRF choke points, subprocess sandbox) and the L2 claim
+  (clean-checkout reproducibility) are functionally verified at
+  validation time, no network needed.
+- **L2 evidence (`python3 -m tools.reproducibility`).** A bare clone of
+  HEAD reproduces the deterministic product: offline preflight, the fast
+  deterministic test subset, and two perf runs whose outcome fields
+  (per-target status/threshold/direction, gate verdict) are identical —
+  latency values vary by machine by design and are not invariants.  The
+  probe runs entirely in temp dirs (the operator workspace is never
+  touched) and `validate_manifest` re-proves it on every validation:
+  spoofing `clean_checkout_reproducible` in the JSON without the working
+  code is a hard ERROR.
+- **Perf dashboard honesty (`python3 -m tools.perf`).** All 13 §5.3
+  targets are measured offline on the deterministic harness; each number
+  carries its `measurement_basis` in the dashboard.  Targets dominated
+  by product code (dispatch latency, escalation pipeline latency, P3
+  router policy share, P4 context duplication) are measured on a
+  documented basis that excludes the operator-environment residual
+  (model inference); that residual is audited during live campaigns.
 - Every finding is a hypothesis until an operator reproduces and reviews it.
