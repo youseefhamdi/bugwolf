@@ -142,6 +142,37 @@ and are redacted in all notes, leads, and reports. Money-flow surfaces
 TOCTOU confirmation runs through the single-window race engine (hard cap
 30, one window, no retries — plan §2.5 safety ceiling).
 
+## Missions, Persistent Modes & the Ladder (Phase 6)
+
+Run a full mission (preflight -> lanes -> verify -> report):
+
+```bash
+python3 -m tools.runtime.mission_runner --mission-id bw-1 --target https://operator-target \
+    --paths /api/users/1,/api/ingest --accounts accounts.json
+```
+
+**Persistent modes** (state machines over the task graph, `tools/runtime/modes.py`):
+`research` | `verify` | `deep-dive` | `coverage` | `report`. Each has explicit entry
+predicates (e.g. report refuses to run with open leads) and a JSONL journal at
+`state/orchestrator/<mission>/modes.jsonl`. Stop/resume is replay-the-tail:
+open leads re-dispatch FIRST (R6); completed deterministic work never re-runs (P5).
+
+**Escalation ladder (T0-T4)** — every stalled lead walks it automatically in the
+verify lane: full technique matrix (T1) -> research refresh recorded as an R4 ref
+t whose derived techniques JOIN the required set (T2) -> deep-dive escalation (T3)
+-> swarm pass@k over remaining techniques (T4) -> `BUDGET-EXHAUSTED` with every
+attempt recorded, operator-visible. Terminal states are FINAL — a late replay can
+never overwrite BUDGET-EXHAUSTED/PWNED with REFUTED.
+
+**Plugin package** (`.claude-plugin/plugin.json`): 8 `/bugwolf-*` commands,
+microsecond JSONL hooks (`hooks/`), and an optional MCP bridge
+(`bridge/bugwolf-mcp.py`) exposing `bugwolf_status/plan/run/leads/mode` over
+JSON-RPC stdio:
+
+```bash
+claude mcp add bugwolf -- python3 bridge/bugwolf-mcp.py
+```
+
 ## Evidence Review Workflow
 
 For every candidate that reaches `reproduced` or later:

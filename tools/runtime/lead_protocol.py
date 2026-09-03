@@ -298,14 +298,35 @@ class LeadStore:
         self._append(lead)
         return lead
 
+    def record_research(self, lead_id: str, ref: str, *, summary: str = "",
+                        techniques: Optional[List[str]] = None) -> LeadSpec:
+        """R4/T2: record one research-refresh output on the lead.
+
+        ``ref`` is a durable pointer (query hash, URL, report id);
+        ``techniques`` are research-derived technique names -- they join the
+        required set via untried_techniques() (matrix growth from research
+        is consumed before close, R2/R3).
+        """
+        lead = self._leads[lead_id]
+        entry = {"ref": str(ref)[:300], "summary": str(summary)[:500],
+                 "ts": _now_iso()}
+        if techniques:
+            entry["techniques"] = [str(t)[:120] for t in techniques][:16]
+        if entry not in lead.research_refs:
+            lead.research_refs.append(entry)
+        self._append(lead)
+        _publish("LEAD_RESEARCH", lead, {"ref": entry["ref"]})
+        return lead
+
     def untried_techniques(self, lead: LeadSpec) -> List[str]:
         tried = {e["technique"] for e in lead.technique_log
                  if e.get("outcome") not in ("error",)}
-        research_names = {
-            str(e.get("technique")) for e in lead.technique_log}
-        # R4: research-refreshed techniques join the required set.
-        extra = [t for t in (lead.research_refs or []) if isinstance(t, str)
-                 and t and t not in tried]
+        # R4: research-derived techniques join the required set (they are
+        # NOT tried just because research surfaced them).
+        research_names = [
+            t for entry in (lead.research_refs or []) if isinstance(entry, dict)
+            for t in (entry.get("techniques") or []) if isinstance(t, str)]
+        extra = [t for t in research_names if t and t not in tried]
         required = [t for t in self.required_techniques(lead)
                     if t not in tried]
         return required + [t for t in extra if t not in required]
@@ -337,6 +358,11 @@ class LeadStore:
 
     def close_refuted(self, lead_id: str, *, counter_evidence: str) -> LeadSpec:
         lead = self._leads[lead_id]
+        if lead.status not in (LEAD_OPEN, LEAD_REFUTED):
+            # Terminal states are FINAL: BUDGET-EXHAUSTED and PWNED carry
+            # recorded operator-visible history that a later replay must
+            # never overwrite with REFUTED.
+            return lead
         lead.status = LEAD_REFUTED
         lead.terminal_reason = counter_evidence[:500]
         self._append(lead)

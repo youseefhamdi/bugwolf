@@ -1,0 +1,27 @@
+{
+  "_comment": "BugWolf hooks (plan v2 4.4/5.2): SessionStart -> harness_guard verify (cached, <10 ms via shim); Stop -> persistent-mode freeze. All shims are thin Python writing JSONL -- never block the harness.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 hooks/bugwolf_stop_hook.py session-start"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 hooks/bugwolf_stop_hook.py stop"
+          }
+        ]
+      }
+    ]
+  }
+}

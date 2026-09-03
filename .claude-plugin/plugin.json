@@ -1,0 +1,22 @@
+{
+  "name": "bugwolf",
+  "displayName": "BugWolf Agent Orchestrator",
+  "version": "1.0.0",
+  "description": "Performance-first agent orchestrator for offensive-security missions: task graph, lead protocol, persistent modes, pre-flight capability discovery.",
+  "author": "BugWolf",
+  "license": "MIT",
+  "commands": [
+    "commands/bugwolf.md",
+    "commands/bugwolf-plan.md",
+    "commands/bugwolf-run.md",
+    "commands/bugwolf-status.md",
+    "commands/bugwolf-review.md",
+    "commands/bugwolf-report.md",
+    "commands/bugwolf-stop.md",
+    "commands/bugwolf-resume.md"
+  ],
+  "hooks": "hooks/hooks.json",
+  "skills": [
+    "SKILL.md"
+  ]
+}

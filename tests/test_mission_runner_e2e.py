@@ -193,14 +193,15 @@ class MissionE2ETest(unittest.TestCase):
         # + WAF gateway x1 + FIN checkout x1 + FIN voucher-redeem x1 (the
         # direct redemption surface confirms voucher-stacking)
         # + FIN payment-verify x1 (signature-forgery: length extension)
-        # + fuzz x3 = 8 findings.  Open leads (3): GraphQL (honest generic),
-        # SSRF differential (needs oast_enabled for the attributed callback),
-        # stored-reflection (needs a browser driver; blocked-browser).  The
-        # two blocked-capability leads stay open -- never refuted for
-        # missing tooling (plan S1/S2 semantics).
+        # + fuzz x3 = 8 findings.  GraphQL walks the full Phase 6 ladder
+        # (matrix + research + T3/T4) to BUDGET-EXHAUSTED.  Open leads (2):
+        # SSRF differential (needs oast_enabled for the attributed callback)
+        # and stored-reflection (needs a browser driver; blocked-browser) --
+        # blocked-capability leads stay open, never refuted for missing
+        # tooling (plan S1/S2 semantics).
         self.assertEqual(counts["findings"], 8)
         self.assertEqual(counts["refuted"], 0)
-        self.assertEqual(counts["open"], 3)
+        self.assertEqual(counts["open"], 2)
         self.assertEqual(counts["total_leads"], 11)
         # All 4 lane tasks drained through the scheduler with no rejections.
         self.assertEqual(len(report["tasks"]), 4)
@@ -321,9 +322,13 @@ class MissionE2ETest(unittest.TestCase):
         self._runner(mission).run()
         reloaded = LeadStore(mission.mission_id).load()
         open_leads = reloaded.open_lead_ids()
-        self.assertEqual(len(open_leads), 3)
-        graphql = [l for l in open_leads if "graphql" in l.lower()]
-        self.assertEqual(len(graphql), 1)
+        self.assertEqual(len(open_leads), 2)
+        # The GraphQL lead walked the ladder to BUDGET-EXHAUSTED (Phase 6),
+        # so it is terminal -- the two blocked-capability leads stay open.
+        exhausted = [l for l in reloaded.list_leads()
+                     if l.status == "BUDGET-EXHAUSTED"]
+        self.assertEqual(len(exhausted), 1)
+        self.assertIn("graphql", exhausted[0].lead_id.lower())
 
     def test_probe_result_records_headers(self):
         result = http_probe(self.base + "/tech.json")

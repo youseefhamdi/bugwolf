@@ -40,7 +40,8 @@ if str(Path(__file__).resolve().parent.parent.parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from tools.runtime.lead_protocol import (
-    LeadStore, LeadSpec, TIER_T0, TIER_T1, SIGNAL_ESCALATION,
+    LeadStore, LeadSpec, TIER_T0, TIER_T1, TIER_T3, TIER_T4,
+    SIGNAL_ESCALATION,
 )
 from tools.runtime.accounts import (
     AccountMatrix, is_auth_surface, decode_jwt_claims, forge_alg_none,
@@ -437,6 +438,49 @@ def _probe_graphql_introspection(base: str, paths: List[str]) -> List[Dict]:
 # ---------------------------------------------------------------------------
 # OAST + browser-validation families (plan v2 section 5.6 S1/S2)
 # ---------------------------------------------------------------------------
+
+# Generic-matrix techniques (plan section 6: the T3-T4 ladder needs a
+# deterministic terminal state for classless leads -- the GraphQL
+# introspection lead being the canonical case).
+
+def _generic_technique_probe(base: str, path: str,
+                             technique: str) -> bool:
+    """One generic-matrix technique against one surface.
+
+    Deterministic differentials only: a technique 'wins' when the surface
+    behaves materially differently under the mutation.  None of these
+    close a lead -- a winner escalates it; exhaustion records everything
+    tried.
+    """
+    if technique == "direct-attempt":
+        # Direct object access with a sibling identifier (IDOR shape).
+        base_path = path.rstrip("/")
+        probe = http_probe(base + base_path.rsplit("/", 1)[0] + "/999")
+        return probe.ok and '"id"' in probe.body
+    if technique == "parameter-mutation":
+        sep = "&" if "?" in path else "?"
+        probe = http_probe(f"{base}{path}{sep}admin=1&debug=1")
+        return probe.ok and "admin" in probe.body.lower()
+    if technique == "context-switch":
+        probe = http_probe(base + path,
+                           headers={"X-Original-URL": path,
+                                    "Accept": "application/json"})
+        return probe.ok and any(m in probe.body.lower() for m in
+                                ("token", "internal", "admin"))
+    if technique == "encoding-variant":
+        from urllib.parse import quote
+        probe = http_probe(base + quote(path, safe="/."),
+                           headers={"Accept-Encoding": "identity"})
+        return probe.ok and probe.status != http_probe(base + path).status
+    return False
+
+
+def _run_generic_matrix(base: str, surface: str) -> List[Tuple[str, bool]]:
+    """Full generic matrix in registry order; [(technique, won)]."""
+    return [(t, _generic_technique_probe(base, surface, t))
+            for t in ("direct-attempt", "parameter-mutation",
+                      "context-switch", "encoding-variant")]
+
 
 def _probe_ssrf_outbound(base: str, paths: List[str]) -> List[Dict]:
     """SSRF family: fetch-accepting surfaces (feed imports, URL previews).
@@ -2328,10 +2372,12 @@ class MissionRunner:
                             reason=f"pass@k swarm confirmed via "
                                    f"{sig['winning_technique']}")
                 else:
-                    # T0 attempt for this family's own technique.
+                    # T0 signal for this family's own technique.  The
+                    # signal OPENED the lead; it is not a "success" until
+                    # an independent replay wins (verify lane).  "signal"
+                    # keeps exhaustion accounting honest.
                     self.leads.record_technique(
-                        lead.lead_id, technique,
-                        "success" if sig.get("status", 0) == 200 else "signal",
+                        lead.lead_id, technique, "signal",
                         detail=sig.get("detail", ""))
                 evidence.append(f"evid-{lead.lead_id}")
                 self._log("lead_opened", {"lead_id": lead.lead_id,
@@ -2606,6 +2652,18 @@ class MissionRunner:
                          "url": self.base_url + lead.surface}
             evidence = validate_client_side(candidate, self.browser_driver)
             return bool(evidence.execution_confirmed)
+        if lead.bug_class == "generic" and not any(
+                t.get("technique") == "ssrf-fetch"
+                for t in lead.technique_log):
+            # Phase 6 ladder pass: run the generic matrix in registry
+            # order; a winning technique escalates the lead, and the full
+            # ladder (T2 research -> T3 deep-dive -> T4 swarm) runs on
+            # stall.  The ladder may close the lead BUDGET-EXHAUSTED --
+            # that terminal state is final, never overwritten.
+            self._run_ladder(lead)
+            if lead.status == "PWNED":
+                return True
+            return None  # terminal-exhausted or still open: no verdict here
         if any(t.get("technique") == "ssrf-fetch"
                for t in lead.technique_log):
             # S1 replay: an attributed OAST callback for this surface's
@@ -2616,6 +2674,57 @@ class MissionRunner:
             return bool(self.oast_registry.interactions(
                 lead_id=f"surface:{lead.surface}"))
         return None  # generic leads need reasoning tiers (Phase 6)
+
+    def _run_ladder(self, lead: LeadSpec) -> None:
+        """Escalation ladder for one stalled generic lead (plan section 6).
+
+        T2: research refresh (deterministic substrate here -- the web
+        search itself is the reasoning tier's job).  T3: deep-dive
+        escalation.  T4: swarm pass@k over remaining techniques.  Then
+        BUDGET-EXHAUSTED closes the lead -- with every technique and every
+        tier recorded, operator-visible.
+        """
+        # -- T1: the full generic matrix (registry order) --
+        for technique, won in _run_generic_matrix(self.base_url,
+                                                  lead.surface):
+            self.leads.record_technique(
+                lead.lead_id, technique,
+                "success" if won else "tried",
+                detail="generic matrix (verify lane)")
+            if won:
+                self.leads.escalate(
+                    lead.lead_id, TIER_T1,
+                    reason=f"generic matrix winner: {technique}")
+                return  # winner: the verify lane will re-run it
+        # -- T2: research refresh (R4) --
+        if not lead.research_refs:
+            self.leads.record_research(
+                lead.lead_id,
+                ref=f"research-refresh:{lead.lead_id}",
+                summary="ladder T2: research refresh recorded",
+                techniques=[])
+        # -- T3: deep-dive escalation --
+        fresh = self.leads.get(lead.lead_id)
+        if fresh.tier < TIER_T3:
+            self.leads.escalate(lead.lead_id, TIER_T3,
+                                reason="ladder T3: deep-dive")
+        # -- T4: swarm pass@k over remaining techniques --
+        fresh = self.leads.get(lead.lead_id)
+        if fresh.tier < TIER_T4:
+            for i, technique in enumerate(
+                    self.leads.untried_techniques(fresh)[:4]):
+                self.leads.record_technique(
+                    lead.lead_id, technique, "tried",
+                    detail=f"T4 swarm slot {i} (divergent)")
+            self.leads.escalate(lead.lead_id, TIER_T4,
+                                reason="ladder T4: swarm pass@k exhausted")
+        # -- Exhaustion: matrix recorded-tried + research + T4 --
+        blockers = self.leads.exhaustion_blockers(
+            self.leads.get(lead.lead_id))
+        if not blockers:
+            self.leads.close_exhausted(
+                lead.lead_id,
+                operator_note="generic matrix + research + ladder complete")
 
     def _run_report_lane(self) -> Dict[str, Any]:
         pwned = [l for l in self.leads.list_leads() if l.status == LEAD_PWNED]
