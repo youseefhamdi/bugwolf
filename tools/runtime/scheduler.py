@@ -435,6 +435,12 @@ def main() -> int:
     parser.add_argument("--status", action="store_true")
     args = parser.parse_args()
     if args.status:
+        path = (workspace_root() / "state" / "orchestrator"
+                / args.mission_id / "graph.json")
+        if not path.is_file():
+            print(f"no such mission: {args.mission_id} "
+                  f"(no graph at {path})")
+            return 2
         sched = Scheduler.load(args.mission_id)
         print(json.dumps(sched.status(), indent=2))
         return 0

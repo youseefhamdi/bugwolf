@@ -37,6 +37,9 @@ srv.shutdown()
 sys.exit(0 if report["passed"] else 1)
 EOF
 
+      - name: Capability manifest (documented = implemented)
+        run: python3 tools/capability_manifest.py
+
       - name: Bundle content + eval-pass check
         run: bash scripts/ci_bundle_check.sh
 

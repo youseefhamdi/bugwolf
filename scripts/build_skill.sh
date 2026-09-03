@@ -37,6 +37,11 @@ cp -r \
   tests \
   scripts \
   configs \
+  docs \
+  .claude-plugin \
+  hooks \
+  commands \
+  bridge \
   "$STAGE/"
 
 # Strip build artifacts from the bundle
