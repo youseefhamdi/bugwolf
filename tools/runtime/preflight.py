@@ -252,16 +252,20 @@ def _fingerprint_binary(name: str, flags: tuple) -> Dict[str, Any]:
         return {"name": name, "kind": "binary", "status": "missing",
                 "version": "", "invoke_path": "", "latency_ms": 0,
                 "detail": "not found on PATH"}
+    from tools.runtime.sandbox import sandboxed_run, SandboxViolation
     for flag in flags:
         cmd = [invoke] + ([flag] if flag else [])
         start = time.monotonic()
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  timeout=5)
+            # Sandboxed spawn (readiness R3): allowlisted by construction
+            # (the probe IS the inventory), scrubbed env, bounded output.
+            proc = sandboxed_run(cmd, cwd=workspace_root(), timeout=5,
+                                 max_output_bytes=65536, purpose="preflight")
             latency = int((time.monotonic() - start) * 1000)
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, SandboxViolation):
             continue
-        out = (proc.stdout or proc.stderr or "").strip()
+        out = ((proc.stdout or b"") + (proc.stderr or b"")).decode(
+            "utf-8", "replace").strip()
         version = out.splitlines()[0][:120] if out else ""
         if proc.returncode == 0 or version:
             return {"name": name, "kind": "binary", "status": "ready",

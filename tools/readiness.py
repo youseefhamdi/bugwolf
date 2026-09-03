@@ -167,6 +167,37 @@ def _NeverOpen(*_args, **_kwargs):  # pragma: no cover - guard
     raise AssertionError("urlopen reached despite scope block")
 
 
+def _verify_subprocess_sandbox() -> tuple:
+    """Prove the subprocess sandbox enforces its policy, offline, via the
+    sandbox module's own functional self-check (kill switch -> allowlist ->
+    env scrub), plus proof that an engaged kill switch fails the release
+    boundary closed."""
+    try:
+        from tools.runtime.sandbox import (
+            verify_sandbox, sandboxed_run, SandboxViolation,
+            kill_switch_engaged)
+        ok, detail = verify_sandbox()
+        if not ok:
+            return False, detail
+        # Kill-switch fail-closed proof against a live spawn path.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            from tools.runtime.sandbox import engage_kill_switch
+            engage_kill_switch(td, note="readiness-verify-2")
+            try:
+                sandboxed_run([sys.executable, "-c", "print(1)"], cwd=td,
+                              root=td, allow_unlisted=True)
+                return False, "kill switch did not block (fail-open!)"
+            except SandboxViolation as exc:
+                if not exc.kill_switch:
+                    return False, f"unexpected violation: {exc}"
+            if not kill_switch_engaged(td):
+                return False, "kill switch state unreadable"
+        return True, "sandbox proved: kill-switch, allowlist, env-scrub"
+    except Exception as exc:  # noqa: BLE001 - verification failure is data
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 def load_manifest(root: Optional[str] = None) -> Dict[str, Any]:
     path = _root(root) / "configs" / "readiness.json"
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -329,6 +360,12 @@ def validate_manifest(manifest: Dict[str, Any], *, root: Optional[str] = None) -
                     f"ssrf_protection_complete claim is not verifiable: {detail}")
         if controls.get("subprocess_sandbox_required") is not True:
             warnings.append("subprocess sandbox is not yet required")
+        else:
+            ok, detail = _verify_subprocess_sandbox()
+            if not ok:
+                errors.append(
+                    f"subprocess_sandbox_required claim is not verifiable: "
+                    f"{detail}")
 
     required = manifest.get("required_before_l4")
     if not isinstance(required, list) or not required:

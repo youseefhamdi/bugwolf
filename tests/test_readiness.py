@@ -23,8 +23,11 @@ class TestReadinessManifest(unittest.TestCase):
             manifest["global_controls"]["ssrf_protection_complete"])
         self.assertNotIn("authorization is not yet enforced",
                          " ".join(report["warnings"]))
-        self.assertIn("subprocess sandbox is not yet required",
-                      " ".join(report["warnings"]))
+        # Subprocess sandbox is now required AND functionally verified.
+        self.assertTrue(
+            manifest["global_controls"]["subprocess_sandbox_required"])
+        self.assertNotIn("subprocess sandbox is not yet required",
+                         " ".join(report["warnings"]))
         self.assertEqual(report["operator_authority"]["organization"], "unknown")
         self.assertEqual(report["operator_authority"]["research_depth"], "full_apt_team")
         self.assertTrue(manifest["claims"]["full_depth_apt_research"])

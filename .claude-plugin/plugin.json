@@ -13,7 +13,8 @@
     "commands/bugwolf-review.md",
     "commands/bugwolf-report.md",
     "commands/bugwolf-stop.md",
-    "commands/bugwolf-resume.md"
+    "commands/bugwolf-resume.md",
+    "commands/bugwolf-sandbox.md"
   ],
   "hooks": "hooks/hooks.json",
   "skills": [

@@ -1,17 +1,17 @@
 # BugWolf — Repository Audit & File Map (generated)
 
-> Generated on 2026-09-03T13:22:36+00:00 from `main@33ba79c` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
+> Generated on 2026-09-03T14:01:22+00:00 from `main@4ee11f6` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
 
 ## 1. Scale
 
-- Python modules under `tools/`: **164** (68688 lines) + **13** `__init__.py` package markers.
-- CLI-capable modules (argparse/`__main__`): **113**
+- Python modules under `tools/`: **165** (69165 lines) + **13** `__init__.py` package markers.
+- CLI-capable modules (argparse/`__main__`): **114**
 - Group sizes: core **8**, domains **14**, intelligence **3**, recon **1**, validation **3**
 
 ## 2. Test suite
 
-- Test files: **125**
-- Discovered tests: **1288**
+- Test files: **126**
+- Discovered tests: **1305**
 
 ## 3. References
 

@@ -12,7 +12,7 @@ Verified dimensions:
   * readiness manifest validates (claims/config truth),
   * perf gate from the last measured dashboard,
   * benchmark gate from the last benchmark run,
-  * plugin package integrity (plugin.json, hooks, 8 commands, bridge),
+  * plugin package integrity (plugin.json, hooks, 9 commands, bridge),
   * phase completion recorded per the orchestrator plan.
 
 Exit 0 = releasable manifest generated; exit 1 = unmet capabilities.
@@ -50,6 +50,7 @@ ENGINE_MODULES = {
     "browser_driver": "tools.runtime.browser_driver",
     "race_engine": "tools.validation.race_engine",
     "scope_gate": "tools.runtime.scope",
+    "sandbox": "tools.runtime.sandbox",
     "fuzz_bridge": "tools.core.fuzz_bridge",
     "benchmark": "tools.benchmark",
     "perf": "tools.perf",
@@ -106,16 +107,26 @@ def _check_modules() -> List[Dict[str, Any]]:
 
 def _check_clis() -> List[Dict[str, Any]]:
     out = []
+    # Engine self-check spawns route through the subprocess sandbox
+    # (allow_unlisted: the interpreter itself is not an operator-facing
+    # binary).  An engaged kill switch fails the release gate CLOSED.
+    from tools.runtime.sandbox import sandboxed_run, SandboxViolation
     for name, cmd in sorted(DOCUMENTED_CLIS.items()):
-        env = dict(os.environ, BUGWOLF_PROJECT_ROOT=str(
-            tempfile.mkdtemp(prefix="bw-cap-")))
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  env=env, timeout=60, cwd=str(REPO_ROOT))
+            proc = sandboxed_run(
+                cmd, cwd=str(REPO_ROOT), timeout=60, purpose=f"cli-check:{name}",
+                env={"BUGWOLF_PROJECT_ROOT": str(
+                    tempfile.mkdtemp(prefix="bw-cap-"))},
+                allow_unlisted=True)
             ok = proc.returncode in (0, 2)  # 2 = clean not-found (scheduler)
-            detail = "" if ok else (proc.stderr or proc.stdout)[:200]
+            detail = "" if ok else ((proc.stderr or b"") + (proc.stdout or b"")).decode(
+                "utf-8", "replace")[:200]
         except subprocess.TimeoutExpired:
             ok, detail = False, "timeout"
+        except SandboxViolation as exc:
+            ok, detail = False, ("KILL SWITCH ENGAGED -- release gate fails "
+                                 f"closed" if exc.kill_switch
+                                 else f"sandbox: {exc}")
         out.append({"capability": f"cli:{name}", "status":
                     "ready" if ok else "missing", "detail": detail})
     return out

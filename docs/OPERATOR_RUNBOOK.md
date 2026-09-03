@@ -282,8 +282,25 @@ The plug-in is offensive tooling; its own hygiene is part of the product:
   gaps. Extend scope with `--scope scope.txt` (one host per line) or a
   conventional `scope.txt` at the workspace root; the target host and its
   subdomains are always authorized; loopback only for local targets.
-- Remaining readiness warning: **subprocess sandbox not yet required** —
-  preflight probes a fixed binary allowlist, shell-free, but a full
-  sandbox is still future work; run inside a scoped, monitored
-  environment.
+- **Subprocess sandbox (required).** Every orchestrator-managed spawn —
+  preflight binary probes, capability-manifest CLI checks — routes through
+  `sandboxed_run` (`tools/runtime/sandbox.py`): kill-switch circuit
+  breaker → preflight-parity binary allowlist → scrubbed environment →
+  bounded execution (timeout, output cap, process-group kill). All
+  decisions are audit-logged to `state/sandbox/audit.jsonl`.
+- **Kill switch.** One command stops all subprocess execution in the
+  workspace, fail-closed (a corrupt marker counts as ENGAGED):
+
+  ```
+  python3 -m tools.runtime.sandbox kill --note "incident"   # ENGAGE
+  python3 -m tools.runtime.sandbox status                    # inspect
+  python3 -m tools.runtime.sandbox arm                       # re-arm
+  python3 -m tools.runtime.sandbox grant <binary>            # extend allowlist
+  python3 -m tools.runtime.sandbox verify                    # self-check
+  ```
+
+  An engaged kill switch fails the release capability gate CLOSED.
+- Readiness: **VALID, zero warnings** — all three boundary claims
+  (scope gate, SSRF choke points, subprocess sandbox) are functionally
+  verified at validation time, no network needed.
 - Every finding is a hypothesis until an operator reproduces and reviews it.
