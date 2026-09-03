@@ -43,11 +43,12 @@ SCHEMA = "bugwolf-scope/v1"
 class ScopeViolation(PermissionError):
     """Raised when a request would leave the operator-declared scope."""
 
-    def __init__(self, url: str, host: str):
+    def __init__(self, url: str, host: str, *, policy: str = "deny-by-default"):
         self.url = url
         self.host = host
+        self.policy = policy
         super().__init__(
-            f"out-of-scope request blocked: {host!r} is not authorized "
+            f"{policy} request blocked: {host!r} is not authorized "
             f"(target-only + operator scope file); url={url!r}")
 
 
@@ -57,17 +58,25 @@ class ScopeGate:
 
     target: str = ""
     extra_hosts: set = field(default_factory=set)
+    deny_entries: set = field(default_factory=set)   # excluded hosts (program
+                                                     # policy, e.g. beta./community.)
     _bound: bool = False
     _explicit: bool = False   # bound by the mission runner (not auto-bind)
 
     # -- binding -------------------------------------------------------------
 
-    def bind(self, target: str, extra_hosts=None, *, force: bool = False) -> None:
-        """Bind the gate to a mission target (+ optional extra allowed hosts).
+    def bind(self, target: str, extra_hosts=None, *, force: bool = False,
+             deny_entries=None) -> None:
+        """Bind the gate to a mission target (+ allowed/excluded hosts).
 
         Idempotent for the same target.  ``force=True`` replaces a previous
         AUTO-bind (standalone probe default) but never an explicit mission
         bind -- mixing declared targets is the classic scope accident.
+
+        ``deny_entries`` are EXPLICITLY EXCLUDED hosts (bug-bounty program
+        carve-outs like ``beta.example.com``): exclusion ALWAYS wins over
+        any allow rule, including the target wildcard -- the single most
+        important rule for real engagements.
         """
         host = _host_of(target)
         if not host:
@@ -75,6 +84,7 @@ class ScopeGate:
         if self._bound:
             if host == self.target:
                 self._explicit = self._explicit or not force
+                self._merge_denies(deny_entries)
                 return
             if force and not self._explicit:
                 self._bound = False
@@ -87,10 +97,23 @@ class ScopeGate:
             norm = _host_of(str(entry)) or str(entry).strip().lower()
             if norm:
                 self.extra_hosts.add(norm)
+        self._merge_denies(deny_entries)
         self._bound = True
         # bind() is the DECLARED-scope API; only check()'s inline auto-bind
         # is non-explicit (it sets the fields itself).
         self._explicit = True
+
+    def _merge_denies(self, deny_entries) -> None:
+        for entry in deny_entries or ():
+            norm = _host_of(str(entry)) or str(entry).strip().lower()
+            if norm:
+                self.deny_entries.add(norm)
+
+    def add_denies(self, deny_entries) -> None:
+        """Extend exclusions on a bound gate (explicit operator action)."""
+        if not self._bound:
+            raise RuntimeError("cannot add exclusions to an unbound gate")
+        self._merge_denies(deny_entries)
 
     @property
     def bound(self) -> bool:
@@ -118,9 +141,19 @@ class ScopeGate:
             self._bound = True
             self._explicit = False
             return host
+        # EXCLUSION FIRST: a host the operator carved out (beta., community.,
+        # internal admin) is denied even when a wildcard allow would match.
+        if self._denied_host(host):
+            raise ScopeViolation(url, host, policy="excluded-by-policy")
         if self._authorized_host(host):
             return host
         raise ScopeViolation(url, host)
+
+    def _denied_host(self, host: str) -> bool:
+        for entry in self.deny_entries:
+            if host == entry or host.endswith("." + entry):
+                return True
+        return False
 
     def _authorized_host(self, host: str) -> bool:
         if host == self.target:
@@ -146,6 +179,7 @@ class ScopeGate:
             "schema": SCHEMA,
             "target": self.target,
             "extra_hosts": sorted(self.extra_hosts),
+            "deny_entries": sorted(self.deny_entries),
             "bound": self._bound,
             "explicit": self._explicit,
             "mode": "deny-by-default" if self._explicit else "auto-bind",
@@ -159,9 +193,10 @@ class ScopeGate:
 _GATE = ScopeGate()
 
 
-def bind_target(target: str, extra_hosts=None, *, force: bool = False) -> ScopeGate:
+def bind_target(target: str, extra_hosts=None, *, force: bool = False,
+                deny_entries=None) -> ScopeGate:
     """Bind the process gate (idempotent). Returns the gate for auditing."""
-    _GATE.bind(target, extra_hosts, force=force)
+    _GATE.bind(target, extra_hosts, force=force, deny_entries=deny_entries)
     return _GATE
 
 
@@ -174,6 +209,11 @@ def reset() -> None:
 def check_url(url: str) -> str:
     """Authorize ``url`` against the process gate (raises ScopeViolation)."""
     return _GATE.check(url)
+
+
+def add_denies(deny_entries) -> None:
+    """Extend exclusions on the bound process gate (operator action)."""
+    _GATE.add_denies(deny_entries)
 
 
 def gate_state() -> dict:

@@ -2246,15 +2246,19 @@ class MissionRunner:
                  base_url: str = "", paths: Optional[List[str]] = None,
                  browser_driver: Optional[Any] = None,
                  oast_enabled: bool = False,
-                 scope_hosts: Optional[List[str]] = None):
+                 scope_hosts: Optional[List[str]] = None,
+                 deny_entries: Optional[List[str]] = None):
         self.mission = mission
         self.project_root = project_root
         self.base_url = (base_url or getattr(mission, "target", "") or "").rstrip("/")
         # Real-world plugin: the operator declares the surfaces (CLI --paths,
         # mission intake, or recon output).  No shipped target defaults.
         self.paths = list(paths or [])
-        # Operator-declared extra authorized hosts (CLI --scope / scope.txt).
+        # Operator-declared extra authorized hosts (CLI --scope / scope.txt)
+        # and EXPLICIT exclusions (CLI --exclude; program carve-outs such as
+        # beta./community. hosts).  Exclusion always beats the allow wildcard.
         self.scope_hosts = list(scope_hosts or [])
+        self.deny_entries = list(deny_entries or [])
         self.scheduler = Scheduler(mission, project_root=project_root)
         self.leads = LeadStore(mission.mission_id,
                                project_root=project_root).load()
@@ -2302,7 +2306,8 @@ class MissionRunner:
         # outbound request through http_probe is checked against the
         # operator-declared target + optional scope file.
         from tools.runtime.scope import bind_target
-        bind_target(self.base_url, self.scope_hosts)
+        bind_target(self.base_url, self.scope_hosts,
+                    deny_entries=self.deny_entries)
         self._log("scope_bound", {"gate": _gate_state_safe()})
         # 1. Plan (creates the preflight gate + lane roots).
         self.scheduler.plan_mission()
@@ -2844,6 +2849,11 @@ def main() -> int:
                         help="operator scope file: one authorized host per "
                              "line (# comments).  Deny-by-default; the target "
                              "host is always authorized.")
+    parser.add_argument("--exclude", action="append", default=[],
+                        metavar="FILE_OR_HOST",
+                        help="explicitly excluded host(s): a carve-out file "
+                             "(one host per line) or a bare host.  Exclusion "
+                             "ALWAYS beats the scope wildcard -- repeatable.")
     parser.add_argument("--report", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -2864,6 +2874,14 @@ def main() -> int:
         if not scope_hosts:
             print(f"--scope file {args.scope!r} parsed empty; "
                   f"target-only scope stays in force")
+    deny_entries: List[str] = []
+    for entry in args.exclude:
+        p = Path(entry)
+        if p.is_file():
+            from tools.runtime.scope import load_scope_file
+            deny_entries.extend(load_scope_file(entry))
+        elif entry.strip():
+            deny_entries.append(entry.strip())
     mission = MissionSpec(
         mission_id=args.mission_id, target=args.target,
         domains=[d.strip() for d in args.domains.split(",") if d.strip()],
@@ -2873,7 +2891,8 @@ def main() -> int:
     )
     runner = MissionRunner(mission, base_url=args.target,
                            paths=[p for p in args.paths.split(",") if p],
-                           scope_hosts=scope_hosts)
+                           scope_hosts=scope_hosts,
+                           deny_entries=deny_entries)
     report = runner.run()
     if args.json:
         print(json.dumps(report, indent=2, default=str))

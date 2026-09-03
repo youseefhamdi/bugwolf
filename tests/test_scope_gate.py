@@ -89,6 +89,33 @@ class ScopeGateSemanticsTest(unittest.TestCase):
         self.assertEqual(scope.check_url("http://extra.example/"),
                          "extra.example")
 
+    def test_exclusions_beat_wildcard(self):
+        """Program carve-outs (beta./community. hosts) are denied even under
+        an allow wildcard -- exclusion ALWAYS wins (real-engagement rule)."""
+        scope.bind_target("plumsail.com", deny_entries=["beta.plumsail.com"])
+        # Wildcard child still allowed...
+        self.assertEqual(scope.check_url("https://forms.plumsail.com/"),
+                         "forms.plumsail.com")
+        # ...but the excluded host and its children are denied.
+        with self.assertRaises(ScopeViolation) as ctx:
+            scope.check_url("https://beta.plumsail.com/")
+        self.assertEqual(ctx.exception.policy, "excluded-by-policy")
+        with self.assertRaises(ScopeViolation):
+            scope.check_url("https://docs.beta.plumsail.com/")
+
+    def test_exclusion_of_bare_target_denies_even_target(self):
+        scope.bind_target("example.com", deny_entries=["example.com"])
+        with self.assertRaises(ScopeViolation):
+            scope.check_url("https://example.com/")
+
+    def test_add_denies_extends_bound_gate(self):
+        scope.bind_target("example.com")
+        self.assertEqual(scope.check_url("https://old.example.com/"),
+                         "old.example.com")
+        scope.add_denies(["old.example.com"])
+        with self.assertRaises(ScopeViolation):
+            scope.check_url("https://old.example.com/")
+
     def test_state_reports_mode(self):
         scope.bind_target("http://x.example")
         self.assertEqual(scope.gate_state()["mode"], "deny-by-default")
