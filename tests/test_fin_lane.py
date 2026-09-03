@@ -184,6 +184,55 @@ class TestFinLane(unittest.TestCase):
                     "FIN-NUM-01", "FIN-TESTDATA-01"}
         self.assertTrue(expected <= reg_ids)
 
+    def test_signature_forgery_in_matrix_and_registry(self):
+        # R2 alignment: the signature-forgery technique is canonical and
+        # cites the FIN-CRYPTO entries (the last uncovered registry family).
+        self.assertIn("signature-forgery", TECHNIQUE_MATRIX["business_logic"])
+        from tools.runtime.mission_runner import (
+            FIN_TECHNIQUE_REGISTRY_PREFIX, FIN_TECHNIQUES,
+        )
+        self.assertEqual(FIN_TECHNIQUE_REGISTRY_PREFIX["signature-forgery"],
+                         ("FIN-CRYPTO",))
+        self.assertIn("signature-forgery", FIN_TECHNIQUES)
+
+    def test_length_extension_math_matches_hashlib(self):
+        # The continuation digest must be a real SHA-256 over the whole
+        # stream: only the TRUE secret length verifies.
+        import hashlib as _h
+        from tools.runtime.mission_runner import _length_extend
+        secret = b"0123456789abcdef"
+        data = b"amount=100;order_id=x;"
+        mac = _h.sha256(secret + data).digest()
+        hits = []
+        for sl in range(1, 33):
+            request, expected = _length_extend(data, mac, b"amount=0.01;", sl)
+            if _h.sha256(secret + request).digest() == expected:
+                hits.append(sl)
+        self.assertEqual(hits, [len(secret)])
+
+    def test_sha256_with_state_is_real_sha256(self):
+        import hashlib as _h
+        from tools.runtime.mission_runner import _sha256_with_state
+        IV = (0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+              0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19)
+        for msg in (b"", b"abc", b"x" * 55, b"y" * 56, b"z" * 64,
+                    b"q" * 100):
+            self.assertEqual(
+                _sha256_with_state(IV, msg).hex(),
+                _h.sha256(msg).hexdigest())
+
+    def test_signature_forgery_confirms_on_vulnerable_construction(self):
+        from tools.runtime.mission_runner import _fin_signature
+        success, detail = _fin_signature(self.base, "/api/payment/verify",
+                                         None)
+        self.assertTrue(success, detail)
+        self.assertIn("FIN-CRYPTO-01", detail)
+
+    def test_signature_forgery_replay(self):
+        self.assertIs(
+            replay_fin_technique(self.base, "/api/payment/verify",
+                                 "signature-forgery"), True)
+
 
 if __name__ == "__main__":
     unittest.main()

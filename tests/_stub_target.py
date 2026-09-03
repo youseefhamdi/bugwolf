@@ -31,10 +31,26 @@ Boot pattern (same style as every live-lane test)::
 """
 
 import base64
+import hashlib
 import json
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+
+# FIN-CRYPTO canary secret (CI regression only; models the classic
+# ``secret || signature`` MAC construction the hash-length-extension and
+# concatenated-signature techniques attack).  16 bytes, inside the prober's
+# bounded secret-length sweep.
+_SIGNING_SECRET = "s3cretk3ycanary"
+
+
+def _pay_sig(params: str) -> str:
+    """The vulnerable MAC: SHA256(secret || params) with no delimiter."""
+    return hashlib.sha256((_SIGNING_SECRET + params).encode()).hexdigest()
+
+
+def _pay_verify(params: str, sig: str) -> bool:
+    return params and sig and sig == _pay_sig(params)
 
 
 def _b64url(data: bytes) -> str:
@@ -270,6 +286,41 @@ class Handler(BaseHTTPRequestHandler):
             # every time.
             self._json(200, {"callback": "acknowledged",
                              "amount": body.get("amount", 0)})
+        elif path == "/api/payment/verify":
+            # FIN-CRYPTO-01/02: the MAC is SHA256(secret || params) over the
+            # raw concatenation with no delimiter -- the classic
+            # length-extension construction.  Amount is parsed as a float
+            # (0.1 + 0.2 != 0.3), so the rounding-abuse family also lands
+            # on this surface.  JSON keys may serialize in any order; the
+            # verifier canonicalizes sorted(key=value;) so probes stay
+            # deterministic regardless of payload ordering.  ``raw`` support:
+            # byte-fidelity verification of glue-padded continuations (the
+            # prober's latin-1 round-trip preserves every byte).
+            raw = body.get("raw")
+            if isinstance(raw, str):
+                params = raw.encode("latin-1")
+                sig = str(body.get("sig", ""))
+            else:
+                params = "".join(
+                    f"{key}={body[key]};" for key in sorted(body)).encode()
+                sig = str(body.get("sig", ""))
+            if params and sig and \
+                    sig == hashlib.sha256(_SIGNING_SECRET.encode()
+                                          + params).hexdigest():
+                self._json(200, {"verified": True,
+                                 "params": params.decode("latin-1"),
+                                 "credited": float(re.search(
+                                     r"amount=([^;]+)",
+                                     params.decode("latin-1")).group(1))})
+            else:
+                self._json(403, {"error": "invalid signature"})
+        elif path == "/api/payment/sign":
+            # The operator's own signing flow for the canary order -- the
+            # prober obtains ONE (params, sig) pair this way; no secret is
+            # ever returned.
+            clean = {k: v for k, v in body.items() if k != "sig"}
+            params = "".join(f"{key}={clean[key]};" for key in sorted(clean))
+            self._json(200, {"params": params, "sig": _pay_sig(params)})
         elif path == "/api/voucher/redeem":
             # FIN-VOUCHER: single-use codes are never marked used.
             code = body.get("code") or body.get("voucher_code") or ""

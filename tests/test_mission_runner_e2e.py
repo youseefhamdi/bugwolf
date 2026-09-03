@@ -49,6 +49,7 @@ STUB_TARGET = ROOT / "tests" / "_stub_target.py"
 OPERATOR_PATHS = [
     "/api/users/1", "/api/users/2", "/api/gateway", "/api/ingest",
     "/graphql", "/api/checkout", "/api/voucher/redeem",
+    "/api/payment/verify",
 ]
 
 
@@ -190,12 +191,13 @@ class MissionE2ETest(unittest.TestCase):
         counts = report["counts"]
         # BOLA template x1 (consolidated: one surface, full technique matrix)
         # + WAF gateway x1 + FIN checkout x1 + FIN voucher-redeem x1 (the
-        # direct redemption surface confirms voucher-stacking) + fuzz x3
-        # = 7 findings; GraphQL stays open (honest generic-class lead).
-        self.assertEqual(counts["findings"], 7)
+        # direct redemption surface confirms voucher-stacking)
+        # + FIN payment-verify x1 (signature-forgery: length extension)
+        # + fuzz x3 = 8 findings; GraphQL stays open (honest generic lead).
+        self.assertEqual(counts["findings"], 8)
         self.assertEqual(counts["refuted"], 0)
         self.assertEqual(counts["open"], 1)
-        self.assertEqual(counts["total_leads"], 8)
+        self.assertEqual(counts["total_leads"], 9)
         # All 4 lane tasks drained through the scheduler with no rejections.
         self.assertEqual(len(report["tasks"]), 4)
         self.assertFalse([e for e in report["events"]
@@ -254,10 +256,11 @@ class MissionE2ETest(unittest.TestCase):
         store = LeadStore(mission.mission_id).load()
         fin = [l for l in store.list_leads()
                if l.bug_class == "business_logic"]
-        # One consolidated lead per money surface; the stub declares two
-        # (checkout + the direct voucher/redemption surface, which confirms
-        # voucher-stacking since the canary/path fixes).
-        self.assertEqual(len(fin), 2)
+        # One consolidated lead per money surface; the stub declares three
+        # (checkout, the direct voucher/redemption surface, and the signed
+        # payment-verification surface -- each confirms distinct techniques
+        # since the canary/path/signature fixes).
+        self.assertEqual(len(fin), 3)
         lead = fin[0]
         self.assertEqual(lead.status, "PWNED")
         self.assertIn("/api/checkout", lead.surface)

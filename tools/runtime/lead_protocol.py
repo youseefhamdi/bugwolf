@@ -97,6 +97,7 @@ TECHNIQUE_MATRIX: Dict[str, tuple] = {
         "quantity-mutation", "currency-arbitrage", "toctou-race", "replay",
         "negative-values", "rounding-abuse", "voucher-stacking",
         "price-trust", "test-gateway-forcing", "format-mutation-matrix",
+        "signature-forgery",
     ),
     "fuzzing": (
         "boundary-length", "grammar-family", "type-confusion",
