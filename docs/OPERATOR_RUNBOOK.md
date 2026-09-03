@@ -106,6 +106,42 @@ The pipeline registers candidates from the domain adapters, runs novelty
 classification, builds chains and lineage, and exports SARIF/JSON/Markdown
 reports.
 
+### 6. Run the orchestrated mission (scheduler + hunt lanes + lead protocol)
+
+The mission runner drives the full graph: pre-flight gate -> recon ->
+web/API hunt families (BOLA swarm, WAF-bypass matrix, FIN business-logic
+matrix, fuzz, GraphQL) -> verify lane (independent replay) -> report.
+
+```bash
+python3 -m tools.runtime.mission_runner --mission-id bw-001 \
+  --target https://operator-target.example \
+  --paths "/api/users/1,/api/checkout,/api/admin/panel" \
+  --accounts accounts.json --json
+```
+
+- `--paths` is operator-declared surface (recon output or intake). Empty
+  means no probing — there are no shipped target defaults.
+- `--accounts` (optional) is the A/B/C account matrix JSON:
+
+```json
+[
+  {"label": "A", "username": "attacker", "token": "<paste from browser>",
+   "identifiers": ["attacker", "1001"]},
+  {"label": "B", "username": "victim", "password": "...",
+   "login_path": "/login", "identifiers": ["victim", "1002"]},
+  {"label": "C", "username": "admin", "token": "...", "identifiers": ["admin"]}
+]
+```
+
+With accounts bound, identity surfaces (users/admin/account/profile/role)
+run the three-way A/B/C differential and any boundary hole opens the
+seven-technique auth-bypass swarm (R3 full-matrix accounting, winning
+verified by independent replay). Session tokens are used in-memory only
+and are redacted in all notes, leads, and reports. Money-flow surfaces
+(checkout/payment/voucher/withdraw/…) auto-instantiate the FIN matrix;
+TOCTOU confirmation runs through the single-window race engine (hard cap
+30, one window, no retries — plan §2.5 safety ceiling).
+
 ## Evidence Review Workflow
 
 For every candidate that reaches `reproduced` or later:

@@ -397,6 +397,11 @@ class MissionSpec:
     model_profile: str = "balanced"
     budget: Dict[str, Any] = field(default_factory=dict)
     intake_record: Dict[str, Any] = field(default_factory=dict)
+    # Operator-declared account matrix (plan section 5.6 S6): [{label: A|B|C,
+    # username, password, login_path, token, headers}].  Empty = no auth lane
+    # binding; the lane degrades to anon-only observations.  Never populated
+    # by the tool itself.
+    accounts: List[Dict[str, Any]] = field(default_factory=list)
     preflight_manifest_ref: Dict[str, Any] = field(default_factory=dict)
     source_invocation: str = ""
     created_at: str = field(default_factory=utc_now)

