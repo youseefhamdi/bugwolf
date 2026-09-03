@@ -27,6 +27,7 @@ Ordering rules (plan section 5.4 attack-first priority):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from dataclasses import dataclass, field
@@ -53,6 +54,24 @@ except ImportError:  # pragma: no cover - installed-skill fallback
     )
 
 SCHEMA = "bugwolf-scheduler/v1"
+
+
+def task_fingerprint(spec: Dict[str, Any]) -> str:
+    """P6: stable task identity used for dedup-before-dispatch.
+
+    Everything semantic (type, domain, title, inputs, model profile) is
+    included; volatile fields (task_id, status, dependencies, timestamps)
+    are excluded.  Same fingerprint + PENDING/ACTIVE = same work.
+    """
+    payload = {
+        "task_type": spec.get("task_type"),
+        "domain": spec.get("domain"),
+        "title": spec.get("title"),
+        "inputs": spec.get("inputs") or {},
+        "model_profile": spec.get("model_profile"),
+    }
+    raw = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 PREFLIGHT_TASK_ID = "pf-000"
 PREFLIGHT_DOMAIN = "preflight"
@@ -101,6 +120,7 @@ class GraphNode:
     unmet: List[str] = field(default_factory=list)   # dependencies not done
     lead_ids: List[str] = field(default_factory=list)  # re-dispatch priority
     seq: int = 0                   # creation order (FIFO tie-break)
+    fingerprint: str = ""         # P6 dedup key (task identity sans id/status)
 
     @property
     def task_id(self) -> str:
@@ -112,7 +132,8 @@ class GraphNode:
 
     def to_dict(self) -> Dict[str, Any]:
         return {"spec": self.spec, "unmet": self.unmet,
-                "lead_ids": self.lead_ids, "seq": self.seq}
+                "lead_ids": self.lead_ids, "seq": self.seq,
+                "fingerprint": self.fingerprint}
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +151,7 @@ class Scheduler:
         self._graph_path = self._graph_dir / "graph.json"
         self._nodes: Dict[str, GraphNode] = {}
         self._seq = 0
+        self.dedup_skipped = 0  # P6: duplicate dispatches avoided
 
     # -- persistence --------------------------------------------------------
 
@@ -160,7 +182,8 @@ class Scheduler:
             sched._nodes[tid] = GraphNode(
                 spec=node["spec"], unmet=list(node.get("unmet") or []),
                 lead_ids=list(node.get("lead_ids") or []),
-                seq=int(node.get("seq") or 0))
+                seq=int(node.get("seq") or 0),
+                fingerprint=str(node.get("fingerprint") or ""))
             sched._seq = max(sched._seq, int(node.get("seq") or 0))
         return sched
 
@@ -171,9 +194,21 @@ class Scheduler:
         issues = validate_task_spec(spec_dict)
         if issues:
             raise ContractViolation(issues)
+        # P6 dedup-before-dispatch: a task identical to an existing
+        # PENDING/ACTIVE node (same fingerprint) is not re-created -- the
+        # caller gets the existing node, so duplicate model work can never
+        # be scheduled.  DONE/BLOCKED nodes do not dedup (re-work may be
+        # intentional after a blocker).
+        fingerprint = task_fingerprint(spec_dict)
+        for existing in self._nodes.values():
+            if (existing.fingerprint == fingerprint
+                    and existing.status in (TASK_PENDING, TASK_ACTIVE)):
+                self.dedup_skipped += 1
+                return existing
         self._seq += 1
         node = GraphNode(spec=dict(spec_dict), unmet=list(deps or []),
                          lead_ids=list(lead_ids or []), seq=self._seq)
+        node.fingerprint = fingerprint
         self._nodes[node.task_id] = node
         return node
 
@@ -386,6 +421,7 @@ class Scheduler:
         return {"mission_id": self.mission.mission_id,
                 "target": self.mission.target,
                 "nodes": len(self._nodes), "counts": counts,
+                "dedup_skipped": self.dedup_skipped,
                 "graph_path": str(self._graph_path)}
 
 

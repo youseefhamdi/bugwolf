@@ -173,6 +173,25 @@ JSON-RPC stdio:
 claude mcp add bugwolf -- python3 bridge/bugwolf-mcp.py
 ```
 
+## Performance Dashboard & Gates (Phase 7)
+
+Measure the plan-5.3 targets and write `state/perf/dashboard.json`:
+
+```bash
+python3 tools/perf.py --measure        # full dashboard
+python3 tools/perf.py --gate           # regression gate (exit 1 on unmet)
+python3 tools/perf.py --yield-mission <id>   # plan-5.4 yield metrics
+```
+
+Nine targets are measured offline and CI-gated (plan artifact < 5 s, worker
+startup < 50 ms/lane, hook round-trip < 10 ms, transition durability < 1 s,
+cold resume < 1 s, zero deterministic re-runs, >= 6 lanes, 100% OAST
+attribution, zero duplicate dispatches). Live-campaign targets (dispatch
+latency, context duplication, frontier-call reduction, escalation latency)
+are listed NOT MEASURED with reasons — never silently dropped. P6
+dedup-before-dispatch collapses duplicate task fingerprints at graph-build
+time, so identical work is never dispatched twice.
+
 ## Evidence Review Workflow
 
 For every candidate that reaches `reproduced` or later:

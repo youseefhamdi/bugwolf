@@ -19,6 +19,24 @@ jobs:
       - name: Full test suite
         run: python3 -m unittest discover -s tests -p "test_*.py"
 
+      - name: Performance regression gate (plan v2 section 5.3)
+        run: python3 tools/perf.py --measure
+
+      - name: Benchmark quality gate
+        run: python3 - <<'EOF'
+import importlib.util, threading, http.server, json, os, sys, tempfile
+sys.path.insert(0, os.getcwd())
+spec = importlib.util.spec_from_file_location("stub_target", "tests/_stub_target.py")
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), mod.Handler)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+from tools.benchmark import load_manifest, run_benchmark
+report = run_benchmark(load_manifest(), base_url=f"http://127.0.0.1:{srv.server_address[1]}")
+print(f"benchmark: {report['true_positives']} TP / {report['false_positives']} FP / {report['false_negatives']} FN -> {'PASS' if report['passed'] else 'FAIL'}")
+srv.shutdown()
+sys.exit(0 if report["passed"] else 1)
+EOF
+
       - name: Bundle content + eval-pass check
         run: bash scripts/ci_bundle_check.sh
 
