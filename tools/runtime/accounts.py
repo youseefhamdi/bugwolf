@@ -33,6 +33,12 @@ SCHEMA = "bugwolf-accounts/v1"
 
 ACCOUNT_LABELS = ("A", "B", "C")
 
+# Sentinel written by Scheduler.save() when a credential was redacted for
+# persistence.  A resumed mission must treat these as ABSENT: attempting a
+# login with the literal sentinel would leak it to the target, and a dead
+# token must never be replayed as if live (product audit fix).
+REDACTED = "__redacted__"
+
 # Keys whose value in a response body identifies the object owner.  First
 # match wins; identity comparison is exact string match against the binding.
 _IDENTITY_KEYS = ("username", "email", "user", "id", "sub", "login")
@@ -150,6 +156,19 @@ class AccountMatrix:
             if not isinstance(spec, dict):
                 matrix._bind_notes.append("skipped: spec is not an object")
                 continue
+            # Redacted-for-disk credentials (Scheduler.save) are treated as
+            # absent -- the binding degrades honestly instead of replaying a
+            # placeholder at the target.
+            if str(spec.get("password", "")) == REDACTED:
+                spec = {**spec, "password": ""}
+                matrix._bind_notes.append(
+                    f"{str(spec.get('label', '?')).upper()}: password redacted "
+                    f"on resume -- re-bind via a fresh --accounts file")
+            if str(spec.get("token", "")) == REDACTED:
+                spec = {**spec, "token": ""}
+                matrix._bind_notes.append(
+                    f"{str(spec.get('label', '?')).upper()}: token redacted "
+                    f"on resume -- re-bind via a fresh --accounts file")
             label = str(spec.get("label", "")).strip().upper()
             if label not in ACCOUNT_LABELS:
                 matrix._bind_notes.append(

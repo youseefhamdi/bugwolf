@@ -136,6 +136,33 @@ class GraphNode:
                 "fingerprint": self.fingerprint}
 
 
+def _redact_mission_credentials(mission_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Redact account credential values for persistence (product audit).
+
+    ``MissionSpec.accounts`` entries carry operator passwords/tokens for
+    live lane binding.  On disk each value becomes ``__redacted__:true``;
+    :meth:`Scheduler.load` restores the placeholder so a resumed mission
+    fails *safe*: the auth lane degrades to anon observations and logs a
+    blocker instead of silently running with dead credentials.
+    """
+    accounts = mission_dict.get("accounts")
+    if not accounts:
+        return mission_dict
+    redacted: List[Dict[str, Any]] = []
+    for spec in accounts:
+        if not isinstance(spec, dict):
+            redacted.append(spec)
+            continue
+        scrubbed = dict(spec)
+        for key in Scheduler._CREDENTIAL_FIELDS:
+            if scrubbed.get(key):
+                scrubbed[key] = "__redacted__"
+        redacted.append(scrubbed)
+    out = dict(mission_dict)
+    out["accounts"] = redacted
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Scheduler
 # ---------------------------------------------------------------------------
@@ -143,6 +170,10 @@ class GraphNode:
 
 class Scheduler:
     """Durable, resumable task-graph scheduler for one mission."""
+
+    # Mission fields that hold operator credentials: persisted as boolean
+    # presence markers, never values (product audit fix).
+    _CREDENTIAL_FIELDS = ("password", "token")
 
     def __init__(self, mission: MissionSpec, *, project_root: Optional[str] = None):
         self.mission = mission
@@ -162,7 +193,10 @@ class Scheduler:
         self._graph_dir.mkdir(parents=True, exist_ok=True)
         payload = {
             "schema": SCHEMA,
-            "mission": self.mission.to_dict(),
+            # Credential hygiene (product audit): account passwords/tokens
+            # must never reach disk.  Redact at the persistence boundary;
+            # the in-memory spec keeps them so live lanes still bind.
+            "mission": _redact_mission_credentials(self.mission.to_dict()),
             "nodes": {tid: node.to_dict() for tid, node in self._nodes.items()},
         }
         tmp = self._graph_path.with_suffix(".json.tmp")

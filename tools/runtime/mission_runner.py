@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import struct
 import sys
@@ -2242,7 +2243,9 @@ class MissionRunner:
         self.oast_registry: Optional[OastRegistry] = None
         if oast_enabled:
             self.oast_registry = OastRegistry(project_root=project_root)
-            self.oast = OastListener(self.oast_registry)
+            self.oast = OastListener(
+                self.oast_registry,
+                public_base_url=os.environ.get("BUGWOLF_OAST_PUBLIC_URL", ""))
             self.oast.start()
         self._events: List[Dict[str, Any]] = []
         # S1/S2 runtime state (armed in run(); safe defaults for direct

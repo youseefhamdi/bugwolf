@@ -246,8 +246,33 @@ If a candidate or chain report looks wrong:
 5. If evidence was corrupted, restore from the checksummed artifact or
    re-run the campaign step.
 
+## Security Posture of the Tool Itself (product audit)
+
+The plug-in is offensive tooling; its own hygiene is part of the product:
+
+- **Credentials never touch disk.** `MissionSpec.accounts` passwords/tokens
+  are redacted to `__redacted__` at the persistence boundary
+  (`Scheduler.save`). A resumed mission treats redacted credentials as
+  absent: the auth lane degrades to anon observations and discloses it in
+  the bind notes — re-bind with a fresh `--accounts` file.
+- **Race traffic validates TLS by default** (`RaceRequest.verify_tls=True`);
+  opting out is an explicit operator decision per request.
+- **The OAST listener binds loopback** by default. Point a remote target at
+  it only via `BUGWOLF_OAST_PUBLIC_URL` (a tunnel/reverse proxy you own) —
+  canary URLs advertise that public route, and attribution stays 100%.
+- **Hook journals are allowlisted.** The stop/resume shim records only
+  `mission_id / session_id / reason / trigger / source` — caller payloads
+  cannot turn `state/orchestrator/<mission>/hooks.jsonl` into a dump.
+- Session tokens live in memory only (`tools/runtime/accounts.py`); every
+  token leaving that module for logs/reports is redacted.
+
 ## Operating Boundary Recap
 
-- No authorization gates exist inside the plug-in by design.
-- The lab is the boundary: disposable, isolated, no real credentials.
+- The **operator** is the authorization boundary: they declare the target,
+  surfaces, and accounts; the plug-in ships no targets and no credentials.
+- Pre-flight runs before any mission work and records its manifest;
+  readiness (`python3 -m tools.readiness`) reports L1 with explicit
+  warnings (authorization not enforced at the execution boundary, no
+  complete SSRF guard, no subprocess sandbox) — read them before real-world
+  use and run inside a scoped, monitored environment.
 - Every finding is a hypothesis until an operator reproduces and reviews it.

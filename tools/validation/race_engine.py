@@ -47,9 +47,11 @@ class RaceRequest:
     headers: Optional[Dict[str, str]] = None
     count: int = 8
     timeout: float = 5.0
-    verify_tls: bool = False              # race windows measure timing; cert
-                                          # validation is the operator's
-                                          # transport concern
+    verify_tls: bool = True               # certificate validation ON by
+                                          # default: a MITM who wins the
+                                          # race handshake owns the race.
+                                          # Operators pinning unusual certs
+                                          # may opt out explicitly.
 
 
 @dataclass

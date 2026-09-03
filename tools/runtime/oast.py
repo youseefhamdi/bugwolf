@@ -134,8 +134,16 @@ class OastListener:
     """
 
     def __init__(self, registry: OastRegistry, host: str = "127.0.0.1",
-                 port: int = 0):
+                 port: int = 0, public_base_url: Optional[str] = None):
+        """``host``/``port`` control the BIND (default loopback + ephemeral;
+        never expose the listener beyond the operator's machine by default).
+        ``public_base_url`` is what canary URLs ADVERTISE -- for a remote
+        target the callback must traverse a tunnel/reverse proxy the
+        operator owns (set BUGWOLF_OAST_PUBLIC_URL); advertising the raw
+        bind address would make attribution silently impossible.
+        """
         self.registry = registry
+        self._public_base_url = (public_base_url or "").rstrip("/")
         outer = self
 
         class _Handler(BaseHTTPRequestHandler):
@@ -173,6 +181,10 @@ class OastListener:
 
     @property
     def base_url(self) -> str:
+        """The URL embedded in canaries: the public route when declared,
+        else the local bind (loopback testing / local targets)."""
+        if self._public_base_url:
+            return self._public_base_url
         return f"http://{self.host}:{self.port}"
 
     def start(self) -> None:

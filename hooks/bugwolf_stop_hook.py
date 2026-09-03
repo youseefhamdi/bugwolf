@@ -45,14 +45,22 @@ def _preflight_digest() -> str:
         return ""
 
 
+# Only allowlisted scalar fields are journalled: hook callers are other
+# processes on the operator's machine, and the journal file must never
+# become a dumping ground for arbitrary payloads (product audit fix).
+_JOURNAL_KEYS = ("mission_id", "session_id", "reason", "trigger", "source")
+
+
 def main() -> int:
     action = sys.argv[1] if len(sys.argv) > 1 else "stop"
     try:
         event = json.loads(sys.stdin.read() or "{}")
     except ValueError:
         event = {}
+    if not isinstance(event, dict):
+        event = {}
     line = {"ts": _now_iso(), "hook": action, **{
-        k: v for k, v in event.items() if isinstance(v, (str, int, float, bool))}}
+        k: event[k] for k in _JOURNAL_KEYS if k in event}}
     decision: dict = {"continue": True}
     try:
         if action == "session-start":
