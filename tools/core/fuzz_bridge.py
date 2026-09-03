@@ -227,6 +227,8 @@ def run_fuzzing_campaign(
     retries: int = DEFAULT_RETRIES,
     project_root: Optional[str] = None,
     publish: bool = True,
+    art_order: bool = True,
+    art_seed: int = 0,
 ) -> FuzzSummary:
     """Run a coverage-aware fuzz campaign; return the deterministic summary.
 
@@ -235,6 +237,9 @@ def run_fuzzing_campaign(
     ``transport`` is injectable for deterministic tests; the default hits the
     live target over HTTP (authorization is the operator's responsibility,
     recorded in scope — this module never gates on it).
+    ``art_order=True`` schedules payload mutations max-min-distance first
+    (adaptive random testing, tools/art_selector) so a truncated budget
+    still covers distinct grammar families.
     """
     summary = FuzzSummary(
         run_id=hashlib.sha256(
@@ -250,6 +255,14 @@ def run_fuzzing_campaign(
     if not mutations:
         summary.errors += 1
         return summary
+
+    # ART scheduling (plan section 5.6 S4): payload mutations are ordered
+    # max-min-distance first (adaptive random testing), so early probes hit
+    # maximally different grammar families -- a budget cut lands mid-space,
+    # not inside one family.  Non-payload mutations (boundary/state/etc.)
+    # keep declaration order.
+    if art_order:
+        mutations = _art_order_mutations(mutations, seed=art_seed)
 
     base = str(base_url or "").rstrip("/")
     t = transport or (lambda u, m, b, h: _transport(
@@ -308,6 +321,55 @@ def run_fuzzing_campaign(
             _publish_signal(target, observation, project_root=project_root)
     _persist_summary(summary, project_root=project_root)
     return summary
+
+
+def _art_order_mutations(mutations: List[Any], *, seed: int = 0) -> List[Any]:
+    """ART ordering: payload mutations selected max-min-distance first.
+
+    Uses tools/art_selector (the ART4SQLi primitive) when a payload space is
+    buildable (TF-IDF over payload grammar tokens); falls back to
+    declaration order when no mutation carries a string payload.  The
+    selected order is deterministic for a given seed.
+    """
+    try:
+        from tools.art_selector import (
+            build_payload_space, select_next, _is_payload_mutation,
+        )
+    except ImportError:  # pragma: no cover - selector always ships
+        return list(mutations)
+    payload_mutations = [m for m in mutations if _is_payload_mutation(m)]
+    if len(payload_mutations) < 2:
+        return list(mutations)
+    space = build_payload_space(payload_mutations)
+    remaining = list(payload_mutations)
+    evaluated: List[Any] = []
+    ordered: List[Any] = []
+    round_no = 0
+    while remaining:
+        pick = select_next(remaining, evaluated, space=space,
+                           seed=seed, round_no=round_no)
+        if pick is None:  # defensive: select_next on non-empty is not None
+            ordered.extend(remaining)
+            break
+        ordered.append(pick)
+        evaluated.append(pick)
+        remaining.remove(pick)
+        round_no += 1
+    # Interleave non-payload mutations in declaration order between the
+    # ART-ordered payload probes (stable merge by original index).
+    order_index = {id(m): i for i, m in enumerate(ordered)}
+    payload_set = {id(m) for m in payload_mutations}
+    art_position = 0
+    non_payload = [m for m in mutations if id(m) not in payload_set]
+    merged: List[Any] = []
+    for m in mutations:
+        if id(m) in payload_set:
+            merged.append(ordered[art_position])
+            art_position += 1
+        else:
+            merged.append(m)
+    del order_index, non_payload
+    return merged
 
 
 def _publish_signal(target: str, observation: FuzzObservation, *,

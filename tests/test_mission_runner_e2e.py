@@ -193,11 +193,15 @@ class MissionE2ETest(unittest.TestCase):
         # + WAF gateway x1 + FIN checkout x1 + FIN voucher-redeem x1 (the
         # direct redemption surface confirms voucher-stacking)
         # + FIN payment-verify x1 (signature-forgery: length extension)
-        # + fuzz x3 = 8 findings; GraphQL stays open (honest generic lead).
+        # + fuzz x3 = 8 findings.  Open leads (3): GraphQL (honest generic),
+        # SSRF differential (needs oast_enabled for the attributed callback),
+        # stored-reflection (needs a browser driver; blocked-browser).  The
+        # two blocked-capability leads stay open -- never refuted for
+        # missing tooling (plan S1/S2 semantics).
         self.assertEqual(counts["findings"], 8)
         self.assertEqual(counts["refuted"], 0)
-        self.assertEqual(counts["open"], 1)
-        self.assertEqual(counts["total_leads"], 9)
+        self.assertEqual(counts["open"], 3)
+        self.assertEqual(counts["total_leads"], 11)
         # All 4 lane tasks drained through the scheduler with no rejections.
         self.assertEqual(len(report["tasks"]), 4)
         self.assertFalse([e for e in report["events"]
@@ -317,8 +321,9 @@ class MissionE2ETest(unittest.TestCase):
         self._runner(mission).run()
         reloaded = LeadStore(mission.mission_id).load()
         open_leads = reloaded.open_lead_ids()
-        self.assertEqual(len(open_leads), 1)
-        self.assertIn("graphql", open_leads[0].lower())
+        self.assertEqual(len(open_leads), 3)
+        graphql = [l for l in open_leads if "graphql" in l.lower()]
+        self.assertEqual(len(graphql), 1)
 
     def test_probe_result_records_headers(self):
         result = http_probe(self.base + "/tech.json")

@@ -29,6 +29,7 @@ import struct
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -45,6 +46,12 @@ from tools.runtime.accounts import (
     AccountMatrix, is_auth_surface, decode_jwt_claims, forge_alg_none,
 )
 from tools.validation.race_engine import RaceRequest, run_race
+from tools.runtime.browser_driver import (
+    validate_client_side, make_signature,
+)
+from tools.runtime.oast import (
+    OastListener, OastRegistry, canary_url, poll_callbacks, wait_for_callbacks,
+)
 from tools.contract_discovery import (
     ContractMutation, ContractMutator, ContractSurfaceModel,
     contract_impact_verb, load_contract_spec,
@@ -423,6 +430,89 @@ def _probe_graphql_introspection(base: str, paths: List[str]) -> List[Dict]:
                 "detail": f"{path} allows schema introspection",
                 "evidence": result.body[:400],
                 "path": path, "status": result.status,
+            })
+    return signals
+
+
+# ---------------------------------------------------------------------------
+# OAST + browser-validation families (plan v2 section 5.6 S1/S2)
+# ---------------------------------------------------------------------------
+
+def _probe_ssrf_outbound(base: str, paths: List[str]) -> List[Dict]:
+    """SSRF family: fetch-accepting surfaces (feed imports, URL previews).
+
+    Detection is a pure differential (benign local fetch vs rejected); the
+    OAST canary re-probe that turns the signal into proof happens in the
+    web lane (S1: per-lead canaries, 100% attributed callbacks).
+    """
+    signals = []
+    for path in paths:
+        if "/ingest" not in path and "/import" not in path and "/fetch" not in path:
+            continue
+        benign = http_probe(base + path, method="POST", body={"q": "/tech.json"},
+                            headers={"Content-Type": "application/json"})
+        if not benign.ok:
+            continue
+        probe = http_probe(base + path, method="POST",
+                           body={"q": "http://127.0.0.1:1/no-such-port"},
+                           headers={"Content-Type": "application/json"})
+        if probe.ok and '"fetched"' in probe.body:
+            signals.append({
+                "signal": "ssrf-outbound-fetch",
+                "detail": f"{path} fetches operator-supplied URLs "
+                          f"(response distinguishes upstream success/failure)",
+                "evidence": probe.body[:300],
+                "path": path, "status": probe.status,
+            })
+    return signals
+
+
+def _probe_stored_reflection(base: str, paths: List[str]) -> List[Dict]:
+    """Client-side family: stored reflection differential (canary in,
+    canary out).  Execution is NEVER claimed here -- that verdict belongs
+    to the browser driver in the verify lane (reflection != execution)."""
+    signals = []
+    canary = make_signature("reflection-differential")
+    seen_replays: set = set()
+    for path in paths:
+        if "/notes" in path and "/ingest" not in path:
+            # Self-contained differential: store via the sibling ingest
+            # surface, then read this replay surface back.
+            store_path = path.rsplit("/", 1)[0] + "/ingest"
+            store = http_probe(base + store_path, method="POST",
+                               body={"q": f"note:{canary}"},
+                               headers={"Content-Type": "application/json"})
+            if not store.ok:
+                continue
+            replay = http_probe(base + path)
+            if replay.ok and canary in replay.body and path not in seen_replays:
+                seen_replays.add(path)
+                signals.append({
+                    "signal": "stored-reflection",
+                    "detail": f"{store_path} stores verbatim; "
+                              f"{path} replays it",
+                    "evidence": replay.body[:300],
+                    "path": path, "status": replay.status,
+                    "store_surface": store_path,
+                })
+            continue
+        if "/ingest" not in path:
+            continue
+        probe = http_probe(base + path, method="POST",
+                           body={"q": f"note:{canary}"},
+                           headers={"Content-Type": "application/json"})
+        if not probe.ok:
+            continue
+        replay_path = path.rsplit("/", 1)[0] + "/notes"
+        replay = http_probe(base + replay_path)
+        if replay.ok and canary in replay.body and replay_path not in seen_replays:
+            seen_replays.add(replay_path)
+            signals.append({
+                "signal": "stored-reflection",
+                "detail": f"{path} stores verbatim; {replay_path} replays it",
+                "evidence": replay.body[:300],
+                "path": replay_path, "status": replay.status,
+                "store_surface": path,
             })
     return signals
 
@@ -2055,6 +2145,8 @@ LANE_FAMILIES = (
     (_probe_fin_matrix, "business_logic", "quantity-mutation"),
     (_probe_fuzz_batch, "fuzzing", "boundary-length"),
     (_probe_graphql_introspection, "generic", "parameter-mutation"),
+    (_probe_ssrf_outbound, "generic", "ssrf-fetch"),
+    (_probe_stored_reflection, "client_side", "stored-reflection"),
 )
 
 # Domain lanes (plan section 5.6): dispatched ONLY when the mission declares
@@ -2080,7 +2172,9 @@ class MissionRunner:
     """Drive one MissionSpec through scheduler + lanes + lead protocol."""
 
     def __init__(self, mission: MissionSpec, *, project_root: Optional[str] = None,
-                 base_url: str = "", paths: Optional[List[str]] = None):
+                 base_url: str = "", paths: Optional[List[str]] = None,
+                 browser_driver: Optional[Any] = None,
+                 oast_enabled: bool = False):
         self.mission = mission
         self.project_root = project_root
         self.base_url = base_url.rstrip("/")
@@ -2094,7 +2188,30 @@ class MissionRunner:
         self.matrix = AccountMatrix.from_specs(self.base_url,
                                                getattr(mission, "accounts",
                                                        None))
+        # Browser validation driver (plan S2): injected (playwright/CDP or
+        # the operator's browserMCP session).  None => client-side leads
+        # move to blocked-browser semantics (open + re-dispatch later).
+        self.browser_driver = browser_driver
+        # OAST service (plan S1): opt-in self-hosted canary listener with
+        # per-lead tokens and restart-safe callback attribution.
+        self.oast: Optional[OastListener] = None
+        self.oast_registry: Optional[OastRegistry] = None
+        if oast_enabled:
+            self.oast_registry = OastRegistry(project_root=project_root)
+            self.oast = OastListener(self.oast_registry)
+            self.oast.start()
         self._events: List[Dict[str, Any]] = []
+        # S1/S2 runtime state (armed in run(); safe defaults for direct
+        # lane invocation in tests).
+        self._oast_cursor = 0
+        self._oast_canaries: Dict[str, str] = {}
+        self._client_side_dispatched = False
+
+    def close(self) -> None:
+        """Release the OAST listener (tests / CLI shutdown)."""
+        if self.oast is not None:
+            self.oast.stop()
+            self.oast = None
 
     # -- helpers -------------------------------------------------------------
 
@@ -2124,6 +2241,16 @@ class MissionRunner:
             self._log("accounts_bound", {"notes": bind_notes,
                                          "bound": self.matrix.bound_labels})
 
+        # 2.6 Web lane pre-step (plan S1): pre-register OAST canaries for
+        # every operator-declared surface so 100% of callbacks attribute.
+        self._oast_cursor = 0
+        if self.oast_registry is not None and self.paths:
+            self._oast_canaries = {
+                path: canary_url(self.oast.base_url, f"surface:{path}",
+                                 registry=self.oast_registry)
+                for path in self.paths}
+            self._log("oast_armed", {"canaries": len(self._oast_canaries)})
+
         # 3. Dispatch runnable tasks (the web/API lane is the Phase 4 lane).
         report_tasks: Dict[str, Any] = {}
         for _ in range(16):  # bounded drain loop
@@ -2139,6 +2266,8 @@ class MissionRunner:
                     result = self._run_recon_lane()
                 elif node.spec.get("domain") == "verify":
                     result = self._run_verify_lane()
+                elif node.spec.get("domain") == "client_side":
+                    result = self._run_client_side_lane()
                 elif node.spec.get("domain") == "report":
                     result = self._run_report_lane()
                 elif node.spec.get("domain") in DOMAIN_LANES:
@@ -2208,7 +2337,34 @@ class MissionRunner:
                 self._log("lead_opened", {"lead_id": lead.lead_id,
                                           "signal": sig["signal"],
                                           "detail": sig.get("detail", "")})
-        status = "completed" if lead_ids else "completed"
+                # S1 OAST re-probe: SSRF-class leads embed the surface's
+                # registered canary; attributed callbacks = proof.
+                if (sig["signal"] == "ssrf-outbound-fetch"
+                        and self.oast is not None):
+                    canary = self._oast_canaries.get(sig.get("path", ""))
+                    if canary:
+                        http_probe(self.base_url + sig["path"],
+                                   method="POST", body={"q": canary},
+                                   headers={"Content-Type":
+                                            "application/json"})
+                        hits = wait_for_callbacks(
+                            self.oast_registry, f"surface:{sig['path']}",
+                            timeout=5.0, cursor=self._oast_cursor,
+                            publish=True)
+                        if hits:
+                            self._log("oast_callback",
+                                      {"lead_id": lead.lead_id,
+                                       "hits": len(hits),
+                                       "source": hits[0].get("source")})
+        # S1 harvest: attribute any callbacks that fired during the lane.
+        if self.oast_registry is not None:
+            attributed, self._oast_cursor = poll_callbacks(
+                self.oast_registry, since_count=self._oast_cursor,
+                project_root=self.project_root)
+            for hit in attributed:
+                self._log("oast_callback", {
+                    "lead_id": hit.get("lead_id"),
+                    "token": hit.get("token"), "source": hit.get("source")})
         return {
             "task_id": "",  # filled by record()
             "agent_role": "web-api-lane",
@@ -2273,6 +2429,57 @@ class MissionRunner:
                                "inputs": {"base_url": self.base_url},
                                "exit_state": "ok"}],
             "evidence_refs": evidence,
+            "mcp_bindings_used": [],
+        }
+
+    def _run_client_side_lane(self) -> Dict[str, Any]:
+        """Browser validation lane (plan S2): reflection != execution.
+
+        Every open client_side lead is validated in a live DOM when a
+        driver is bound; without one the lead stays OPEN under
+        blocked-browser semantics (re-dispatched when the driver returns).
+        """
+        if self.browser_driver is not None:
+            self._client_side_dispatched = True
+        validated, blocked = [], []
+        for lead in self.leads.list_leads():
+            if lead.bug_class != "client_side" or lead.status != "OPEN":
+                continue
+            candidate = {"lead_id": lead.lead_id,
+                         "url": self.base_url + lead.surface}
+            evidence = validate_client_side(candidate, self.browser_driver)
+            if evidence.execution_confirmed:
+                validated.append(lead.lead_id)
+                self.leads.record_technique(
+                    lead.lead_id, "browser-validation", "success",
+                    detail=(f"signature observed via "
+                            f"{'console' if evidence.console_messages else 'DOM'}"
+                            f"; blocker={evidence.blocker or 'none'}"))
+                self._log("browser_confirmed", {"lead_id": lead.lead_id})
+            elif evidence.reflection_only:
+                self.leads.record_technique(
+                    lead.lead_id, "browser-validation", "signal",
+                    detail="body reflection only; no execution observed")
+                self._log("browser_reflection_only", {"lead_id": lead.lead_id})
+            else:
+                # No driver, driver failure, or inconclusive: blocked-browser
+                # semantics -- the lead stays open and re-dispatches later.
+                blocker = evidence.blocker or "no browser driver bound"
+                blocked.append(lead.lead_id)
+                self.leads.record_technique(
+                    lead.lead_id, "blocked-browser", "blocked",
+                    detail=blocker)
+                self._log("browser_blocked", {"lead_id": lead.lead_id,
+                                              "blocker": blocker})
+        return {
+            "task_id": "", "agent_role": "client-side-lane",
+            "status": "completed",
+            "summary": (f"validated {len(validated)}, "
+                        f"blocked-browser {len(blocked)}"),
+            "tool_receipts": [{"tool": "mission_runner.client_side_lane",
+                               "command": "validate_client_side",
+                               "exit_state": "ok"}],
+            "lead_refs": validated + blocked,
             "mcp_bindings_used": [],
         }
 
@@ -2388,6 +2595,26 @@ class MissionRunner:
                     return replay_llm_technique(self.base_url, lead.surface,
                                                 cand)
             return None
+        if lead.bug_class == "client_side":
+            # S2 replay: execution is confirmed ONLY by the browser driver
+            # (console/DOM signature).  Reflection never confirms; no
+            # driver keeps the lead open under blocked-browser semantics
+            # (None = undecidable, never refuted for missing tooling).
+            if self.browser_driver is None:
+                return None
+            candidate = {"lead_id": lead.lead_id,
+                         "url": self.base_url + lead.surface}
+            evidence = validate_client_side(candidate, self.browser_driver)
+            return bool(evidence.execution_confirmed)
+        if any(t.get("technique") == "ssrf-fetch"
+               for t in lead.technique_log):
+            # S1 replay: an attributed OAST callback for this surface's
+            # canary is the deterministic proof (the target fetched OUR
+            # URL -- no reasoning tier required).
+            if self.oast_registry is None:
+                return None
+            return bool(self.oast_registry.interactions(
+                lead_id=f"surface:{lead.surface}"))
         return None  # generic leads need reasoning tiers (Phase 6)
 
     def _run_report_lane(self) -> Dict[str, Any]:

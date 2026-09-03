@@ -34,8 +34,9 @@ import base64
 import hashlib
 import json
 import re
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 # FIN-CRYPTO canary secret (CI regression only; models the classic
 # ``secret || signature`` MAC construction the hash-length-extension and
@@ -55,6 +56,23 @@ def _pay_verify(params: str, sig: str) -> bool:
 
 def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _cb_json(handler, code: int, payload: dict) -> None:
+    """JSON helper for the OAST callback surface (handler has no _json in
+    the do_GET early paths -- mirrors Handler._json exactly)."""
+    body = json.dumps(payload).encode()
+    handler.send_response(code)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+# Stored notes for the client-side lane (CI regression only): "note:<text>"
+# ingests are stored verbatim and replayed verbatim by GET /api/notes -- the
+# classic stored-XSS sink for the reflection-is-not-execution check.
+_NOTES: list = []
 
 
 def _issue_token(username: str) -> str:
@@ -204,8 +222,29 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlparse(self.path).query).get("q", [""])[0]
             if len(q) > 64 or "' OR '1'='1" in q or "SLEEP(" in q:
                 self._json(500, {"error": "ingest parser failure"})
+            elif q.startswith("http://") or q.startswith("https://"):
+                # SSRF lane: the ingest parser fetches arbitrary URLs (a
+                # classic enterprise feed-import bug).  Real fetch, no
+                # allowlist -- the OAST canary attribution depends on it.
+                try:
+                    with urllib.request.urlopen(q, timeout=5) as resp:
+                        self._json(200, {"fetched": True,
+                                         "upstream": resp.status,
+                                         "snippet": resp.read(120).decode(
+                                             "utf-8", "replace")})
+                except Exception as exc:  # noqa: BLE001 - failure is data
+                    self._json(200, {"fetched": False,
+                                     "error": f"{type(exc).__name__}"})
+            elif q.startswith("note:"):
+                # Client-side lane: store verbatim, replay verbatim.
+                _NOTES.append(q[len("note:"):])
+                self._json(200, {"stored": True, "total": len(_NOTES)})
             else:
                 self._json(200, {"ok": True})
+        elif path == "/api/notes":
+            # Replay surface for the client-side lane: verbatim stored
+            # notes, exactly as a vulnerable comment/notes page would.
+            self._json(200, {"notes": list(_NOTES)})
         elif path == "/api/gateway":
             if "X-Original-URL" in self.headers:
                 self._json(200, {"id": "gw-1", "service": "internal-gateway",
@@ -350,6 +389,25 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"reply": f"echo: {body.get('prompt', '')}"})
         elif path in ("/account/email", "/account/reset"):
             self._json(200, {"changed": True})
+        elif path == "/api/ingest":
+            # POST alias for the SSRF/notes ingests (feed imports are POSTs
+            # as often as GETs); same semantics as the GET branch.
+            q = str(body.get("q", ""))
+            if q.startswith("http://") or q.startswith("https://"):
+                try:
+                    with urllib.request.urlopen(q, timeout=5) as resp:
+                        self._json(200, {"fetched": True,
+                                         "upstream": resp.status,
+                                         "snippet": resp.read(120).decode(
+                                             "utf-8", "replace")})
+                except Exception as exc:  # noqa: BLE001 - failure is data
+                    self._json(200, {"fetched": False,
+                                     "error": f"{type(exc).__name__}"})
+            elif q.startswith("note:"):
+                _NOTES.append(q[len("note:"):])
+                self._json(200, {"stored": True, "total": len(_NOTES)})
+            else:
+                self._json(200, {"ok": True})
         else:
             self._json(404, {"error": "not found"})
 

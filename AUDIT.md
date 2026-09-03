@@ -1,17 +1,17 @@
 # BugWolf — Repository Audit & File Map (generated)
 
-> Generated on 2026-09-03T09:02:39+00:00 from `main@9ebc3e2` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
+> Generated on 2026-09-03T10:04:42+00:00 from `main@f0fdb28` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
 
 ## 1. Scale
 
-- Python modules under `tools/`: **158** (66271 lines) + **13** `__init__.py` package markers.
+- Python modules under `tools/`: **160** (66955 lines) + **13** `__init__.py` package markers.
 - CLI-capable modules (argparse/`__main__`): **111**
 - Group sizes: core **8**, domains **14**, intelligence **3**, recon **1**, validation **3**
 
 ## 2. Test suite
 
-- Test files: **119**
-- Discovered tests: **1223**
+- Test files: **120**
+- Discovered tests: **1237**
 
 ## 3. References
 
@@ -27,7 +27,7 @@
 
 | Module | Lines | Purpose |
 |---|---|---|
-| `tools/runtime/mission_runner.py` | 2495 | BugWolf mission runner (orchestrator plan v2, Phase 4 exit criterion). |
+| `tools/runtime/mission_runner.py` | 2722 | BugWolf mission runner (orchestrator plan v2, Phase 4 exit criterion). |
 | `tools/core/campaign_orchestrator.py` | 2177 | BugWolf Campaign Orchestrator — APT Commander (Stage 2 rebuild). |
 | `tools/paper_intel.py` | 2096 | Offline adapters derived from the supplied 2026 security papers. |
 | `tools/hunt.py` | 1467 | BugWolf Hunt Engine — Auth-aware vulnerability scanner. |
