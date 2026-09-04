@@ -1,5 +1,218 @@
 # Changelog
 
+## v1.9.2 — Recon depth surfaced in operator reports (status + preflight)
+
+The depth ledger and its evidence recommendations were visible only to
+dispatch payloads and the ledger CLI; operator reports could not answer
+"how deep did recon go, and what did its evidence imply?".
+
+### Team engine (`tools/runtime/team.py`)
+- **`_recon_depth_report()`**: shared advisory section (never raises,
+  never gates) consumed by both `status()` and `preflight()`:
+  per-depth covered/total counts with untried + waived lists, honest
+  close blockers, and the depth ledger's evidence-driven recommendations
+  annotated with **staffing state** (`role` + `staffed` flag) — an
+  operator sees not just "bucket surface found" but whether the matching
+  specialist is already on the roster.
+- **Honest degradation**: a mission with no recon-depth activity reports
+  `journal: false` with zero events and no recommendations — reporting
+  never fabricates depth intel. Close blockers are claimed only once a
+  journal exists (they are the in-flight exit exam, not a pre-failure of
+  a mission that hasn't begun).
+- **Unstaffed evidence stays visible**: evidence whose specialist was
+  never staffed (e.g. recomposition disabled) is reported with
+  `staffed: false`, never silently omitted.
+- 3 new tests (staffed evidence in both reports, unstaffed honesty,
+  no-journal degradation); 19 total in the depth suite, 131 overall.
+
+## v1.9.1 — D3 evidence auto-recomposition (recon census → specialists)
+
+The depth ladder recorded evidence; the recomposition loop consumed only
+member-reported recommendations. A recorded census hit (a bucket hostname,
+a WAF signature, a secret pattern in a bundle) now staffs its specialist
+automatically — no agent handoff required.
+
+### Depth ladder (`tools/recon/depth_ladder.py`)
+- **`SIGNAL_RULES`**: evidence patterns mapping census detail/asset text
+  to registry bug classes — cloud-bucket hostnames → `s3_misconfig`,
+  mobile/deep-link/`/api/` surfaces → `shadow_api`, WAF/CDN signatures →
+  `waf_bypass`, secret patterns in bundles → `js_secrets`. Rules are
+  technique-scoped (regex on technique + pattern on text).
+- **`recommendations()`**: cross-references recorded attempts into
+  `{bug_class, reason}` pairs. Evidence-based by construction: blocked
+  attempts are excluded, a clean census recommends nothing — silence can
+  never staff a specialist. Deduped per (technique, class); reasons are
+  prefixed `recon D-evidence:` for provenance.
+- CLI `--recommendations` surfaces the cross-reference for operators.
+
+### Team engine (`tools/runtime/team.py`)
+- **Single apply path**: `_maybe_recompose` delegates to the new shared
+  `_apply_recommendations` (dedupe, budget cap, idempotent ledger);
+  `_recompose_hook` merges member recommendations with the depth
+  ledger's evidence recommendations. Evidence recommendations ride the
+  exact same `recomposed` ledger events, `TEAM_RECOMPOSED` signals,
+  re-entry rounds, and `--no-recompose` opt-out.
+- Verified end-to-end: pre-recorded D3 bucket evidence staffs
+  `cloud-cicd` into the hunt wave with a provenance-carrying reason;
+  decisions are idempotent across resume.
+- 6 new tests (rule semantics, evidence-vs-silence, blocked-exclusion,
+  dedupe/technique-scoping, end-to-end staffing, resume idempotence).
+
+## v1.9.0 — Max-depth recon: D0-D3 depth ladder (anti-satisficing for recon)
+
+Recon had breadth (7 methodology sections, 15-phase engine) but no depth
+contract: nothing defined how deep recon must go before it may close, so
+depth was improvised — the same anti-satisficing failure mode
+lead-protocol eliminated for exploitation ("tried the most plausible
+probe once, moved on"), here expressed as "enumerated the obvious once,
+stopped shallow".
+
+### Recon depth ladder (`tools/recon/depth_ladder.py`, NEW)
+- **D0 passive** (zero target contact): historical churn, CT-log mining,
+  code search, package registries, social fingerprinting.
+- **D1 resolvable**: resolve-all, port census, wildcard baseline, ASN
+  neighborhood.
+- **D2 http-surface**: well-known census, admin ladder, API docs, JS
+  mining, header fingerprint.
+- **D3 deep-surface** (the pass shallow recon always skips): parameter
+  surface census, JS route/API-map extraction, cloud-bucket permutations,
+  mobile endpoint harvesting, historical cross-reference.
+- Append-only JSONL journal (`state/orchestrator/recon-depth/<mission>.jsonl`,
+  lever P5): rehydratable, torn-tail safe, offline by construction
+  (stdlib + runtime_paths only; a source-import test pins this).
+- **Depth discipline**: `untried()`/`close_blockers()` make "stopped too
+  shallow" structurally visible; `partial` is never terminal; waivers are
+  explicit recorded events with a reason — never silent omissions; each
+  level closes via an explicit `close(depth)` declaration.
+
+### Engine wiring (`tools/runtime/team.py`)
+- Every recon-lane member's dispatch payload now carries
+  `intel.recon_depth`: the D0-D3 slice, live ledger coverage, and current
+  close blockers — depth is a **dispatched obligation**, verifiable per
+  member and across resume, never a suggestion. Verified for the recon
+  workflow agent and lane-declared specialists (shadow-surface).
+
+### Playbook (`references/hacking-agents/recon-agent.md`)
+- New mandatory "Depth Ladder" section: ledger commands, per-depth
+  technique tables, D3-mandatory discipline (go deeper on signal, never
+  stop on silence), `recon_close_blockers` as the recon exit exam, and
+  the recommendation handoff to the team's recomposition loop.
+- Registry recon tool list extended (`recon.depth_ladder`,
+  `historical_asset_delta`); all 39 agent definitions regenerated in sync.
+- 10 new tests (ledger semantics + engine wiring).
+
+## v1.8.0 — Orchestrator architecture & operations hardening (team engine)
+
+Architecture: the engine's wave logic existed twice (once in ``run()``, a
+stale-prone copy in ``resume()``); operations: the only pre-execution
+surface was ``--status``, which reports wave state but not worker binding,
+recomposition policy, or re-entry bounds.
+
+### Team engine (`tools/runtime/team.py`)
+- **Single wave driver**: ``_drive_waves()`` is now the one execution
+  loop shared by ``run()`` and ``resume()``; ``run()`` = plan-if-needed +
+  drive + ``_complete()``; ``resume()`` = stale recovery + the same
+  driver.  No duplicated wave logic can drift again.
+- **Recon joins the feedback loop**: ``recompose_waves`` (default
+  ``("recon", "hunt")``) lets recon-wave findings staff hunt specialists
+  *before* the hunt wave runs — shadow assets discovered during recon get
+  their specialist on the first hunt pass, not after it.
+- **Bounded growth**: ``max_recompose_rounds`` (default 3) caps hunt
+  re-entry rounds (a round may add several specialists in parallel;
+  ``max_agents`` still bounds the roster).  The cap is recorded as
+  ``state["recompose_capped"]``, and the rounds actually run surface as
+  ``state["recompose_rounds"]`` — capped growth is visible, never silent.
+- **Idempotent recomposition ledger**: bug classes already decided on
+  (added *or* skipped) are re-evaluated but never re-appended; the
+  seen-set rehydrates from ``state.json`` on resume.  A repeat that
+  actually adds (budget changed under it) is still recorded.
+- **Operational preflight**: ``TeamEngine.preflight()`` and CLI
+  ``--preflight`` report status, worker binding ("none (members will
+  close BLOCKED honestly)" when unbound), recomposition policy and
+  ledger size, re-entry rounds, roster counts, and the coverage gate —
+  without executing and without writing state.  The MCP bridge exposes
+  the same ``bugwolf_team`` ``preflight`` action.
+- 6 new tests: recon-feedback ordering, idempotent ledger across
+  re-entry, round cap + cap recording, resume-without-re-recording,
+  preflight (fresh + loaded), rounds-run visibility.
+
+## v1.7.2 — Default subagent pinning (native dispatch)
+
+Closes the last orchestrator gap: in the native path, `bugwolf:<role>`
+only reached the harness as prompt text — subagent selection required a
+hand-written `command_builder`. Headless runs now execute the specialist
+playbook by default, not a bare session.
+
+### Native worker (`tools/runtime/native_dispatch.py`)
+- **`pin_agent=True` (default)**: the default argv pins
+  `--agent bugwolf:<role>` from the dispatch payload's `harness_role`
+  (the registry-facing subagent name, matching `agents/bugwolf/*.md`
+  frontmatter and the task-tool queue's `subagent_type`).
+- **Honest degradation**: a payload without a role stays flagless — the
+  worker never invents one (the engine always sets `harness_role`).
+- **Opt-out**: `pin_agent=False` restores the flagless spawn for CLIs
+  without subagent-type support; `command_builder` still wins whenever
+  supplied and remains the extension point for different flag names or
+  extra flags.
+- 5 new tests: default pin, missing-role flagless, opt-out,
+  builder-precedence, argv ordering (model → agent → extra args).
+
+## v1.7.1 — Default tier-to-model pinning (native dispatch)
+
+Closes the second orchestrator gap: tier routing computed a
+`model_preference` per member, but the native worker shipped an empty
+`model_map`, so the decision never reached `--model` without operator
+configuration.
+
+### Native worker (`tools/runtime/native_dispatch.py`)
+- **`DEFAULT_MODEL_MAP`**: the router's preference strings pin to
+  concrete `--model` ids out of the box — `none` → flagless
+  (deterministic members warrant no model call), `slm-fast` → `haiku`,
+  `frontier-reasoning` → `sonnet`, plus identity passthroughs
+  (`haiku`/`sonnet`/`opus`) for configs that already name concrete
+  models. Keys mirror `model_router._DEFAULT_PREFERENCES` and the
+  shipped `configs/models.json`.
+- **Merge semantics**: an operator `model_map` merges over the defaults
+  per key (overrides win, non-overridden keys survive); pinning a key to
+  `""` forces the harness default for that preference.
+- **Degradation chain**: an unmapped primary preference falls back to
+  the member's `fallback_preference`; both unmapped ⇒ no `--model` flag
+  at all — the worker pins what it knows and never guesses.
+- 7 new tests: default-map resolution, router-preference → argv,
+  `none` stays flagless, fallback degradation, both-unknown flagless,
+  per-key operator override, empty-value override.
+
+## v1.7.0 — Finding-driven roster recomposition (multi-agent team engine)
+
+The team engine's roster is no longer frozen at plan time. Hunt-wave
+members can report finding-backed agent recommendations and unstaffed
+specialists join the team mid-mission — the orchestrator's missing
+feedback loop (the engine could compose a team, but recon/hunt results
+could not reshape it).
+
+### Team engine (`tools/runtime/team.py`)
+- **Recommendation contract**: hunt members return
+  `recommended_bug_classes` (list of bug-class strings or
+  `{bug_class, reason}` dicts) and/or `agent_recommendation` handoff
+  messages; `_recommendations_from_results` extracts them, ignoring
+  malformed shapes (never raises; FAILED members are not consulted).
+- **`_add_specialist`**: registry-deterministic selection (the same
+  specialist a planned mission would staff), budget-capped by
+  `max_agents`, deduped against the roster, workflow agents never
+  re-added. Every decision — added or skipped, with why — is appended to
+  `state["recompositions"]` and checkpointed; additions also emit a
+  `recomposed` event to the runs ledger and a `TEAM_RECOMPOSED` signal.
+- **Hunt re-entry**: after a hunt wave that grows the roster, the engine
+  re-enters the hunt wave with the added specialists before verify
+  (dedupe + budget bound the loop); verify/report always run last.
+- **Opt-out**: `--no-recompose` pins the planned roster; the preference
+  persists in `state.json` (`recompose`) and is honored on `--resume`.
+  `status()` surfaces `recompositions` for operator inspection.
+- New tests (`tests/test_recomposition.py`, 9 cases): forward addition,
+  hunt re-entry + budget cap, skip accounting (unknown class / already
+  staffed), message-shape extraction, `--no-recompose`, resume
+  persistence, registry-resolution parity with plan-time composition.
+
 ## v1.3.0 — Boundary-hardened orchestrator: scope gate, sandbox, OAST tunnel, L2 readiness
 
 The Phase 0-8 orchestrator plan (BUGWOLF_ORCHESTRATOR_PLAN_V2) is complete

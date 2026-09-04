@@ -20,6 +20,12 @@ report -- with orchestrator-grade durability:
   * **Messages** -- agents exchange typed, addressable messages in-process
     (``AgentBus``-compatible payloads); inter-agent context never carries
     credentials (the accounts matrix redacts upstream).
+  * **Recomposition** -- recon and hunt members may return finding-backed
+    agent recommendations (``kind: agent_recommendation`` messages or a
+    ``recommended_bug_classes`` result field); unstaffed bug classes join
+    the roster mid-mission and hunt re-entries (budget-capped, bounded by
+    ``max_recompose_rounds``, every add or skip recorded exactly once in
+    ``state["recompositions"]``).  ``--no-recompose`` pins the roster.
   * **Scope + sandbox** -- every dispatch records
     ``scope_required``/``sandbox_required`` from the registry; the team
     engine itself spawns nothing on the network.  Worker threads execute
@@ -56,7 +62,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 if str(Path(__file__).resolve().parent.parent.parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -88,6 +94,15 @@ MEMBER_TERMINAL = (MEMBER_DONE, MEMBER_FAILED, MEMBER_BLOCKED) \
 
 DEFAULT_STALE_SECONDS = 900          # 15 min without heartbeat => dead worker
 DEFAULT_MAX_PARALLEL = 4
+
+# Wave adjacency: canonical order plus an explicit terminal so the wave
+# driver can step "recon -> hunt -> verify -> report" (skipping empty
+# waves) without index bookkeeping.
+_NEXT_WAVE = {"recon": "hunt", "hunt": "verify", "verify": "report",
+              "report": None}
+
+# Message kinds that may carry a roster recommendation (agent handoffs).
+_RECOMMEND_KINDS = ("agent_recommendation", "recommend_agent")
 
 
 def _utc_now() -> str:
@@ -170,6 +185,15 @@ class TeamEngine:
         self.worker_id = f"worker-{uuid.uuid4().hex[:8]}"
         self.members: Dict[str, TeamMember] = {}
         self.messages: List[TeamMessage] = []
+        self._recompose = True   # finding-driven roster growth (see run())
+        # Waves whose results feed the recomposition hook: recon surfaces
+        # shadow assets -> specialists; hunt findings -> specialists.
+        self.recompose_waves: Tuple[str, ...] = ("recon", "hunt")
+        # Hunt re-entry bound (dedupe + max_agents also bound growth).
+        self.max_recompose_rounds = 3
+        # Bug classes already decided on (added or skipped) -- keeps the
+        # recomposition ledger idempotent across re-entry rounds and resume.
+        self._recomposed_seen: set = set()
         self._research_pack: Any = None   # built once per run, shared
         self.state: Dict[str, Any] = {
             "schema": SCHEMA,
@@ -179,6 +203,7 @@ class TeamEngine:
             "status": "created",       # created|running|stopped|complete
             "created_at": _utc_now(),
             "updated_at": _utc_now(),
+            "recompositions": [],      # finding-driven roster adds (audit)
         }
 
     # -- paths --------------------------------------------------------------
@@ -255,6 +280,13 @@ class TeamEngine:
                              if k != "members"})
         engine.max_parallel = int(data.get("max_parallel")
                                   or engine.max_parallel)
+        engine._recompose = bool(data.get("recompose", True))
+        # Rehydrate the seen-set so resumed runs never re-record decisions
+        # already in the recomposition ledger.
+        engine._recomposed_seen = {
+            str(r.get("bug_class") or "").strip().lower()
+            for r in (data.get("recompositions") or [])
+            if isinstance(r, dict)}
         for mid, raw in (data.get("members") or {}).items():
             member = TeamMember(
                 member_id=mid, role=str(raw.get("role")),
@@ -280,6 +312,9 @@ class TeamEngine:
         """Compose the roster and lay it out into waves (idempotent)."""
         if self.members:
             return self.status()
+        # Persist the recomposition preference so --resume honors it
+        # (the flag is engine state, not a per-run decision).
+        self.state["recompose"] = self._recompose
         domains = list(self.mission.domains or [])
         team = self.registry.compose_team(
             domains=domains, bug_classes=bug_classes or [],
@@ -341,6 +376,184 @@ class TeamEngine:
                     "model_preference": "",
                     "fallback_preference": ""}
 
+    # -- finding-driven recomposition -----------------------------------------
+
+    def _add_specialist(self, bug_class: str, reason: str = "",
+                        first_seen: bool = True) -> Optional[TeamMember]:
+        """Add one specialist for ``bug_class`` to the roster (budget-capped).
+
+        Selection is the registry's deterministic bug-class resolution, so a
+        recommended class staffs the same specialist a planned mission
+        would have.  Workflow agents are never re-added (already shipped).
+        Every decision -- added or skipped, with why -- is appended to
+        ``state["recompositions"]``; refusal is recorded, never silent.
+        """
+        bug = str(bug_class or "").strip().lower()
+        added: List[Dict[str, Any]] = []
+        role = ""
+        try:
+            spec = self.registry.select(bug_class=bug, lane="hunt")
+            role = spec.role
+        except AgentRegistryError:
+            spec = None
+        if not bug:
+            added.append({"bug_class": bug, "reason": reason[:300],
+                          "outcome": "skipped",
+                          "detail": "empty bug class"})
+        elif not spec:
+            added.append({"bug_class": bug, "reason": reason[:300],
+                          "outcome": "skipped",
+                          "detail": "no agent owns this bug class"})
+        elif spec.entry == "workflow":
+            # Only reachable via select()'s workflow fallback (workflow
+            # agents own no bug classes) -- i.e. nobody owns this class.
+            added.append({"bug_class": bug, "role": role,
+                          "reason": reason[:300], "outcome": "skipped",
+                          "detail": "no specialist owns this bug class "
+                                    "(workflow fallback)"})
+        elif role in {m.role for m in self.members.values()}:
+            added.append({"bug_class": bug, "role": role,
+                          "reason": reason[:300], "outcome": "skipped",
+                          "detail": "already staffed"})
+        elif len(self.members) >= self.max_agents:
+            added.append({"bug_class": bug, "role": role,
+                          "reason": reason[:300], "outcome": "skipped",
+                          "detail": f"max_agents={self.max_agents} reached"})
+        else:
+            routing = self._route_member(spec)
+            seq = 0
+            for m in self.members.values():
+                try:
+                    seq = max(seq, int(m.member_id.split("-")[1]))
+                except (IndexError, ValueError):
+                    continue
+            member = TeamMember(
+                member_id=f"tm-{seq + 1:03d}",
+                role=spec.role,
+                harness_role=spec.harness_role,
+                wave="hunt",
+                reason=reason[:300],
+                tier=routing["tier"],
+                model_preference=routing["model_preference"],
+                fallback_preference=routing["fallback_preference"],
+            )
+            self.members[member.member_id] = member
+            self._append_run(member, "recomposed")
+            added.append({"bug_class": bug, "role": role,
+                          "member_id": member.member_id,
+                          "reason": reason[:300], "outcome": "added"})
+            _publish(self.mission.target, "TEAM_RECOMPOSED",
+                     {"team_id": self.state.get("team_id", ""),
+                      "bug_class": bug, "role": role,
+                      "member_id": member.member_id})
+        if first_seen or (added and added[-1].get("outcome") == "added"):
+            # Record each bug class's decision exactly once: repeats
+            # (hunt re-entry rounds, resume re-runs) re-evaluate but
+            # never re-append.  A repeat that actually adds (budget
+            # changed under it) is still recorded -- observable.
+            self.state.setdefault("recompositions", []).extend(added)
+        self.checkpoint()
+        if added and added[-1].get("outcome") == "added":
+            return self.members.get(str(added[-1].get("member_id")))
+        return None
+
+    @classmethod
+    def _recommendations_from_results(
+            cls, results: List[Any]) -> List[Dict[str, Any]]:
+        """Extract finding-backed (bug_class, reason) pairs from results.
+
+        Recognized shapes (agent-facing contract, documented in
+        commands/bugwolf-team.md):
+
+          * ``result["recommended_bug_classes"]`` -- list of bug-class
+            strings or ``{"bug_class": ..., "reason": ...}`` dicts
+          * messages with ``kind: "agent_recommendation"`` and body
+            ``{"bug_class": ..., "reason": ...}``
+
+        Unrecognized shapes are ignored; extraction never raises.
+        """
+        recs: List[Dict[str, Any]] = []
+        for result in results or []:
+            if not isinstance(result, dict):
+                continue
+            raw = result.get("recommended_bug_classes") or []
+            if isinstance(raw, (str, dict)):
+                raw = [raw]
+            for item in raw:
+                if isinstance(item, str) and item.strip():
+                    recs.append({"bug_class": item,
+                                 "reason": "member result recommendation"})
+                elif isinstance(item, dict) and str(
+                        item.get("bug_class") or "").strip():
+                    recs.append({"bug_class": item["bug_class"],
+                                 "reason": str(item.get("reason") or "")})
+            for msg in result.get("messages") or []:
+                if not isinstance(msg, dict):
+                    continue
+                if str(msg.get("kind") or "") not in _RECOMMEND_KINDS:
+                    continue
+                body = msg.get("body") or {}
+                if isinstance(body, dict) and str(
+                        body.get("bug_class") or "").strip():
+                    recs.append({"bug_class": body["bug_class"],
+                                 "reason": str(body.get("reason") or "")})
+        return recs
+
+    def _apply_recommendations(
+            self, recs: List[Dict[str, Any]]) -> List[TeamMember]:
+        """Staff specialists for recommendation dicts (single apply path).
+
+        Every decision (added or skipped) lands in
+        ``state["recompositions"]`` -- recomposition is observable, never
+        silent.  A bug class already decided on in an earlier round is
+        re-evaluated WITHOUT re-appending its record, so the ledger is
+        idempotent across hunt re-entry rounds and resume.
+        """
+        before = set(self.members)
+        for rec in recs or []:
+            bug = str(rec.get("bug_class") or "").strip().lower()
+            if bug in self._recomposed_seen:
+                self._add_specialist(first_seen=False, **rec)
+            else:
+                self._recomposed_seen.add(bug)
+                self._add_specialist(**rec)
+        return [m for mid, m in self.members.items() if mid not in before]
+
+    def _maybe_recompose(self, results: List[Any]) -> List[TeamMember]:
+        """Grow the roster from this wave's recommendations; return adds."""
+        return self._apply_recommendations(
+            self._recommendations_from_results(results))
+
+    def _recompose_hook(self, wave: str, rounds: int = 0) -> bool:
+        """Run the finding-driven recomposition hook after ``wave``.
+
+        Returns True when the roster grew and another hunt round is
+        warranted; False when disabled, the wave is not a recommendation
+        source (``recompose_waves``, default recon+hunt), no growth
+        occurred, or the re-entry cap (``max_recompose_rounds``) is hit
+        (recorded as ``state["recompose_capped"]``).
+        """
+        if not self._recompose or wave not in self.recompose_waves:
+            return False
+        if rounds >= self.max_recompose_rounds:
+            self.state["recompose_capped"] = True
+            return False
+        recs = self._recommendations_from_results(
+            [m.result for m in self.members.values() if m.wave == wave])
+        # Evidence cross-reference: recorded recon depth-census evidence
+        # (bucket hostnames, WAF signatures, secrets in bundles, mobile
+        # endpoints) staffs specialists automatically -- same dedupe,
+        # budget cap, and idempotent ledger as member recommendations.
+        try:
+            from tools.recon.depth_ladder import ReconDepthLedger
+            led = ReconDepthLedger(
+                self.mission.mission_id,
+                project_root=self.project_root).load()
+            recs = recs + led.recommendations()
+        except Exception:  # noqa: BLE001 - evidence pass never gates
+            pass
+        return bool(self._apply_recommendations(recs))
+
     # -- worker health ------------------------------------------------------
 
     def _is_stale(self, member: TeamMember) -> bool:
@@ -371,46 +584,73 @@ class TeamEngine:
 
     # -- execution ----------------------------------------------------------
 
-    def run(self, *, bug_classes: Optional[List[str]] = None,
-            context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Plan (if needed) then drive every wave to completion."""
-        if not self.members:
-            self.plan(bug_classes=bug_classes)
-        self.state["status"] = "running"
-        self.checkpoint()
-        for wave in WAVE_ORDER:
-            members = [m for m in self.members.values() if m.wave == wave]
-            if not members:
-                continue
-            self.state["wave"] = wave
-            self.checkpoint()
-            self._run_wave(wave, members, context or {})
+    def _drive_waves(self, context: Dict[str, Any]) -> None:
+        """Single wave driver shared by run() and resume().
+
+        Executes each wave in canonical order (skipping waves with no
+        runnable members), runs the recomposition hook after source
+        waves, and re-enters hunt when the roster grew -- bounded by
+        ``max_recompose_rounds`` (dedupe + budget also bound growth).
+        Verify and report always run after every hunt re-entry round;
+        terminal members are never re-run; every transition checkpoints.
+        """
+        wave = "recon"
+        rounds = 0
+        while wave:
+            members = [m for m in self.members.values()
+                       if m.wave == wave and m.status not in MEMBER_TERMINAL]
+            if members:
+                self.state["wave"] = wave
+                self.checkpoint()
+                self._run_wave(wave, members, context)
+            if self._recompose_hook(wave, rounds):
+                rounds += 1
+                continue          # re-enter hunt with the grown roster
+            wave = _NEXT_WAVE.get(wave)
+        # Operational visibility: how many re-entry rounds actually ran
+        # (bounded by max_recompose_rounds; surfaced in status/preflight).
+        self.state["recompose_rounds"] = rounds
+
+    def _complete(self) -> Dict[str, Any]:
+        """Close the mission: mark complete, compute the coverage gate,
+        checkpoint, and report status."""
         self.state["status"] = "complete"
         self.state["coverage_gate"] = self._coverage_gate()
         self.state["wave"] = ""
         self.checkpoint()
         return self.status()
 
+    def run(self, *, bug_classes: Optional[List[str]] = None,
+            context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Plan (if needed) then drive every wave to completion.
+
+        Finding-backed recommendations from recon and hunt members may
+        grow the roster mid-mission; a grown roster re-enters the hunt
+        wave before verify (dedupe + budget + ``max_recompose_rounds``
+        bound the loop).  Disable with ``--no-recompose``.
+        """
+        if not self.members:
+            self.plan(bug_classes=bug_classes)
+        self.state["status"] = "running"
+        self.checkpoint()
+        self._drive_waves(context or {})
+        return self._complete()
+
     def resume(self, *, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Recover stale claims then continue from the first pending wave."""
+        """Recover stale claims then continue from the first pending wave.
+
+        Recomposition is honored on resume exactly as in ``run()`` (the
+        ``recompose`` preference and the decision ledger persist via
+        ``state.json``).  Only recovery differs from run(); the wave
+        driver is shared.
+        """
         self._recover_stale()
         if self.state.get("status") == "complete":
             return self.status()
         self.state["status"] = "running"
         self.checkpoint()
-        for wave in WAVE_ORDER:
-            members = [m for m in self.members.values()
-                       if m.wave == wave and m.status not in MEMBER_TERMINAL]
-            if not members:
-                continue
-            self.state["wave"] = wave
-            self.checkpoint()
-            self._run_wave(wave, members, context or {})
-        self.state["status"] = "complete"
-        self.state["coverage_gate"] = self._coverage_gate()
-        self.state["wave"] = ""
-        self.checkpoint()
-        return self.status()
+        self._drive_waves(context or {})
+        return self._complete()
 
     def _coverage_gate(self) -> Dict[str, Any]:
         """Honest corpus-v3 gate: which closeable checklist IDs remain open.
@@ -561,10 +801,28 @@ class TeamEngine:
             intel["checklist"] = {
                 "member_ids": member_ids,
                 "mission_ids": list(self.state.get("checklist_slice")
-                                    or []),
+                                     or []),
                 "attest_pending": _cl.attest_ids(member_ids),
             }
         except Exception:  # noqa: BLE001 - checklists never gate dispatch
+            pass
+        # Recon depth contract: recon-lane members receive the D0-D3
+        # technique slice plus live ledger coverage, so depth is a
+        # dispatched obligation (anti-satisficing), never improvisation.
+        try:
+            spec = self._spec_for(member_role)
+            if "recon" in (getattr(spec, "lanes", ()) or ()):
+                from tools.recon.depth_ladder import (
+                    ReconDepthLedger, DEPTHS)
+                led = ReconDepthLedger(
+                    self.mission.mission_id,
+                    project_root=self.project_root).load()
+                intel["recon_depth"] = {
+                    "slice": list(DEPTHS),
+                    "coverage": led.coverage(list(DEPTHS)),
+                    "close_blockers": led.close_blockers(list(DEPTHS)),
+                }
+        except Exception:  # noqa: BLE001 - depth intel never gates dispatch
             pass
         return intel
 
@@ -639,8 +897,104 @@ class TeamEngine:
             "status": self.state.get("status", ""),
             "wave": self.state.get("wave", ""),
             "worker_id": self.worker_id,
+            "recompositions": list(self.state.get("recompositions") or []),
+            "recompose_capped": bool(self.state.get("recompose_capped")),
+            "recon_depth": self._recon_depth_report(),
             "waves": {w: by_wave[w] for w in WAVE_ORDER if by_wave.get(w)},
             "totals": self._totals(),
+            "coverage_gate": self.state.get("coverage_gate"),
+        }
+
+    def _recon_depth_report(self) -> Dict[str, Any]:
+        """Recon depth coverage + evidence recommendations (never raises).
+
+        Advisory section for status()/preflight(): per-depth coverage
+        counts, honest close blockers, and the depth ledger's
+        evidence-driven recommendations annotated with staffing state
+        (which recommended specialist is already on the roster).  A
+        missing journal reports ``journal: false`` with zero events --
+        depth intel informs operators, never gates reporting.
+        """
+        report: Dict[str, Any] = {"journal": False, "events": 0,
+                                  "depths": {}, "close_blockers": [],
+                                  "recommendations": []}
+        try:
+            from tools.recon.depth_ladder import ReconDepthLedger, DEPTHS
+            led = ReconDepthLedger(
+                self.mission.mission_id,
+                project_root=self.project_root).load()
+            report["journal"] = led.journal_path().is_file()
+            cov = led.coverage(list(DEPTHS))
+            report["events"] = cov["events"]
+            if report["journal"]:
+                # Close blockers are the in-flight exit exam: claimed only
+                # once recon has started (a journal exists).  Before any
+                # recon activity, no blockers are asserted -- depth intel
+                # informs, it never pre-fails a mission that hasn't begun.
+                report["close_blockers"] = list(cov["close_blockers"])
+            depths: Dict[str, Any] = {}
+            for depth, info in cov["depths"].items():
+                depths[depth] = {
+                    "covered": len(info["covered"]),
+                    "total": len(info["techniques"]),
+                    "untried": list(info["untried"]),
+                    "waived": list(info["waived"]),
+                }
+            report["depths"] = depths
+            recs: List[Dict[str, Any]] = []
+            for rec in led.recommendations():
+                entry = {"bug_class": rec["bug_class"],
+                         "reason": rec["reason"], "staffed": False,
+                         "role": ""}
+                try:
+                    spec = self.registry.select(
+                        bug_class=rec["bug_class"], lane="hunt")
+                    entry["role"] = spec.role
+                    entry["staffed"] = any(
+                        m.role == spec.role
+                        for m in self.members.values())
+                except Exception:  # noqa: BLE001 - unresolved class stays
+                    pass             # visible with staffed=false
+                recs.append(entry)
+            report["recommendations"] = recs
+        except Exception:  # noqa: BLE001 - depth intel never gates reporting
+            pass
+        return report
+
+    def preflight(self) -> Dict[str, Any]:
+        """Operational readiness report (never executes, never raises).
+
+        Surfaces what an operator needs before --run: persisted engine
+        status, recomposition policy and ledger size, worker binding,
+        roster counts, the coverage gate, and recon depth coverage with
+        evidence-driven recommendations.  Degraded facts are reported as
+        degraded -- never fabricated as ready.
+        """
+        totals = self._totals()
+        return {
+            "schema": SCHEMA,
+            "mission_id": self.mission.mission_id,
+            "target": getattr(self.mission, "target", ""),
+            "status": self.state.get("status", ""),
+            "team_id": self.state.get("team_id", ""),
+            "members": totals.get("members", 0),
+            "member_status": {k: v for k, v in totals.items()
+                              if k != "members"},
+            "worker_binding": (
+                "bound" if self.worker is not None
+                else "none (members will close BLOCKED honestly)"),
+            "stale_seconds": self.stale_seconds,
+            "max_parallel": self.max_parallel,
+            "max_agents": self.max_agents,
+            "recompose": {
+                "enabled": bool(self._recompose),
+                "source_waves": list(self.recompose_waves),
+                "max_rounds": self.max_recompose_rounds,
+                "rounds_run": int(self.state.get("recompose_rounds") or 0),
+                "recorded": len(self.state.get("recompositions") or []),
+                "capped": bool(self.state.get("recompose_capped")),
+            },
+            "recon_depth": self._recon_depth_report(),
             "coverage_gate": self.state.get("coverage_gate"),
         }
 
@@ -678,6 +1032,13 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=900,
                     help="per-member dispatch budget in seconds "
                          "(task-tool worker)")
+    ap.add_argument("--no-recompose", action="store_true",
+                    help="disable finding-driven roster recomposition "
+                         "(pin the planned roster)")
+    ap.add_argument("--preflight", action="store_true",
+                    help="print an operational readiness report (state, "
+                         "worker binding, recomposition policy, coverage "
+                         "gate) without executing")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -703,6 +1064,20 @@ def main() -> int:
         from tools.runtime.native_dispatch import NativeTaskWorker
         worker = NativeTaskWorker(mission, timeout_seconds=args.timeout)
     engine = TeamEngine(mission, worker=worker)
+    engine._recompose = not args.no_recompose
+    if args.preflight:
+        try:  # report on persisted state when the mission exists
+            engine = TeamEngine.load(args.mission, worker=worker)
+            engine._recompose = not args.no_recompose
+        except FileNotFoundError:
+            pass  # fresh mission: report on the not-yet-planned team
+        report = engine.preflight()
+        print(json.dumps(report, indent=2) if args.json else
+              f"preflight: mission={report['mission_id']} "
+              f"status={report['status']} members={report['members']} "
+              f"worker={report['worker_binding']} "
+              f"recompose={report['recompose']['enabled']}")
+        return 0
     if args.plan:
         engine.plan(bug_classes=[b for b in args.bugs.split(",") if b])
         print(json.dumps(engine.status(), indent=2) if args.json

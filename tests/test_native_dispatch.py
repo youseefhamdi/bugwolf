@@ -42,6 +42,61 @@ class NativeArgvTests(unittest.TestCase):
         self.assertEqual(argv[:4], ["claude", "--print",
                                     "--output-format", "json"])
 
+    def test_default_map_pins_router_preferences(self):
+        # Zero-config pinning: the router's preference strings resolve
+        # through DEFAULT_MODEL_MAP without an operator model_map.
+        from tools.runtime.native_dispatch import DEFAULT_MODEL_MAP
+        w = self._worker()
+        self.assertEqual(w._model_flag("slm-fast"), "haiku")
+        self.assertEqual(w._model_flag("frontier-reasoning"), "sonnet")
+        self.assertEqual(w._model_flag("none"), "")
+        self.assertIn("slm-fast", DEFAULT_MODEL_MAP)
+        self.assertIn("frontier-reasoning", DEFAULT_MODEL_MAP)
+
+    def test_router_preferences_reach_argv(self):
+        w = self._worker()
+        argv = w._argv_for({"model_preference": "slm-fast"})
+        self.assertEqual(argv[argv.index("--model") + 1], "haiku")
+        argv = w._argv_for({"model_preference": "frontier-reasoning"})
+        self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
+
+    def test_none_preference_stays_flagless(self):
+        # Deterministic members warrant no model call: "none" maps to ""
+        # and its fallback (also "none") must not resurrect a pin.
+        argv = self._worker()._argv_for({
+            "model_preference": "none", "fallback_preference": "none"})
+        self.assertNotIn("--model", argv)
+
+    def test_unknown_primary_degrades_to_fallback(self):
+        w = self._worker()
+        argv = w._argv_for({"model_preference": "quantum-9000",
+                            "fallback_preference": "slm-fast"})
+        self.assertEqual(argv[argv.index("--model") + 1], "haiku")
+
+    def test_unknown_primary_and_fallback_stay_flagless(self):
+        # Never guess: both unmapped -> no --model at all.
+        argv = self._worker()._argv_for({
+            "model_preference": "quantum-9000",
+            "fallback_preference": "quantum-9001"})
+        self.assertNotIn("--model", argv)
+
+    def test_operator_map_overrides_per_key(self):
+        w = self._worker(model_map={"slm-fast": "glm-air"})
+        self.assertEqual(w._model_flag("slm-fast"), "glm-air")
+        # non-overridden default keys survive the merge
+        self.assertEqual(w._model_flag("frontier-reasoning"), "sonnet")
+        argv = w._argv_for({"model_preference": "slm-fast"})
+        self.assertEqual(argv[argv.index("--model") + 1], "glm-air")
+
+    def test_default_map_merges_operator_empty_value(self):
+        # An operator can pin a preference to "" to force the harness
+        # default (e.g. run everything on the session's model).
+        w = self._worker(model_map={"frontier-reasoning": ""})
+        argv = w._argv_for({"model_preference": "frontier-reasoning",
+                            "fallback_preference": "slm-fast"})
+        # primary unmapped-to-empty degrades to the fallback's pin
+        self.assertEqual(argv[argv.index("--model") + 1], "haiku")
+
     def test_known_model_preference_maps_to_model_flag(self):
         w = self._worker(model_map={"slm-fast": "haiku"})
         argv = w._argv_for({"model_preference": "slm-fast"})
@@ -52,6 +107,41 @@ class NativeArgvTests(unittest.TestCase):
         w = self._worker(model_map={"slm-fast": "haiku"})
         argv = w._argv_for({"model_preference": "quantum-9000"})
         self.assertNotIn("--model", argv)
+
+    def test_default_pins_agent_role(self):
+        # Zero-config subagent pinning: the payload's harness_role becomes
+        # --agent so headless runs execute the specialist playbook.
+        argv = self._worker()._argv_for({"harness_role": "bugwolf:waf-bypass"})
+        self.assertIn("--agent", argv)
+        self.assertEqual(argv[argv.index("--agent") + 1],
+                         "bugwolf:waf-bypass")
+
+    def test_missing_harness_role_stays_flagless(self):
+        # No role in the payload -> no guess, no flag (engine always sets
+        # it, but the worker must not invent one).
+        for payload in ({}, {"harness_role": ""}, {"harness_role": "   "}):
+            argv = self._worker()._argv_for(payload)
+            self.assertNotIn("--agent", argv)
+
+    def test_pin_agent_false_opts_out(self):
+        w = self._worker(pin_agent=False)
+        argv = w._argv_for({"harness_role": "bugwolf:waf-bypass"})
+        self.assertNotIn("--agent", argv)
+
+    def test_command_builder_wins_over_pinning(self):
+        # The operator builder fully replaces argv construction: no pin,
+        # no model flag leak through.
+        w = self._worker(command_builder=lambda p: ["fake-cli", "--headless"])
+        argv = w._argv_for({"harness_role": "bugwolf:waf-bypass",
+                            "model_preference": "slm-fast"})
+        self.assertEqual(argv, ["fake-cli", "--headless"])
+
+    def test_pin_ordering_model_then_agent_then_extra(self):
+        argv = self._worker(extra_args=["--verbose"])._argv_for({
+            "harness_role": "bugwolf:waf-bypass",
+            "model_preference": "slm-fast"})
+        self.assertLess(argv.index("--model"), argv.index("--agent"))
+        self.assertLess(argv.index("--agent"), argv.index("--verbose"))
 
     def test_extra_args_append(self):
         argv = self._worker(extra_args=["--verbose"])._argv_for({})

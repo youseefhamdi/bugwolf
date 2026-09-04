@@ -114,7 +114,8 @@ _ENTRY_AGENTS: Tuple[Dict[str, Any], ...] = (
          domains=("recon", "web"), bug_classes=(),
          tier_affinity=TIER_LOCAL,
          tools=("asset_discovery", "tech_fingerprint", "surface_model",
-                "schema_extractor", "js_ct_intel"),
+                "schema_extractor", "js_ct_intel", "recon.depth_ladder",
+                "historical_asset_delta"),
          description="Recursive multi-source asset discovery, tech "
                      "fingerprinting, attack-surface and schema modeling.",
          entry="workflow"),

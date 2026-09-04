@@ -160,7 +160,16 @@ def tool_team(args: Dict[str, Any]) -> Dict[str, Any]:
         engine = TeamEngine.load(mission_id, project_root=root)
         outcome = engine.resume()
         return {"schema": SCHEMA, **outcome}
-    raise ValueError(f"action must be plan|status|resume, got {action!r} "
+    if action == "preflight":
+        try:  # persisted state when the mission exists; fresh otherwise
+            engine = TeamEngine.load(mission_id, project_root=root)
+        except FileNotFoundError:
+            engine = TeamEngine(
+                MissionSpec(mission_id=mission_id,
+                            target=str(args.get("target") or "")),
+                project_root=root)
+        return {"schema": SCHEMA, **engine.preflight()}
+    raise ValueError(f"action must be plan|status|resume|preflight, got {action!r} "
                      f"(dispatching agents requires a harness worker; use "
                      f"the run command with a bound worker)")
 

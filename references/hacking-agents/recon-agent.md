@@ -6,6 +6,59 @@ This agent is used when the target is a live application or when a scope descrip
 
 **Tooling:** after loading an authorized scope, run `tools/recon_engine.sh <target> [--deep] --scope-file scope.json --confirm-active` for the full 15-phase pipeline, or the phase-specific tools from `references/recon-tooling.md` (each phase below names its PRIMARY tool). Every tool call is guarded by `command -v` with a built-in fallback — a missing tool degrades, never blocks the pipeline.
 
+## Depth Ladder (MANDATORY — D0→D3, anti-satisficing)
+
+Depth is a **dispatched obligation, not a preference**. Your dispatch
+payload carries `intel.recon_depth`: the D0–D3 technique slice plus live
+ledger coverage. Record every attempt to the depth ledger and close each
+level explicitly:
+
+```bash
+python3 -m tools.recon.depth_ladder --mission-id <mission> \
+  --record <DEPTH> <technique> <done|partial|blocked|empty> \
+  [--detail "..."] --json
+# explicit waiver (recorded, operator-visible — never a silent skip):
+python3 -m tools.recon.depth_ladder --mission-id <mission> \
+  --waive mobile-endpoints "no mobile surface declared"
+# close a level when its slice is terminal:
+python3 -m tools.recon.depth_ladder --mission-id <mission> --close D1
+```
+
+| Depth | Required (recorded-tried or waived) | Contact |
+|---|---|---|
+| **D0 passive** | `hist-churn`, `ct-log-mining`, `code-search`, `pkg-registry`, `social-fingerprint` | **zero target contact** |
+| **D1 resolvable** | `resolve-all`, `port-census`, `wildcard-baseline`, `asn-neighborhood` | DNS/port only |
+| **D2 http-surface** | `wellknown-census`, `admin-ladder`, `api-docs`, `js-mining`, `header-fingerprint` | HTTP |
+| **D3 deep-surface** | `param-surface`, `js-route-map`, `cloud-buckets`, `mobile-endpoints`, `historical-crossref` | HTTP + analysis |
+
+**Depth discipline (mirrors lead-protocol R2):**
+
+- **D3 is where shallow recon quits — it is mandatory.** `param-surface`
+  (parameter-name census across the live surface), `js-route-map` (route
+  and API-map extraction from bundle source, not just the page),
+  `cloud-buckets` (permutation census across S3/GCS/Azure naming),
+  `mobile-endpoints` (API endpoints harvested from declared mobile
+  artifacts), `historical-crossref` (churn categories vs the live map —
+  `tools/recon/historical_asset_delta.py`).
+- **Go deeper on signal, never stop on silence.** A D2 hit that suggests
+  more surface (an admin panel, an API doc, a JS map reference) opens the
+  next technique — one dry census never closes a level.
+- **`recon_close_blockers` is your exit exam.** An untried technique or an
+  unclosed level is recorded as a blocker; a recon dispatch returns
+  `DONE` only with an empty blocker list, or `BUDGET-EXHAUSTED` with the
+  shortfall honestly recorded. Waivers are explicit ledger events with a
+  reason — never omissions.
+- **Recommend specialists, don't hoard surface.** A D1/D2 finding that
+  implies an unstaffed bug class (WAF in front, mobile API, cloud
+  buckets) goes out as an `agent_recommendation` — the team recomposes
+  around it. Recorded census evidence also cross-references
+  **automatically**: the ledger's `SIGNAL_RULES` match bucket hostnames,
+  WAF signatures, secrets in bundles, and mobile endpoints and staff the
+  matching specialist with no handoff — so write census `detail`/`asset`
+  text that names concrete surface (it is machine-read into
+  recommendations), and still send explicit handoffs when the reasoning
+  needs more context than a census line.
+
 ## Recon Methodology
 
 ### Subdomain Enumeration

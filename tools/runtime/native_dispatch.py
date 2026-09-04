@@ -29,13 +29,26 @@ Discipline contract:
     unchanged by in-process dispatch.
 
 Default invocation (override with ``command_builder`` for your CLI
-version — e.g. to pin ``subagent_type`` explicitly)::
+version — e.g. when it names subagent selection differently)::
 
-    claude --print --output-format json [--model M] [extra args] < prompt
+    claude --print --output-format json [--model M] \
+        [--agent bugwolf:<role>] [extra args] < prompt
 
-The default builder is deliberately conservative; ``command_builder`` is
-the documented extension point for pinning subagent selection or adding
-flags your installed CLI supports.
+Subagent selection is pinned out of the box: each member spawns as its
+registry role — ``--agent bugwolf:<role>`` from the dispatch payload's
+``harness_role`` — so a headless run executes the specialist playbook,
+never a bare session.  ``pin_agent=False`` restores the flagless spawn
+for CLIs without subagent-type support; ``command_builder`` still wins
+whenever supplied (the extension point for different flag names or
+extra flags).
+
+Tier preferences are pinned out of the box: the router's preference
+strings (``tools/core/model_router.py``, overridable via
+``configs/models.json``) map through ``DEFAULT_MODEL_MAP`` to concrete
+``--model`` ids with zero operator configuration.  ``none`` stays
+flagless (deterministic members need no model call); an unmapped primary
+preference falls back to the member's ``fallback_preference``; an
+operator-supplied ``model_map`` merges over the defaults.
 
 Usage:
     from tools.runtime.native_dispatch import NativeTaskWorker
@@ -73,6 +86,21 @@ _MAX_TIMEOUT_SECONDS = 3600
 
 Summary = str
 
+# Default tier-preference -> concrete ``--model`` pin.  Keys are the model
+# router's preference strings (model_router._DEFAULT_PREFERENCES, mirrored
+# by configs/models.json) plus the bare tier model ids so an operator's
+# config can use them directly.  ``none`` -> "" is meaningful: no model
+# call is warranted, so no ``--model`` flag is passed.  An operator's
+# ``model_map`` merges over this, so overrides win per key.
+DEFAULT_MODEL_MAP: Dict[str, str] = {
+    "none": "",                    # deterministic tier: harness default, no pin
+    "slm-fast": "haiku",           # local_slm tier
+    "frontier-reasoning": "sonnet",  # frontier tier
+    "haiku": "haiku",              # identity passthroughs for configs that
+    "sonnet": "sonnet",           #   already name concrete Claude models
+    "opus": "opus",
+}
+
 
 class NativeTaskWorker:
     """Dispatch one Claude Code subagent per member, in-process."""
@@ -80,6 +108,7 @@ class NativeTaskWorker:
     def __init__(self, mission: Any, *,
                  project_root: Optional[str] = None,
                  cli: str = "claude",
+                 pin_agent: bool = True,
                  timeout_seconds: int = 900,
                  extra_args: Optional[Sequence[str]] = None,
                  model_map: Optional[Mapping[str, str]] = None,
@@ -90,10 +119,18 @@ class NativeTaskWorker:
         self.mission = mission
         self.project_root = project_root
         self.cli = str(cli)
+        # Subagent pinning (default on): --agent bugwolf:<role> so headless
+        # runs execute the specialist playbook, not a bare session.
+        self.pin_agent = bool(pin_agent)
         self.timeout_seconds = min(max(1, int(timeout_seconds)),
                                    _MAX_TIMEOUT_SECONDS)
         self.extra_args = [str(a) for a in (extra_args or [])]
-        self.model_map = dict(model_map or {})
+        # Default pinning: DEFAULT_MODEL_MAP first, operator overrides merged
+        # on top (an explicit model_map wins per key, never loses the rest).
+        self.model_map: Dict[str, str] = dict(DEFAULT_MODEL_MAP)
+        if model_map:
+            self.model_map.update({str(k): str(v)
+                                   for k, v in model_map.items()})
         self.command_builder = command_builder
         self.env = dict(env) if env else None
         self.max_output_bytes = max(1024, int(max_output_bytes))
@@ -132,7 +169,12 @@ class NativeTaskWorker:
     # -- command construction -------------------------------------------------
 
     def _argv_for(self, payload: Dict[str, Any]) -> List[str]:
-        """Build the child argv (operator-supplied builder wins)."""
+        """Build the child argv (operator-supplied builder wins).
+
+        Default pins: ``--model`` from the tier map (with fallback
+        degradation) and ``--agent bugwolf:<role>`` from the payload's
+        ``harness_role``.
+        """
         if self.command_builder is not None:
             argv = [str(a) for a in self.command_builder(payload)]
             if not argv:
@@ -140,17 +182,27 @@ class NativeTaskWorker:
             return argv
         argv = [self.cli, "--print", "--output-format", "json"]
         model = self._model_flag(payload.get("model_preference", ""))
+        if not model:
+            # Primary preference unmapped or explicitly empty: degrade to
+            # the member's fallback preference (router's degradation chain,
+            # never a guess).
+            model = self._model_flag(payload.get("fallback_preference", ""))
         if model:
             argv += ["--model", model]
+        if self.pin_agent:
+            harness_role = str(payload.get("harness_role") or "").strip()
+            if harness_role:
+                argv += ["--agent", harness_role]
         argv += self.extra_args
         return argv
 
     def _model_flag(self, preference: str) -> str:
         """Translate an engine tier preference into a concrete model id.
 
-        Only mapped preferences reach ``--model`` — an unknown hint is
-        dropped (the harness runs its default) rather than passed through
-        as a guess.
+        Mapped preferences resolve through ``model_map`` (defaults merged
+        with operator overrides); an empty or unknown hint yields an
+        empty string and the caller degrades to the member's
+        ``fallback_preference`` before giving up on pinning entirely.
         """
         pref = str(preference or "").strip()
         if not pref:
