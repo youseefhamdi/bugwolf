@@ -14,8 +14,10 @@
     "commands/bugwolf-report.md",
     "commands/bugwolf-stop.md",
     "commands/bugwolf-resume.md",
-    "commands/bugwolf-sandbox.md"
+    "commands/bugwolf-sandbox.md",
+    "commands/bugwolf-team.md"
   ],
+  "agents": "agents/bugwolf/",
   "hooks": "hooks/hooks.json",
   "skills": [
     "SKILL.md"

@@ -348,7 +348,8 @@ class PluginPackageTest(EnvMixin, unittest.TestCase):
                       for t in replies[1]["result"]["tools"]}
         self.assertEqual(tool_names, {"bugwolf_status", "bugwolf_plan",
                                       "bugwolf_run", "bugwolf_leads",
-                                      "bugwolf_mode"})
+                                      "bugwolf_mode", "bugwolf_agents",
+                                      "bugwolf_team"})
         planned = json.loads(
             replies[2]["result"]["content"][0]["text"])
         self.assertTrue(any(t.startswith("pf-")

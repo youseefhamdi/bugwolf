@@ -287,6 +287,38 @@ class Scheduler:
 
     # -- routing hints (plan lever P1) --------------------------------------
 
+    def attach_agent_bindings(self) -> Dict[str, str]:
+        """Bind each lane root to its specialized subagent (registry-backed).
+
+        Writes ``inputs.agent_role`` / ``inputs.harness_role`` / tier
+        preferences onto every dispatch node so the harness dispatches the
+        lane to ``bugwolf:<role>`` instead of the bare session.  Selection
+        is deterministic per domain; unknown domains degrade to the
+        web-api generalist per the registry's fallback rules.
+        """
+        try:
+            from tools.core.agent_registry import AgentRegistry
+            registry = AgentRegistry()
+        except Exception:  # noqa: BLE001 - bindings are advisory
+            return {}
+        bindings: Dict[str, str] = {}
+        for node in self._nodes.values():
+            if node.spec.get("task_type") != "dispatch":
+                continue
+            domain = str(node.spec.get("domain") or "")
+            try:
+                spec = registry.select(domain=domain, lane="hunt")
+            except Exception:  # noqa: BLE001
+                continue
+            routing = node.spec.setdefault("inputs", {})
+            routing["agent_role"] = spec.role
+            routing["harness_role"] = spec.harness_role
+            routing["tier_affinity"] = spec.tier_affinity
+            bindings[node.task_id] = spec.role
+        if bindings:
+            self.save()
+        return bindings
+
     def attach_routing(self, task_id: str) -> Dict[str, Any]:
         """Attach advisory model-routing hints to a task's inputs."""
         node = self._nodes[task_id]

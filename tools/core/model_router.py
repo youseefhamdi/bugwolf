@@ -306,6 +306,116 @@ def attach_hint(unit: Dict[str, Any]) -> Dict[str, Any]:
     return unit
 
 
+# ---------------------------------------------------------------------------
+# Agent dispatch (registry-aware routing)
+# ---------------------------------------------------------------------------
+# Where ``route`` answers WHAT model tier a task needs, ``route_agent_dispatch``
+# answers WHO runs it and AT WHAT TIER -- a real dispatch decision (subagent
+# role + tier + fallback), not just an advisory hint.  Tier resolution is
+# still deterministic and can still never gate execution: an agent's tier
+# affinity biases the bands, and degradation paths are preserved.
+
+
+def _resolve_agent() -> Any:
+    """Resolve the agent registry lazily (import-cycle safe)."""
+    try:
+        from tools.core.agent_registry import AgentRegistry
+    except ImportError:  # pragma: no cover - bundled fallback
+        try:
+            from agent_registry import AgentRegistry  # type: ignore
+        except ImportError:
+            return None
+    return AgentRegistry
+
+
+def route_agent_dispatch(*, bug_class: str = "", domain: str = "",
+                         affinity: str = TIER_LOCAL,
+                         objective: str = "",
+                         max_iterations: int = 50,
+                         available_tools: Optional[List[str]] = None,
+                         context: Optional[Dict[str, Any]] = None,
+                         ) -> Dict[str, Any]:
+    """Full dispatch decision for one unit of work.
+
+    Combines the deterministic complexity score with the selected agent's
+    tier affinity:
+
+      * ``frontier`` affinity never lands below the frontier band -- chain
+        synthesis and crypto-math agents stay on frontier reasoning even
+        for simple-looking text.
+      * ``local_slm`` affinity floors at the local band but content
+        complexity may still escalate to frontier when the task genuinely
+        warrants it.
+      * ``deterministic`` affinity is a hard cap AND floor: regression-
+        style agents execute deterministic work only and never burn a
+        model call, regardless of how the title reads.
+
+    Falls back per tier exactly like ``route``; never raises for routing
+    reasons (unknown bug classes simply select by domain).
+    """
+    if affinity not in (TIER_DETERMINISTIC, TIER_LOCAL, TIER_FRONTIER):
+        raise ValueError(f"unknown tier affinity {affinity!r}")
+    decision = route(objective or bug_class or domain or "dispatch",
+                     bug_class=bug_class,
+                     max_iterations=max_iterations,
+                     available_tools=available_tools or [],
+                     context=context or {})
+    if affinity == TIER_DETERMINISTIC:
+        effective = 0.0
+        tier = TIER_DETERMINISTIC
+    else:
+        _affinity_floor = (_FRONTIER_THRESHOLD if affinity == TIER_FRONTIER
+                           else _LOCAL_THRESHOLD)
+        effective = round(max(decision.complexity, _affinity_floor), 3)
+        tier = classify(effective)
+    return {
+        "tier": tier,
+        "model_preference": _preference(tier),
+        "fallback_preference": _fallback_preference(tier),
+        "complexity": effective,
+        "content_complexity": decision.complexity,
+        "affinity": affinity,
+        "rationale": (
+            f"content {decision.complexity:.3f} with {affinity} affinity "
+            f"-> {tier}; fallback={_fallback_preference(tier) or 'none'}"),
+    }
+
+
+def route_unit_agent(unit: Dict[str, Any]) -> Dict[str, Any]:
+    """Dispatch decision for a standard research-unit dict (never raises)."""
+    if not isinstance(unit, dict):
+        unit = {}
+    bug_class = str(unit.get("bug_class", ""))
+    domain = str((unit.get("context") or {}).get("domain", "")
+                 if isinstance(unit.get("context"), dict) else "")
+    try:
+        AgentRegistry = _resolve_agent()
+        if AgentRegistry is not None:
+            reg = AgentRegistry()
+            spec = reg.select(bug_class=bug_class, domain=domain,
+                              lane="hunt")
+            dispatch = route_agent_dispatch(
+                bug_class=bug_class, domain=domain,
+                affinity=spec.tier_affinity,
+                objective=str(unit.get("objective", "")),
+                max_iterations=int(unit.get("max_iterations", 50) or 50),
+                available_tools=list(unit.get("available_tools") or []),
+                context=unit.get("context") if isinstance(
+                    unit.get("context"), dict) else {})
+            dispatch["agent_role"] = spec.role
+            dispatch["harness_role"] = spec.harness_role
+            return dispatch
+    except Exception:  # noqa: BLE001 - routing never gates
+        pass
+    # Registry unavailable: tier-only routing, no agent binding.
+    dispatch = route_agent_dispatch(bug_class=bug_class, domain=domain,
+                                    affinity=TIER_LOCAL,
+                                    objective=str(unit.get("objective", "")))
+    dispatch["agent_role"] = ""
+    dispatch["harness_role"] = ""
+    return dispatch
+
+
 def main() -> int:
     import argparse
     import json

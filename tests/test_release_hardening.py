@@ -78,9 +78,10 @@ class CapabilityManifestTest(unittest.TestCase):
 
     def test_all_documented_commands_exist(self):
         # commands/*.md frontmatter references map to real files.
-        # 8 orchestrator commands + /bugwolf-sandbox (kill switch).
+        # 8 orchestrator commands + /bugwolf-sandbox (kill switch)
+        # + /bugwolf-team (multi-agent waves).
         commands = sorted((REPO / "commands").glob("bugwolf*.md"))
-        self.assertEqual(len(commands), 9)
+        self.assertEqual(len(commands), 10)
         plugin = json.loads(
             (REPO / ".claude-plugin" / "plugin.json").read_text())
         listed = sorted(Path(p).name for p in plugin["commands"])

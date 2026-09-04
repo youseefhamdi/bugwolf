@@ -1,21 +1,21 @@
 # BugWolf — Repository Audit & File Map (generated)
 
-> Generated on 2026-09-03T20:55:45+00:00 from `main@297d520` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
+> Generated on 2026-09-04T00:24:37+00:00 from `main@7fa7a12` by `scripts/generate_audit.py`. All counts are computed from the live tree; do not edit them by hand.
 
 ## 1. Scale
 
-- Python modules under `tools/`: **167** (70281 lines) + **13** `__init__.py` package markers.
-- CLI-capable modules (argparse/`__main__`): **116**
-- Group sizes: core **8**, domains **14**, intelligence **3**, recon **1**, validation **3**
+- Python modules under `tools/`: **174** (74010 lines) + **14** `__init__.py` package markers.
+- CLI-capable modules (argparse/`__main__`): **122**
+- Group sizes: core **11**, domains **14**, intelligence **3**, recon **1**, validation **3**
 
 ## 2. Test suite
 
-- Test files: **129**
-- Discovered tests: **1339**
+- Test files: **133**
+- Discovered tests: **1405**
 
 ## 3. References
 
-- Reference docs: **53** (8 attack-vector catalogs, 22 hacking-agent guides)
+- Reference docs: **66** (11 attack-vector catalogs, 32 hacking-agent guides)
 
 ## 4. Scripts & configs
 
@@ -41,12 +41,14 @@
 | `tools/surface_model.py` | 869 | Structured Web/API attack-surface model for BugWolf's discovery core. |
 | `tools/observation.py` | 861 | BugWolf Observation / Oracle Validation Layer v1.0.0 |
 | `tools/core/live_executor.py` | 829 | BugWolf Live Execution Harness — real probes, real evidence. |
+| `tools/core/agent_registry.py` | 819 | BugWolf Specialized Agent Registry v1.0.0. |
 | `tools/patch_gap.py` | 806 | BugWolf Patch-Gap Exploitation Engine v1.0.0 |
 | `tools/leads.py` | 796 | BugWolf Lead Ledger — persistent state-transition research objects for OPEN LEADs. |
 | `tools/infra_deploy.py` | 786 | BugWolf Infrastructure Auto-Deploy v1.0.0 |
 | `tools/carlini_loop.py` | 752 | BugWolf Carlini Loop Track — per-file brute-force vulnerability analysis. |
 | `tools/perf.py` | 734 | BugWolf performance harness (orchestrator plan v2, sections 5.3 + 7). |
 | `tools/capability_registry.py` | 733 | BugWolf Capability Registry v1.0.0 |
+| `tools/runtime/team.py` | 727 | BugWolf Multi-Agent Team Engine v1.0.0. |
 | `tools/trust_map.py` | 720 | BugWolf Trust Map Engine v1.0.0 |
 | `tools/agent_isolation.py` | 711 | Agent Isolation Checker — verifies each BugWolf agent operates within |
 | `tools/adversary_emulation.py` | 699 | BugWolf Adversary Emulation Framework v1.0.0 |
@@ -61,12 +63,10 @@
 | `tools/chain_of_custody.py` | 591 | BugWolf Chain of Custody — Tamper-proof audit trail for every finding. |
 | `tools/contract_discovery.py` | 588 | Smart-contract state-space exploration for BugWolf's discovery core. |
 | `tools/asset_discovery.py` | 584 | BugWolf Asset Discovery Engine — recursive multi-source enumeration. |
+| `tools/intel/research_engine.py` | 581 | BugWolf Deep-Research Engine v1.0.0. |
 | `tools/js_ct_intel.py` | 577 | BugWolf passive CT and JavaScript intelligence pipeline. |
 | `tools/retest_scheduler.py` | 573 | BugWolf Autonomous Retest Scheduler v1.0.0 |
 | `tools/exploit_gen.py` | 572 | BugWolf Exploit Generation Engine — produces weaponized PoCs from findings. |
-| `tools/opsec.py` | 571 | BugWolf OPSEC Module — Anti-attribution & operational security. |
-| `tools/zero_day_tracks.py` | 571 | Deterministic discovery adapters for the five research surfaces. |
-| `tools/chain_orchestrator.py` | 568 | BugWolf full-chain orchestrator. |
 
 ## 6. Verification notes
 

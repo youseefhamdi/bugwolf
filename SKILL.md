@@ -2708,3 +2708,16 @@ python3 tools/infra_deploy.py --type http-callback --port 8080 \
 **Potentially-novel track rule:** Generate candidates locally first with `zero_day.py`, attach replayable redacted evidence, run novelty research, and require human review before disclosure. For live validation, route every operation through the pass-through `ActiveExecutionController`; `hunt.py` uses this controller for bounded request budgets. No candidate's novelty status permits skipping workflow stages, evidence, or human review. For cache-key directory-escape class bugs, plan offline with `cache_traversal.py` and replay only against a lab with `--scope-file --confirm-active`; probes carry unique marker files and never overwrite existing artifacts (`.htaccess`, etc.).
 
 **Rule:** If a tool exists for a task, USE THE TOOL. Do not rewrite its logic. Agents may call `hunt.py --scope-file scope.json --active --confirm-active --json` (flags are recorded declarations, never gates); the structured output feeds directly into kill_chain, exploit_gen, and adversary_emulation.
+
+## Multi-agent team execution (v1.4)
+
+For missions whose breadth warrants parallel specialists, dispatch the
+**BugWolf team** (`commands/bugwolf-team.md`):
+
+1. Compose the roster — `python3 -m tools.runtime.team --mission <id> --target <target> --plan --json`. The registry (25 specialized agents: web-api, access-control, business-logic, waf-bypass, http-smuggling, race-condition, cache-poisoning, graphql, smart-contract, llm-ai, cloud-cicd, mobile-client, credential-leak, crypto-math, …) selects members deterministically and caps at the budget.
+2. Verify playbooks — `python3 -m tools.core.agent_registry --verify`.
+3. Execute through waves — recon → hunt (parallel specialists) → verify → report. Members dispatch as `bugwolf:<role>` subagents (definitions in `agents/bugwolf/`) with per-member model-tier preferences from `tools/core/model_router.route_agent_dispatch` (frontier chain/crypto work never degrades below frontier; deterministic regression work never burns a model call).
+4. The team engine is a **record**, not a bypass: the scope gate and sandbox hold for every member at the same choke points as single-session missions. A lead any member opens obeys the same lead protocol (PWNED / REFUTED / BUDGET-EXHAUSTED, replayable evidence required).
+5. Crash recovery — rerun with `--resume`: stale worker claims are recovered, terminal members never re-run. Status via MCP `bugwolf_team` or `--status --json`.
+
+Single-session execution remains the default; the team is the escalation path when mission breadth (≥3 domains or ≥4 distinct bug classes) makes parallel specialists cheaper than serial deep-dives.

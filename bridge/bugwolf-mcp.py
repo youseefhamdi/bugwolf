@@ -120,6 +120,51 @@ def tool_mode(args: Dict[str, Any]) -> Dict[str, Any]:
     return {"schema": SCHEMA, **outcome}
 
 
+def tool_agents(args: Dict[str, Any]) -> Dict[str, Any]:
+    """List the specialized subagent registry (roles, tiers, playbooks)."""
+    from tools.core.agent_registry import AgentRegistry
+    reg = AgentRegistry()
+    if str(args.get("verify") or ""):
+        bad = []
+        for role in reg.all_roles():
+            try:
+                reg.load_prompt(role)
+            except Exception as exc:  # noqa: BLE001
+                bad.append({"role": role, "error": str(exc)[:200]})
+        return {"schema": SCHEMA, "verified": not bad, "errors": bad}
+    return {"schema": SCHEMA, **reg.inventory()}
+
+
+def tool_team(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Multi-agent team surface: plan/status/resume (run needs a worker)."""
+    from tools.runtime.team import TeamEngine
+    from tools.runtime.contracts import MissionSpec
+    action = str(args.get("action") or "status")
+    mission_id = str(args.get("mission_id") or "")
+    if not mission_id:
+        raise ValueError("mission_id is required")
+    root = _project_root(args)
+    if action == "plan":
+        mission = MissionSpec(mission_id=mission_id,
+                              target=str(args.get("target") or ""),
+                              domains=[d for d in (args.get("domains") or [])
+                                       if d])
+        engine = TeamEngine(mission, project_root=root)
+        engine.plan(bug_classes=[b for b in (args.get("bug_classes") or [])
+                                 if b])
+        return {"schema": SCHEMA, **engine.status()}
+    if action == "status":
+        engine = TeamEngine.load(mission_id, project_root=root)
+        return {"schema": SCHEMA, **engine.status()}
+    if action == "resume":
+        engine = TeamEngine.load(mission_id, project_root=root)
+        outcome = engine.resume()
+        return {"schema": SCHEMA, **outcome}
+    raise ValueError(f"action must be plan|status|resume, got {action!r} "
+                     f"(dispatching agents requires a harness worker; use "
+                     f"the run command with a bound worker)")
+
+
 TOOLS = {
     "bugwolf_status": (tool_status, "Scheduler status + resume plan + "
                        "lead counts for a mission"),
@@ -129,6 +174,10 @@ TOOLS = {
     "bugwolf_leads": (tool_leads, "Full lead ledger with closeability"),
     "bugwolf_mode": (tool_mode, "Run one persistent mode "
                      "(research/verify/deep-dive/coverage/report)"),
+    "bugwolf_agents": (tool_agents, "Specialized subagent registry "
+                       "(roles, model tiers, playbook verification)"),
+    "bugwolf_team": (tool_team, "Multi-agent team: plan/status/resume "
+                     "(waves of bugwolf:<role> subagents)"),
 }
 
 

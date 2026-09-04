@@ -1,15 +1,18 @@
 # BugWolf — Complete File Map & Line-by-Line Audit
 
-> Hand-compiled engineering map of the full BugWolf plugin, **v1.3.0**
-> (`VERSION`), working tree on `main` (`297d520`, clean).
+> Hand-compiled engineering map of the full BugWolf plugin, **v1.3.0 → v1.4.0-multi-agent**
+> (`VERSION`), working tree on `main` (`5a61907` + multi-agent layer).
 > Every tracked source file is listed with its line count, purpose, and key
 > definitions (class/function with starting line). Companion to the
 > auto-generated `AUDIT.md` (run `python3 scripts/generate_audit.py`).
-> Verified 2026-09-03: **1,334 tests pass (2 skipped)**, `compileall` clean,
-> `recon_engine.sh` + all `scripts/*.sh` syntax OK.
-> Regenerated after the v1.2.11 → v1.3.0 release: the orchestrator runtime
-> (`tools/runtime/`), MCP bridge (`bridge/`), and the operator-target model
-> (no shipped labs) are new since the previous revision of this file.
+> Verified 2026-09-03 (post-multi-agent + intel): **1,383 tests pass (2 skipped)**,
+> `compileall` clean, `recon_engine.sh` + all `scripts/*.sh` syntax OK,
+> CI bundle check passes, 28 agent definitions in sync (`generate_agents.py --check`).
+> v1.4 adds the multi-agent layer (§17): specialized agent registry,
+> real model-tier dispatch, and the team execution engine.
+> v1.5 adds the deep-research layer (§18): live intel (NVD/GitHub/KEV/Reddit/HN
+> + harness-executed X/Medium/dork plans) feeding every agent dispatch, with
+> operator-gated technique quarantine.
 
 ---
 
@@ -19,7 +22,7 @@
 |---|---|---|
 | `tools/` Python (all) | 180 (167 modules + 13 `__init__.py`) | 70,161 + 13 |
 | — `tools/runtime/` (v1.3.0 mission layer) | 13 | 9,252 |
-| — `tools/core/` | 9 | 6,283 |
+| — `tools/core/` | 10 | 6,733 |
 | — `tools/domains/` (14 modules) | 21 | 5,726 + 7 |
 | — `tools/intelligence/` | 4 | 1,080 + 1 |
 | — `tools/recon/` | 2 | 460 + 1 |
@@ -50,7 +53,8 @@ tools/                       → 167 Python modules (the engine)
   tools/runtime/             → 13 modules (9,252 lines): mission runner, task-graph
                                scheduler, contracts, scope gate, sandbox, preflight,
                                lead protocol, persistent modes, accounts, OAST
-  tools/core/                → 9 modules: campaign orchestrator, stage controller,
+  tools/core/                → 10 modules: campaign orchestrator, stage controller,
+                               agent registry (v1.4 multi-agent), model router
                                research loop, live executor, fuzz bridge, agent bus,
                                signal bus, model router
   tools/domains/             → 14 leaf modules: api, auth, cloud, llm, mobile,
@@ -144,6 +148,8 @@ with lead ladders — while domain modules publish typed events onto
 | `tools/runtime/oast.py` | 254 | Self-hosted OAST: per-lead canary tokens (`oast<sha256(lead)[:12]>`), durable interaction registry, `OAST_CALLBACK` signal publication; unregistered canaries recorded but never attributed. `_canary_token`@52 |
 | `tools/runtime/oast_tunnel.py` | 239 | Auto-armed SSH reverse tunnel so remote-target SSRF leads close on attributed public callbacks (`--oast` + `BUGWOLF_OAST_TUNNEL=1`). `OastTunnel`@46, `arm_from_env`@162, `selftest`@184 |
 | `tools/runtime/scope.py` | 293 | **Deny-by-default operator scope gate.** Target host + explicit `--scope` entries allowed; `--exclude` carve-outs ALWAYS beat wildcards; fail-closed `ScopeViolation`; process-global, idempotent re-bind, refuses target mixing. `ScopeGate`@56 (`check`@124), `bind_target`@196, `check_url`@209, `load_scope_file`@229 |
+| `tools/runtime/team.py` | 620 | **v1.4: Multi-Agent Team Engine** — waves recon→hunt(parallel specialists)→verify→report; ThreadPoolExecutor bounded by budget; append-only `team/runs.jsonl` ledger; atomic `team/state.json` checkpoints (write+fsync+rename); `TeamEngine`@~215 (`plan`@~330, `run`/`resume`@~430, `_recover_stale`@~410 heartbeat>15min fail-closed, `stop`@~570); member dispatch carries prompt+digest+scope+sandbox flags; no worker bound ⇒ BLOCKED evidence (first-class terminal), never fabricated; typed `TeamMessage` handoffs persisted to `messages.jsonl`. CLI: `--plan/--run/--resume/--status --worker task-tool --timeout` |
+| `tools/runtime/team_dispatch.py` | 421 | **v1.4: Task-tool dispatch bridge** — binds the team engine to live Claude Code subagent dispatch via a durable file queue (`team/dispatch/{jobs,results}/`). Engine side: `TaskToolWorker`@~80 (atomic enqueue, heartbeat refresh while waiting, honest BUDGET-EXHAUSTED on budget expiry). Harness side CLI: `--next` (rename-wins exclusive claim), `--complete`/`--fail`/`--release` (claim-token ownership enforced; impostor ⇒ exit 3), atomic tmp+fsync+rename writes; `bind_heartbeat`@~350 |
 | `tools/runtime/browser_driver.py` | 162 | Client-side validation behind a `BrowserDriver` protocol; no driver bound → `blocked-browser` evidence lead, never a fabricated result. Scope-gated. `validate_client_side`@103, `blocked_browser_evidence`@156 |
 | `tools/runtime/__init__.py` | 0 | package marker |
 
@@ -156,7 +162,7 @@ transport for differential_runner, header_trust, cache_traversal);
 
 ---
 
-## 6. `tools/core/` — the engine's nervous system (9 modules, 6,283 lines)
+## 6. `tools/core/` — the engine's nervous system (10 modules, 6,733 lines)
 
 | Module | Lines | Purpose & key definitions |
 |---|---|---|
@@ -168,6 +174,8 @@ transport for differential_runner, header_trust, cache_traversal);
 | `tools/core/signal_bus.py` | 365 | Event-driven bus ("nervous system"): typed events (`RECON_COMPLETE`, `FINDING_DISCOVERED`, `WAF_BLOCKED`, `OAST_CALLBACK`, `CHAIN_PROPOSAL`, …), persisted JSONL, replay. `SignalBus`@165 |
 | `tools/core/agent_bus.py` | 356 | Agent-addressed signal passing (from_agent/to_agents), JSONL persisted + replayed. `AgentBus`@79 |
 | `tools/core/model_router.py` | 334 | Deterministic complexity-tier routing (deterministic / local_slm / frontier) with advisory `model_preference` hints; tiers from `configs/models.json` |
+| `tools/core/model_router.py` | 334→444 | Deterministic complexity-tier routing (deterministic / local_slm / frontier). **v1.4: real agent dispatch** — `route_agent_dispatch`@~330 (affinity floors: frontier never degrades, deterministic hard-caps), `route_unit_agent`@~395 (registry-bound WHO+tier+fallback; never raises). Tiers from `configs/models.json` |
+| `tools/core/agent_registry.py` | 654 | **v1.4: Specialized Agent Registry** — 25 subagents (22 from `references/hacking-agents/` + 4 workflow: verify/chain/report/recon). `AgentSpec`@96, `AgentRegistry`@300 (`select`@~365 deterministic bug-class→domain→generalist→workflow fallback, `dispatch_for`@~410, `compose_team`@~500 budget-capped deterministic roster, `load_prompt` digest-verified anti-tamper). CLI: `--list/--agent/--prompt/--verify/--team` |
 | `tools/core/__init__.py` | 1 | package marker |
 
 ---
@@ -480,7 +488,7 @@ records of past releases, not current structure.
 
 | Dir | Contents |
 |---|---|
-| `state/` | Runtime state: `orchestrator/<mission>/` (graph.json, leads.jsonl, modes.jsonl, hooks.jsonl, report.json), `preflight/manifest.json`, `learning/<target>.jsonl`, `sessions/<target>/` (probes.jsonl, leads.jsonl, maps/), `signals/events/`, `sandbox/audit.jsonl`, `environment.json` |
+| `state/` | Runtime state: `orchestrator/<mission>/` (graph.json, leads.jsonl, modes.jsonl, hooks.jsonl, report.json, `team/` (state.json, runs.jsonl, messages.jsonl)), `preflight/manifest.json`, `learning/<target>.jsonl`, `sessions/<target>/` (probes.jsonl, leads.jsonl, maps/), `signals/events/`, `sandbox/audit.jsonl`, `environment.json` |
 | `.bugwolf/` | Persistent workflow state per target (`workflows/<target>.json`) |
 | `recon/` | Recon output (discovery plans, js-intel, methodology, …) |
 | `research/` | Research checkpoints per target (`<target>/pre-hunt|post-recon|post-maps|bypass|post-findings|escalation|pre-report`) |
@@ -502,10 +510,12 @@ records of past releases, not current structure.
 ## 16. Verification status (2026-09-03)
 
 ```
-python3 -m unittest discover -s tests -p 'test_*.py'   → Ran 1334 tests, OK (skipped=2)
-python3 -m compileall -q tools tests                    → clean
-bash -n tools/recon_engine.sh scripts/*.sh              → all OK
-python3 scripts/generate_audit.py                       → AUDIT.md regenerated
+python3 -m unittest discover -s tests -p 'test_*.py'   → Ran 1373 tests, OK (skipped=2)
+python3 -m compileall -q tools tests scripts bridge    → clean
+bash -n tools/recon_engine.sh scripts/*.sh             → all OK
+python3 scripts/generate_audit.py                      → AUDIT.md regenerated
+python3 scripts/generate_agents.py --check             → 25 agent definitions in sync
+bash scripts/ci_bundle_check.sh                        → OK (exit 0)
 ```
 
 **Notable observations:**
@@ -513,3 +523,192 @@ python3 scripts/generate_audit.py                       → AUDIT.md regenerated
 2. The engineering-control layer is strong: evidence redaction (`evidence.py`), PII firewall, chain of custody, tamper-evident workflows, quarantined learning memory with an operator approval gate, replayable-evidence requirement before CONFIRMED, credential redaction in the scheduler and account matrix.
 3. Runtime state, research output, and bundles are git-ignored; the tracked tree is pure source + docs.
 4. Closed gap (audit 2026-09-03, fixed same day): `tools/hunt.py`'s `curl_fetch`/`curl_fetch_observation` previously did not consult the scope gate; both now run `_scope_check` (fail-closed `scope-blocked:` sentinel, auto-bind for standalone use) ahead of the sandbox spawn, so live replays routed through them (`differential_runner`, `header_trust`, `cache_traversal`) obey the operator scope. Pinned by `tests/test_hunt_engine.py::TestScopeGateChokePoint`.
+
+---
+
+## 17. v1.4 multi-agent layer (this revision)
+
+BugWolf previously orchestrated *work* (probes, lanes, leads) with a single
+harness session. v1.4 adds OMC-style orchestration of *agents*, adapted to
+the hostile-target assumption:
+
+### 17.1 New files
+
+| File | Lines | Purpose |
+|---|---|---|
+| `tools/core/agent_registry.py` | 654 | 25 specialized subagents (21 bug-class specialists from `references/hacking-agents/` + 4 workflow agents: recon/verify/chain/report). Deterministic selection, digest-verified playbooks, budget-capped team composition |
+| `tools/runtime/team.py` | 600 | Team engine: waves, parallel members, JSONL run ledger, atomic checkpoints, stale-worker recovery, typed inter-agent messages |
+| `scripts/generate_agents.py` | 114 | Projects the registry into `agents/bugwolf/<role>.md` harness subagent files; `--check` mode for CI drift detection |
+| `agents/bugwolf/*.md` | 25 files | Generated subagent definitions (name/description/model-tier/tools/scope/sandbox front-matter + playbook body) |
+| `commands/bugwolf-team.md` | — | `/bugwolf-team` slash command (plan/run/resume/status) |
+| `tests/test_multi_agent.py` | 389 | 24 tests: registry, dispatch routing, waves, messages, resume/recovery, scheduler bindings, generator sync, MCP surface |
+| `tests/test_team_dispatch.py` | ~290 | 10 tests: atomic claim exclusivity, ownership rejection, honest timeout, release-to-queue, heartbeat binding, full engine-through-queue round trip, CLI exit codes |
+| `tools/core/model_router.py` | +110 | Real dispatch decisions (`route_agent_dispatch`, `route_unit_agent`) |
+| `tools/runtime/scheduler.py` | +35 | `attach_agent_bindings()` — lane roots carry `bugwolf:<role>` + tier |
+| `bridge/bugwolf-mcp.py` | +55 | `bugwolf_agents` + `bugwolf_team` MCP tools (7 total) |
+
+### 17.2 Architecture
+
+```
+registry (WHO):  25 AgentSpecs -- bug-class ownership → domain generalist
+                 → workflow fallback; playbooks digest-verified at load
+dispatch (TIER): route_agent_dispatch -- complexity score ∨ affinity floor
+                 (frontier never degrades below frontier; deterministic
+                 hard-caps at 0.0); preference strings resolved by configs/models.json
+execution (HOW): TeamEngine waves recon→hunt→verify→report; harness worker
+                 callable executes `bugwolf:<role>`; engine never calls a model
+surface:         /bugwolf-team command · MCP bugwolf_agents/bugwolf_team ·
+                 agents/bugwolf/*.md · scheduler lane bindings
+```
+
+### 17.3 Invariants (all pinned by `tests/test_multi_agent.py`)
+
+1. **Deterministic composition** — identical (domains, bug-classes, budget) ⇒ identical roster digest.
+2. **Tamper-evident playbooks** — prompt digest re-verified at every load; mismatch raises.
+3. **Scope + sandbox per member** — every dispatch payload records `scope_required`/`sandbox_required`; the gate and sandbox hold unchanged at the choke points (team threads execute through the same `hunt`/runtime transports).
+4. **No fake results** — no worker bound ⇒ BLOCKED evidence per member, never a fabricated outcome.
+5. **Durable & resumable** — append-only runs.jsonl; atomic state.json checkpoints only at member terminal states; stale claims (>15 min heartbeat) fail closed and are re-dispatched; finished members never re-run.
+6. **Routing never gates** — any tier degrades per `fallback_preference`; registry-unavailable environments fall back to tier-only routing.
+7. **Messages are typed** — `to_role`-addressed handoffs persisted to messages.jsonl; credentials never ride inter-agent context (accounts matrix redacts upstream).
+
+---
+
+## 18. v1.5 deep-research layer (this revision)
+
+Agents' playbooks froze at write time; the world did not. §18 adds the
+research loop that keeps every hunt dispatch current — the agent-side
+equivalent of the reference corpus's Phase-2 threat-intel mapping.
+
+### 18.1 New files
+
+| File | Lines | Purpose |
+|---|---|---|
+| `tools/intel/research_engine.py` | 499 | **Research packs.** Direct sources with injectable `urlopen`: NVD CVE 2.0 (keyword+version), GitHub PoC search, CISA KEV (1,694 entries, correlated — KEV hit ⇒ confidence 0.95), Reddit (r/netsec, r/bugcrowd, r/websecurity), HN Algolia. Harness sources (X/Twitter, Medium, Google dorks — no keyless API, never faked) emit concrete query plans the Claude Code session executes with WebSearch/WebFetch. Per-source fail-open: a dead source degrades into the pack's honesty fields (`sources_degraded`), never fails the pack. |
+| `tools/intel/technique_ledger.py` | 308 | **Research quarantine.** SUBMITTED → QUARANTINE → (operator approve, time-boxed 90d) → ACTIVE → EXPIRED. SHA-256 content digest binds approval to bytes; tampered content cannot be approved. Hunt dispatches carry ONLY active unexpired entries for the member's bug classes — quarantine never rides along. |
+| `references/hacking-agents/threat-research-agent.md` | — | Playbook: version-evidenced CVE research, documented negatives, bounty-pattern weighting. |
+| `references/hacking-agents/community-signal-agent.md` | — | Playbook: Reddit/HN/X/Medium mining protocol, ledger submission discipline. |
+| `references/hacking-agents/exploit-intel-agent.md` | — | Playbook: PoC matching to observed surface, KEV triage, canary-safe adaptation. |
+| `tests/test_intel_layer.py` | ~270 | 10 tests: fixture-driven source adapters, KEV correlation, degradation honesty, plan-only mode (zero fetches), ledger lifecycle/tamper guard, roster selection, dispatch integration with quarantine isolation. |
+
+### 18.2 Flow
+
+```
+recon tech_stack ──┐
+mission bugs ──────┼─→ ResearchEngine.build_pack()  (once per run, shared)
+                   │      ├─ NVD/GitHub/KEV/Reddit/HN  (direct, live or degraded)
+                   │      └─ X/Medium/dork plans       (harness executes)
+                   ▼
+TeamEngine._build_research_context(member)
+                   ├─ research_pack slice        → payload["intel"]
+                   └─ ledger.active(bug_class)   → approved techniques only
+                   ▼
+member dispatch (hunt agents hunt with TODAY's intel; new techniques from
+community-signal wait in QUARANTINE for operator approval)
+```
+
+### 18.3 Invariants (pinned by `tests/test_intel_layer.py`)
+
+1. **Provenance mandatory** — every intel item carries source + URL.
+2. **Degradation is recorded, never hidden** — `sources_degraded` + pack notes.
+3. **KEV correlation boosts, version-unconfirmed downgrades** — deterministic confidence.
+4. **Quarantine isolation** — an operator-approved ledger is the only path from "the internet says" to "an agent may try".
+5. **Intel never gates** — any failure degrades to frozen playbooks; research is additive.
+
+---
+
+## 19. v1.6 research-driven agent expansion (this revision)
+
+The v1.5 engine made agents researchable; §19 makes them current. A live
+research pass (web pulls: The-XSS-Rat 2026 practical guide, OWASP Agentic
+Top 10 2026 ASI01–ASI10, OWASP LLM 2025/2026, MCP security corpus
+(Invariant tool-poisoning advisory, CSA notes, NSA CSI, 97M-download/82%
+path-traversal stats), Unit 42 web-IDPI in-the-wild taxonomy (22
+techniques), PortSwigger CSD/browser-desync corpus, 2026 ATO writeups,
+WCD/WCP guides) was distilled into three vector catalogs, then four
+specialists were built on them.
+
+### 19.1 New vector catalogs (references/attack-vectors/)
+
+| File | Contents |
+|---|---|
+| `agentic-ai-vectors-2026.md` | ASI01–10 test patterns, MCP vectors (tool poisoning, rug pulls, path traversal, missing OAuth, IDE auto-exec, context poisoning), Unit42 IDPI taxonomy (delivery methods, jailbreak methods, intent severity ladder), LLM Top 10 alignment, canary-only operating rules |
+| `web-cache-vectors-2026.md` | WCD delimiter ladder (`;`, `%3B`, `.;`, `..;`), cache-key abstractions, WCP playbook (unkeyed sweeps, gadget chaining, H2-era desync), chain map (WCD→CSRF, WCP→XSS→ATO) |
+| `ato-chains-2026.md` | OAuth account fusion/PKCE downgrades, 0-click reset ladders, email-verification ATO windows, entropy-feasibility proofs, payout order, GDPR multiplier |
+
+### 19.2 New agents (registry 28 → 32)
+
+| Role | Tier | Bug classes | Source |
+|---|---|---|---|
+| `mcp-supply-chain` | frontier | mcp_tool_poisoning, mcp_rug_pull, mcp_path_traversal, agentic_supply_chain, ide_autoexec_rce | ASI04 + MCP corpus |
+| `agentic-hijack` | frontier | agent_goal_hijack, indirect_prompt_injection, tool_misuse, memory_poisoning, system_prompt_leak | ASI01/02/06/07 + Unit42 |
+| `cache-attack` | local_slm | cache_deception, cache_poisoning, cache_key_confusion, h2_desync_poisoning, cpdos | WCD/WCP catalogs |
+| `ato-chain` | frontier | account_takeover, oauth_fusion, pkce_downgrade, reset_poisoning, email_verification_ato | 2026 ATO corpus |
+
+### 19.3 Research-engine dork upgrade
+
+Query plans now include the 2026 writeup-corpus dorks: infosecwriteups/
+medium ATO+OAuth chains, PortSwigger-research/Unit42 primary research,
+GitHub bug-bounty checklist repos (the exact discovery path this revision
+used).
+
+All 32 definitions in sync (`generate_agents.py --check`); dispatch
+routing verified for every new bug class; intel packs regenerated with
+the expanded plan set.
+
+---
+
+## 20. v1.5 corpus layer (this revision — 76-PDF distillation)
+
+The operator uploaded a 76-document corpus (2FA/MFA, ATO, IDOR/BAC,
+smuggling/desync, SSRF/host-header, API/SQLi, recon/dorks, cloud,
+business-logic, RCE/upload, XML/SAML, platform misconfig, and the
+Claude-Code-setup methodology). Every document was read and distilled
+into code; the PDFs were then removed from the repo per operator
+instruction. Verified: **1,405 tests pass (2 skipped)**, 39 agents in
+sync, `compileall` clean.
+
+### 20.1 New modules
+
+| Module | Lines | Purpose |
+|---|---|---|
+| `tools/core/checklists.py` | 515 | Canonical 2026 checklist registry: 124 items, 11 lanes, every ID source-tagged to corpus docs, canary-safety tags (6 attest-gated), bug-class→slice mapping |
+| `tools/core/coverage_ledger.py` | 189 | Endpoint × checklist verdict ledger (`coverage.json`): evidence-cited verdicts, n-a demands a reason, attest items cannot confirm without operator clearance, atomic writes, digest integrity |
+
+### 20.2 New agents (registry 32 → 39)
+
+| Role | Tier | Bug classes | Corpus source |
+|---|---|---|---|
+| `mfa-bypass` | local_slm | mfa_bypass, otp_bypass, two_factor_bypass | 001/030/058/062 2FA-MFA checklists |
+| `host-header` | local_slm | host_header, header_injection, routing_confusion | 031/032 header corpus |
+| `rce-chain` | frontier | file_upload, ssti, deserialization, lfi_to_rce, image_parser_rce, regex_validation_gap | 018/022/034/038/051/068 RCE corpus |
+| `xml-xxe` | local_slm | xxe, saml, xml_injection, xslt_injection, soap_attack | 006/036 XML/SAML corpus |
+| `shadow-surface` | local_slm | surface_expansion, staging_exposure, takeover_candidate, acquired_assets, port_exposure | 013/017/037/043/060 recon corpus |
+| `platform-misconfig` | local_slm | platform_misconfig, aem_exposure, jira_exposure, default_credentials, source_disclosure | 005/009/010/057 platform corpus |
+| `webhook-logic` | frontier | webhook_abuse, payment_logic, entitlement_bypass, replay_attack, rounding_abuse | 003/047/049 financial-logic corpus |
+
+### 20.3 Playbook upgrades (4 existing)
+
+`access-control` (modern IDOR corpus: body-first refs, four mechanisms,
+blind side channels), `business-logic` (NCC financial: TOCTOU,
+number-format, rounding), `http-smuggling` (Klein variants, CRLF-powered
+desync, browser-powered, queue-poisoning safety law), `graphql`
+(mutation input-type scope bypass, field-suggestion reconstruction).
+
+### 20.4 Orchestration wiring
+
+- Team plan records the mission's canonical `checklist_slice` +
+  `attest_pending` set; every dispatch payload now carries
+  `intel.checklist.{member_ids, mission_ids, attest_pending}` alongside
+  the research pack.
+- Team `run`/`resume` end with a `coverage_gate`: open (unclosed,
+  closeable) checklist IDs read from the mission coverage ledger —
+  surfaced in `status()` for the report wave, never silently dropped.
+- Research-engine query plans gained the corpus dork lanes (GitHub
+  org census, Shodan favicon/port, CT staging census, webhook exposure,
+  per-class writeup lanes).
+
+### 20.5 Corpus removal
+
+All 76 PDFs deleted from the repo (`git rm`) after distillation; their
+knowledge now lives only in the checklist registry, playbooks, and
+coverage tooling. PDFs remain in git history but not in HEAD.
