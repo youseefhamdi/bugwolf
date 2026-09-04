@@ -1,5 +1,5 @@
 {
-  "_comment": "BugWolf hooks (plan v2 4.4/5.2): SessionStart -> harness_guard verify (cached, <10 ms via shim); Stop -> persistent-mode freeze. All shims are thin Python writing JSONL -- never block the harness.",
+  "_comment": "BugWolf hooks (plan v2 4.4/5.2 + master plan Phase 3, complete v1.22): SessionStart -> cockpit (scope/sandbox/leads/mode/target-model freshness + learned instincts v1.24) + harness_guard verify (cached); UserPromptSubmit -> mission-context injection + stale-model warning (3.2); PreToolUse -> harness-level scope enforcement (denies out-of-scope Bash/WebFetch while a mission contract exists; inert otherwise); PostToolUse -> auto-capture HTTP-ish outputs into the hash-chained evidence ledger with replay_key (3.3); Stop -> persistent-mode freeze; PreCompact -> cockpit digest persist (v1.24, ECC memory-persistence pattern). All shims are thin Python writing JSONL -- never block the harness.",
   "hooks": {
     "SessionStart": [
       {
@@ -8,6 +8,43 @@
           {
             "type": "command",
             "command": "python3 hooks/bugwolf_stop_hook.py session-start"
+          },
+          {
+            "type": "command",
+            "command": "python3 hooks/bugwolf_hooks.py session-start"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 hooks/bugwolf_hooks.py user-prompt-submit"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 hooks/bugwolf_pretool_scope_hook.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|WebFetch|Task|mcp__bugwolf__*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 hooks/bugwolf_hooks.py post-tool-use"
           }
         ]
       }
@@ -19,6 +56,17 @@
           {
             "type": "command",
             "command": "python3 hooks/bugwolf_stop_hook.py stop"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 hooks/bugwolf_hooks.py pre-compact"
           }
         ]
       }

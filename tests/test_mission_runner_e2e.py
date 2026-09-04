@@ -183,8 +183,11 @@ class MissionE2ETest(unittest.TestCase):
                     "max_runtime_seconds": 300})
 
     def _runner(self, mission):
+        # browser_driver=False: deterministic no-browser contract — this e2e
+        # pins blocked-browser semantics, not Playwright availability.
         return MissionRunner(mission, base_url=self.base,
-                             paths=list(OPERATOR_PATHS))
+                             paths=list(OPERATOR_PATHS),
+                             browser_driver=False)
 
     def test_full_mission_finds_confirms_and_reports(self):
         report = self._runner(self._mission()).run()

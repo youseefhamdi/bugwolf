@@ -21,7 +21,17 @@
 
 > **AI Pentesting Tool:** Run isolated, cloud-hosted pentesting sandboxes at **[bugwolf.xyz](https://bugwolf.xyz)** — your AI key, your Firecracker microVM, your report. Pipeline: recon → hunt → triage → H1-ready report. AI slop gets you rate-limited; BugWolf gets you paid.
 
-> **New in v1.9.2 — orchestrator-grade multi-agent operations:** finding-driven roster recomposition (hunt/recon recommendations — and recorded recon-depth census evidence — automatically staff specialists mid-mission, budget-capped and idempotent), zero-config dispatch pinning (`--agent bugwolf:<role>`, tier→`--model` mapping), a bounded hunt re-entry loop, crash-safe resume, a `--preflight` readiness report, and the recon **D0–D3 depth ladder** (`tools/recon/depth_ladder.py`) that makes "stopped too shallow" structurally impossible. See [CHANGELOG.md](CHANGELOG.md).
+> **New in v1.24.0 — the harness learns (integration plan, Phases A–F):** post-mission **instincts** mine existing ledgers into provenance-carrying facts that weight dispatch and ride the cockpit (≥2 occurrences, contradiction-halving, TTL); a **noise filter** holds platform-rejected findings with advisory reasons (impact always outranks the denylist); a **head-to-head harness** with deterministic judges publishes cost beside pass rate (the governed prober matches the 8x-spray baseline at 1/8th the sends); **injection canaries** prove target content is data-with-provenance, never instruction (forged instructions become recorded facts, bounded confidence penalty); a **default-off intel lane** (Agent-Reach channel architecture, credential-free, transparency-documented) feeds U1/U2 with provenance-tagged external facts; and **antibot honesty** keeps challenge boilerplate out of the business-lens model. Full rationale: [INTEGRATION_PLAN.md](docs/INTEGRATION_PLAN.md). Plus v1.23.0's corpus⇄U-layer regression, v1.22.x's hooks and H2.CL scoring, v1.21.0's capture→replay, v1.20.0's HTTP/2 layer, and the Understanding Layer beneath. See [CHANGELOG.md](CHANGELOG.md).
+>
+> **v1.23.0 — the corpus feeds on the Understanding Layer:** every scored case can declare the U-stages that must FEED it (`"u_stages": ["U4", "U5"]`); a regression bridge turns those declarations into executable checks over a live mini-mission — declared-stage artifacts, fact-level support per class (idor → object inventory, mass-assignment → privilege fields, business-logic → workflows), absence facts for negative controls — and a vanished model fact fails the gate like a missed finding. `enable_u_regression=True` scores it; hermetic runs stay honest.
+>
+> **v1.22.1 — H2.CL joins the scoring set:** the benchmark corpus now includes the H2.CL desync as a **lab-backed case pair** — the poisoned victim (expected finding) and the safe-front-end negative control, differing only in the front-end's desync switch, so the vulnerability itself is the scored variable. Evidence = the victim-observed smuggled body, never a bare status. Hermetic CI runs skip lab cases with a recorded reason; `enable_lab=True` scores them live (9 TP / 0 FP / 0 FN, gate PASS).
+>
+> **v1.22.0 — hooks complete, the harness remembers:** every prompt now carries mission context and a **target-model staleness warning** (3.2); every HTTP-ish tool output auto-captures into a hash-chained evidence ledger with `replay_key` (3.3); session start renders the full **cockpit** — scope, sandbox, leads, mode, and model freshness (3.4). The last master-plan parity gap is closed. Plus v1.21.0's capture→replay loop (mitmproxy addon → byte-exact replay → drift facts), v1.20.0's HTTP/2 pseudo-layer (the **H2.CL desync** demonstrated end-to-end), v1.19.0's predicted chains, v1.18.0's model-slice dispatch, v1.17.0's Understanding Layer pipeline (U1→U9, `/bugwolf-understand`), and the raw-socket replay + browser-confirmed verdicts underneath. See [CHANGELOG.md](CHANGELOG.md).
+>
+> **v1.21.0 — the capture→replay loop:** capture the target's real traffic through mitmproxy (`-s tools/runtime/capture_addon.py`), replay it byte-exact through the governed engine, and read the **drift** — status/body movement between two identical sends is a behavioral lead (cache variance, session carry-over), recorded as fact. The capture file never widens scope: out-of-scope records are skipped with a counted fact, and an explicitly-bound mission gate refuses rebinding. Plus v1.20.0's HTTP/2 pseudo-layer (HPACK + H2 framing, the **H2.CL desync** demonstrated end-to-end, safe-mode control proving the desync switch genuinely opt-in), v1.19.0's predicted chains (U7 capability × U8 assumption → ranked dispatch **before any probing**), v1.18.0's model-slice dispatch, v1.17.0's Understanding Layer pipeline (U1→U9, hash-chained, `/bugwolf-understand`), v1.16.0's opsec hardening, and the raw-socket replay + browser-confirmed verdicts underneath. See [CHANGELOG.md](CHANGELOG.md).
+>
+> **v1.20.0 — the HTTP/2 pseudo-layer, the last desync class:** byte-level HPACK (RFC 7541, no-Huffman by doctrine + a non-conformant mode that poisons stateful peer decoders) and H2 framing (RFC 7540) join the replay engine. The **H2.CL desync** is demonstrated end-to-end on the live stub: an attacker's TE-carrying H2 request poisons the pooled backend connection and the next victim's stream returns the internal-gateway admin-token response — a body their route can never produce. The safe-mode control proves the desync switch is genuinely opt-in (it caught the first draft forwarding TE verbatim — the exact real-world bug). Plus v1.19.0's predicted chains (U7 capability × U8 assumption → ranked dispatch **before any probing**), v1.18.0's model-slice dispatch, v1.17.0's Understanding Layer pipeline (U1→U9, hash-chained, `/bugwolf-understand`), v1.16.0's opsec hardening, and the raw-socket replay + browser-confirmed verdicts underneath. See [CHANGELOG.md](CHANGELOG.md).
 >
 > **v1.3.0 — boundary-hardened orchestrator:** the Phase 0–8 plan is complete — operator scope gate (deny-by-default, enforced at every network choke point), universal subprocess sandbox with a one-command kill switch, OAST public tunnel so SSRF leads close on attributed callbacks from REMOTE targets, auth A/B/C + FIN business-logic + contract/cloud/LLM lanes, all 13 §5.3 performance targets measured, and readiness level **L2 (clean-checkout reproducible)** with zero warnings. See [CHANGELOG.md](CHANGELOG.md).
 
@@ -484,6 +494,21 @@ Take BugWolf hunting without spinning up your own environment. **[bugwolf.xyz](h
 ---
 
 ## Installation
+
+### Claude Code plugin (recommended)
+
+Two lines, inside Claude Code:
+
+```text
+/plugin marketplace add youseefhamdi/bugwolf
+/plugin install bugwolf@bugwolf
+```
+
+All 10 slash commands load namespaced, the 39 `bugwolf:<role>` subagents
+dispatch natively through the Task tool, the session/stop hooks wire up,
+and the MCP bridge (`bugwolf_status` / `bugwolf_plan` / `bugwolf_run` /
+`bugwolf_leads` / `bugwolf_mode`) is available in every session via the
+bundled `.mcp.json` — zero extra setup.
 
 ### Freebuff / Codebuff (terminal)
 

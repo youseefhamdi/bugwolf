@@ -32,6 +32,8 @@ Design rules:
 from __future__ import annotations
 
 import ipaddress
+import json
+import os
 import socket
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -219,6 +221,69 @@ def add_denies(deny_entries) -> None:
 def gate_state() -> dict:
     """Audit snapshot of the process gate (preflight/mission records)."""
     return _GATE.to_dict()
+
+
+def __getattr__(name: str):  # PEP 562 — module attribute access
+    """``scope_mod.GATE`` — the live process gate. Always resolves the CURRENT
+    gate, so ``reset()`` swaps remain visible to holders of the module
+    reference (the bridge, the replay CLI, and live-lane tests bind here)."""
+    if name == "GATE":
+        return _GATE
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+# ---------------------------------------------------------------------------
+# Harness-level scope contract (master plan Phase 3.1)
+
+# The PreToolUse hook (hooks/bugwolf_pretool_scope_hook.py) enforces the
+# SAME boundary in Claude Code's hook pipeline — outside the model.  The
+# contract is the bridge between the in-engine gate (this module) and the
+# harness gate (the hook): the runner writes it on bind, clears on close.
+
+_CONTRACT_SCHEMA = "bugwolf-scope-contract/v1"
+
+
+def _contract_path(root=None):
+    # Same workspace resolution the hook shim uses (env var wins, cwd default)
+    # so writer and enforcer always agree on the contract's location.
+    base = Path(root) if root else Path(
+        os.environ.get("BUGWOLF_PROJECT_ROOT") or ".")
+    return base / "state" / "scope_contract.json"
+
+
+def write_scope_contract(mission_id: str, *, root=None) -> dict:
+    """Publish the CURRENT gate state as the harness contract.
+
+    Called by the mission runner right after ``bind_target``: from this
+    moment the PreToolUse hook denies out-of-scope/excluded hosts for
+    every Bash/WebFetch — even ones the model improvises outside BugWolf's
+    tools.  Returns the contract that was written (audit-friendly).
+    """
+    contract = {
+        "schema": _CONTRACT_SCHEMA,
+        "mission_id": mission_id,
+        "target": _GATE.target,
+        "extra_hosts": sorted(_GATE.extra_hosts),
+        "deny_entries": sorted(_GATE.deny_entries),
+        "mode": "deny-by-default",
+        "written_at": __import__("datetime").datetime.now(
+            __import__("datetime").timezone.utc).isoformat(),
+    }
+    path = _contract_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(contract, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return contract
+
+
+def clear_scope_contract(*, root=None) -> bool:
+    """Remove the harness contract (mission closed) — the hook goes inert."""
+    try:
+        _contract_path(root).unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------

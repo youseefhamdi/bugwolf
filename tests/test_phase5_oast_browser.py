@@ -319,7 +319,8 @@ class BrowserValidationTest(MissionEnvMixin, unittest.TestCase):
             mission_id="p5-browser", target=self.base,
             domains=["client_side"], budget={"max_agents": 8})
         runner = MissionRunner(mission, project_root=self._td.name,
-                               base_url=self.base, paths=["/api/notes"])
+                               base_url=self.base, paths=["/api/notes"],
+                               browser_driver=False)
         try:
             result = runner._run_client_side_lane()
         finally:
@@ -371,7 +372,8 @@ class BrowserValidationTest(MissionEnvMixin, unittest.TestCase):
             mission_id="p5-browser", target=self.base,
             domains=["verify"], budget={"max_agents": 8})
         runner = MissionRunner(mission, project_root=self._td.name,
-                               base_url=self.base, paths=["/api/notes"])
+                               base_url=self.base, paths=["/api/notes"],
+                               browser_driver=False)
         try:
             runner._run_verify_lane()
         finally:

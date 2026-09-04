@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools.benchmark import load_manifest, run_benchmark
 
@@ -112,6 +113,190 @@ class TestBenchmark(unittest.TestCase):
             self.assertFalse(report["passed"])
             self.assertEqual(report["false_negatives"], 8)
             self.assertEqual(report["recall"], 0.0)
+
+
+class TestH2CLCorpus(unittest.TestCase):
+    """The H2.CL corpus items (master plan Phase 7; lab-backed)."""
+
+    def test_corpus_declares_h2cl_cases(self):
+        manifest = load_manifest()
+        cases = {c["case_id"]: c for c in manifest["cases"]}
+        desync = cases.get("h2cl-victim-poisoned")
+        safe = cases.get("h2cl-safe-front-end")
+        self.assertIsNotNone(desync)
+        self.assertIsNotNone(safe)
+        self.assertEqual(desync["transport"], "h2cl")
+        self.assertEqual(desync["h2cl_mode"], "desync")
+        self.assertTrue(desync["expected_finding"])
+        self.assertFalse(safe["expected_finding"])
+        # Same smuggled payload, same marker, same victim — the ONLY
+        # difference between the pair is the front-end's desync switch.
+        self.assertEqual(desync["smuggled_marker"],
+                         safe["smuggled_marker"])
+        self.assertEqual(desync["victim_path"], safe["victim_path"])
+        self.assertEqual(desync["bug_class"], "request_smuggling")
+
+    def test_hermhetic_run_skips_lab_cases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = load_manifest()
+            report = run_benchmark(manifest, base_url="http://stub",
+                                   probe=_fake_probe(), project_root=tmp)
+            self.assertTrue(report["passed"])
+            self.assertEqual(report["cases_skipped"], 2)
+            self.assertEqual([s["case_id"] for s in report["skipped"]],
+                             ["h2cl-victim-poisoned",
+                              "h2cl-safe-front-end"])
+            self.assertEqual(report["true_positives"], 8)  # unchanged
+
+    def test_desync_case_scores_true_positive_live(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = load_manifest()
+            report = run_benchmark(manifest, base_url="http://stub",
+                                   probe=_fake_probe(), project_root=tmp,
+                                   enable_lab=True)
+            by_id = {r["case_id"]: r for r in report["results"]}
+            desync = by_id["h2cl-victim-poisoned"]
+            self.assertTrue(desync["signal"], desync["body"])
+            self.assertIn("gw-secret-token", desync["body"])
+            self.assertEqual(desync["status"], 200)
+
+    def test_safe_case_is_negative_control_live(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = load_manifest()
+            report = run_benchmark(manifest, base_url="http://stub",
+                                   probe=_fake_probe(), project_root=tmp,
+                                   enable_lab=True)
+            by_id = {r["case_id"]: r for r in report["results"]}
+            safe = by_id["h2cl-safe-front-end"]
+            self.assertFalse(safe["signal"], safe["body"])
+            self.assertNotIn("gw-secret-token", safe["body"])
+            self.assertIn("alice", safe["body"])  # the victim's own route
+
+    def test_lab_run_gate_passes_with_both_cases_live(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = load_manifest()
+            report = run_benchmark(manifest, base_url="http://stub",
+                                   probe=_fake_probe(), project_root=tmp,
+                                   enable_lab=True)
+            self.assertEqual(report["cases_skipped"], 0)
+            self.assertEqual(report["false_positives"], 0)
+            self.assertEqual(report["false_negatives"], 0)
+            self.assertEqual(report["true_positives"], 9)  # 8 + H2.CL desync
+            self.assertTrue(report["passed"], report)
+
+
+class TestURegressionBridge(unittest.TestCase):
+    """Corpus ⇄ Understanding-Layer regression (master plan Phase 7).
+
+    Each corpus case declares the U-stages that must FEED it; the
+    regression turns those declarations into executable checks over a
+    live mini-mission, and the benchmark gate treats a model regression
+    exactly like a missed expected finding.
+    """
+
+    def test_corpus_u_declarations_use_known_vocabulary(self):
+        from tools.u_regression import CLASS_TO_COVERAGE
+        manifest = load_manifest()
+        declared = 0
+        for case in manifest["cases"]:
+            stages = case.get("u_stages")
+            if not stages:
+                continue
+            declared += 1
+            self.assertIn(case["bug_class"], CLASS_TO_COVERAGE,
+                          f"{case['case_id']}: class not in U vocabulary")
+            for stage in stages:
+                self.assertRegex(stage, r"^U[1-9]$")
+        # The declarations exist (the bridge has an input) and the
+        # wire-level H2.CL pair honestly declares NONE (its facts are
+        # transport-level, not model-level).
+        self.assertGreaterEqual(declared, 7)
+        by_id = {c["case_id"]: c for c in manifest["cases"]}
+        self.assertNotIn("u_stages", by_id["h2cl-victim-poisoned"])
+        self.assertNotIn("u_stages", by_id["h2cl-safe-front-end"])
+
+    def test_hermetic_default_omits_u_regression(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_benchmark(load_manifest(), base_url="http://stub",
+                                   probe=_fake_probe(), project_root=tmp)
+            self.assertEqual(report["u_regression"], {"enabled": False})
+            self.assertNotIn("u_regression_ok", report["verdict"])
+
+    def test_u_regression_passes_live_over_stub(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_benchmark(load_manifest(), base_url="http://stub",
+                                   probe=_fake_probe(), project_root=tmp,
+                                   enable_u_regression=True)
+            u = report["u_regression"]
+            self.assertTrue(u["enabled"])
+            self.assertEqual(u["cases_failed"], 0)
+            self.assertTrue(u["passed"], u)
+            self.assertTrue(report["verdict"]["u_regression_ok"])
+            self.assertTrue(report["passed"], report)
+            # The model checks are real: idor hunts with a filled object
+            # inventory and the missing-999 absence fact holds.
+            hunts = u["coverage_hunts"]
+            for cls in ("idor", "authz-bypass", "mass-assignment",
+                        "business-logic"):
+                self.assertIn(cls, hunts)
+
+    def test_u_regression_failure_fails_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            failed = {"passed": False, "cases_checked": 9,
+                      "cases_failed": 1, "coverage_hunts": [],
+                      "coverage_parked": []}
+            with mock.patch("tools.u_regression.run_u_regression",
+                            return_value=failed):
+                report = run_benchmark(load_manifest(),
+                                       base_url="http://stub",
+                                       probe=_fake_probe(),
+                                       project_root=tmp,
+                                       enable_u_regression=True)
+            self.assertFalse(report["verdict"]["u_regression_ok"])
+            self.assertFalse(report["passed"])
+
+    def test_u_regression_error_is_recorded_not_raised(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("tools.u_regression.run_u_regression",
+                            side_effect=RuntimeError("model store boom")):
+                report = run_benchmark(load_manifest(),
+                                       base_url="http://stub",
+                                       probe=_fake_probe(),
+                                       project_root=tmp,
+                                       enable_u_regression=True)
+            self.assertIn("error", report["u_regression"])
+            self.assertIn("model store boom", report["u_regression"]["error"])
+            self.assertFalse(report["verdict"]["u_regression_ok"])
+            self.assertFalse(report["passed"])
+
+    def test_bogus_stage_declaration_fails_per_case(self):
+        """A declared stage that produced no artifact is a FAILURE —
+        the mismatch-fails semantics, directly."""
+        from tools.u_regression import run_u_regression
+        manifest = load_manifest()
+        case = next(c for c in manifest["cases"]
+                    if c["case_id"] == "bola-user-1")
+        doctored = {"cases": [dict(case, u_stages=["U7"])]}
+        import threading
+        import importlib.util
+        stub_path = Path(__file__).resolve().parent / "_stub_target.py"
+        spec = importlib.util.spec_from_file_location("stub_target_uregtest",
+                                                      stub_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        server = module.ThreadingHTTPServer(("127.0.0.1", 0), module.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            report = run_u_regression(doctored, target=base)
+            self.assertFalse(report["passed"])
+            check = report["checks"][0]
+            self.assertFalse(check["ok"])
+            self.assertTrue(any("U7" in f for f in check["failures"]),
+                            check["failures"])
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":

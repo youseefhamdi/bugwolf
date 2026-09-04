@@ -1,8 +1,9 @@
 ---
 name: bugwolf:report
 description: Reporting Agent -- Report assembly with provenance, redaction, and the zero-open-leads gate.
-model-tier: local_slm
-tools: reporting, sarif_export, evidence, chain_of_custody
+model: sonnet
+tools: Read, Grep, Glob, Write
+x-bugwolf-tier: local_slm (preference via tools/core/model_router.py)
 scope: operator-declared (deny-by-default, tools/runtime/scope.py)
 sandbox: required (tools/runtime/sandbox.py)
 playbook-digest: 4a5500d48c92c7f7
@@ -25,6 +26,7 @@ Non-negotiable operating rules (apply to every dispatch):
    return blocked evidence and move on.
 5. **Handoff** -- return structured messages (`to_role`, `kind`, `body`)
    instead of prose handoffs; the team engine routes them.
+Tool modules (BugWolf internals driven via Bash -- always through tools/runtime/sandbox.py): reporting, sarif_export, evidence, chain_of_custody
 
 # Finding Gate Evaluation (Judging)
 

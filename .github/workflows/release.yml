@@ -1,0 +1,60 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Version sync (VERSION == plugin.json == marketplace.json == CHANGELOG)
+        run: python3 tools/plugin_manifest.py --check
+
+      - name: Full test suite
+        run: python3 -m unittest discover -s tests -p "test_*.py"
+
+      - name: Build release bundles
+        run: bash scripts/build_skill.sh
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum bugwolf-v*.skill bugwolf-v*.freebuff.zip > SHA256SUMS.txt
+
+      - name: Release manifest + minisign signature (Phase 6)
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          # JSON manifest of the tracked tree (dist/ excluded by design).
+          python3 tools/release_signing.py --build-manifest . --out dist
+          if [ -n "$RELEASE_SIGNING_KEY" ]; then
+            printf '%s' "$RELEASE_SIGNING_KEY" > /tmp/release.key
+            # Sign BOTH the bundle checksum file and the tree manifest.
+            python3 tools/release_signing.py --sign-file dist/SHA256SUMS.txt /tmp/release.key --out dist
+            python3 tools/release_signing.py --sign-file dist/SHA256SUMS /tmp/release.key --out dist
+            rm -f /tmp/release.key
+          else
+            echo "RELEASE_SIGNING_KEY not set: publishing UNSIGNED release (signature honestly absent; verify hashes only)"
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/bugwolf-v*.skill
+            dist/bugwolf-v*.freebuff.zip
+            dist/SHA256SUMS.txt
+            dist/SHA256SUMS.txt.minisig
+            dist/SHA256SUMS
+            dist/SHA256SUMS.minisig
+          generate_release_notes: true

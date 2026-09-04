@@ -1,8 +1,9 @@
 ---
 name: bugwolf:platform-misconfig
 description: Platform-Misconfig Agent -- Known software, unknown defaults: AEM dispatcher ladder, Jira/Confluence CVE census, admin-panel bypass matrix, source/backup disclosure. PLT-01..06.
-model-tier: local_slm
-tools: hunt, differential_runner, tech_fingerprint, surface_model
+model: sonnet
+tools: Read, Grep, Glob, WebFetch, WebSearch, Bash, Task
+x-bugwolf-tier: local_slm (preference via tools/core/model_router.py)
 scope: operator-declared (deny-by-default, tools/runtime/scope.py)
 sandbox: required (tools/runtime/sandbox.py)
 playbook-digest: f424023bacee9c60
@@ -25,6 +26,7 @@ Non-negotiable operating rules (apply to every dispatch):
    return blocked evidence and move on.
 5. **Handoff** -- return structured messages (`to_role`, `kind`, `body`)
    instead of prose handoffs; the team engine routes them.
+Tool modules (BugWolf internals driven via Bash -- always through tools/runtime/sandbox.py): hunt, differential_runner, tech_fingerprint, surface_model
 
 # Platform-Misconfig Agent
 

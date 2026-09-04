@@ -2217,6 +2217,36 @@ DOMAIN_LANES = {
 AUTH_FAMILY = ("auth_bypass", "direct-access")
 
 
+def normalize_family_class(bug_class: str) -> str:
+    """Family bug class -> dispatch vocabulary (instinct weighting keys use
+    the normalized form so aliases match).  Loss returns the input."""
+    try:
+        from tools.runtime.understanding.dispatch import normalize_class
+        return normalize_class(bug_class)
+    except Exception:  # noqa: BLE001 - vocabulary loss never reorders
+        return str(bug_class)
+
+
+def _order_families_by_predictions(families, predictions):
+    """Predicted-chain-first ordering (§8.3, v1.19).
+
+    Families whose bug class owns a U7×U8 predicted chain sort ahead of the
+    rest (stable: unmapped families keep their declared relative order).
+    Gate loss or an empty prediction list is an exact no-op.
+    """
+    if not predictions:
+        return list(families)
+    try:
+        from tools.runtime.understanding.dispatch import normalize_class
+        priority = {normalize_class(getattr(p, "bug_class", ""))
+                    for p in predictions}
+    except Exception:  # noqa: BLE001 - vocabulary loss never reorders
+        return list(families)
+    return sorted(families,
+                  key=lambda fam: 0 if normalize_class(fam[1]) in priority
+                  else 1)
+
+
 # ---------------------------------------------------------------------------
 # Mission runner
 # ---------------------------------------------------------------------------
@@ -2266,10 +2296,21 @@ class MissionRunner:
         self.matrix = AccountMatrix.from_specs(self.base_url,
                                                getattr(mission, "accounts",
                                                        None))
-        # Browser validation driver (plan S2): injected (playwright/CDP or
-        # the operator's browserMCP session).  None => client-side leads
-        # move to blocked-browser semantics (open + re-dispatch later).
-        self.browser_driver = browser_driver
+        # Browser validation driver (plan S2, Phase 2.1):
+        #   * an explicitly INJECTED driver object wins;
+        #   * False is the sentinel for "force no driver" (deterministic
+        #     CI/test runs — client-side leads take blocked-browser);
+        #   * None (default) auto-loads the best REAL binding (Playwright) —
+        #     browser-confirmed verdicts out of the box.  When nothing usable
+        #     exists the driver stays None => blocked-browser semantics
+        #     (open + re-dispatch later) — never fabricated verdicts.
+        if browser_driver is False:
+            self.browser_driver = None
+        else:
+            self.browser_driver = browser_driver
+            if self.browser_driver is None:
+                from tools.runtime.browser_driver import load_default_driver
+                self.browser_driver = load_default_driver()
         # OAST service (plan S1): opt-in self-hosted canary listener with
         # per-lead tokens and restart-safe callback attribution.  With
         # BUGWOLF_OAST_TUNNEL=1 (and no explicit BUGWOLF_OAST_PUBLIC_URL),
@@ -2305,6 +2346,13 @@ class MissionRunner:
 
     def close(self) -> None:
         """Release the OAST listener + tunnel (tests / CLI shutdown)."""
+        # Mission over: withdraw the harness contract so the PreToolUse
+        # hook returns to inert (the operator's session is theirs again).
+        try:
+            from tools.runtime.scope import clear_scope_contract
+            clear_scope_contract(root=self.project_root)
+        except Exception:  # noqa: BLE001 - shutdown is best effort
+            pass
         if self.oast_tunnel is not None:
             try:
                 self.oast_tunnel.stop()
@@ -2333,6 +2381,18 @@ class MissionRunner:
         bind_target(self.base_url, self.scope_hosts,
                     deny_entries=self.deny_entries)
         self._log("scope_bound", {"gate": _gate_state_safe()})
+        # 0.5 Harness-level enforcement (Phase 3.1): publish the scope
+        # contract so the PreToolUse hook denies out-of-scope Bash/WebFetch
+        # OUTSIDE the model — the boundary survives model drift.
+        try:
+            from tools.runtime.scope import write_scope_contract
+            write_scope_contract(self.mission.mission_id,
+                                 root=self.project_root)
+            self._log("scope_contract_published", {
+                "hook": "PreToolUse", "target": self.base_url})
+        except Exception as exc:  # noqa: BLE001 - contract loss degrades to
+            # engine-only enforcement; the mission still runs safely.
+            self._log("scope_contract_failed", {"error": str(exc)[:200]})
         # 1. Plan (creates the preflight gate + lane roots).
         self.scheduler.plan_mission()
         self._log("planned", {"nodes": len(self.scheduler._nodes)})
@@ -2352,6 +2412,33 @@ class MissionRunner:
             bind_notes = self.matrix.bind()
             self._log("accounts_bound", {"notes": bind_notes,
                                          "bound": self.matrix.bound_labels})
+
+        # 2.7 Session context + authenticated crawl (Phase 2.2/2.3): when
+        # identities are bound, a bounded per-credential crawl builds the
+        # session model AS A SIDE EFFECT — roles/object IDs/endpoint
+        # reachability accumulate, and differential access becomes recorded
+        # data (access_matrix artifact) for the authz lanes and U4.
+        self.session_store = None
+        if self.matrix.bound:
+            from tools.runtime.session_context import SessionContextStore
+            from tools.runtime.authed_crawl import AuthedCrawler
+            self.session_store = SessionContextStore.from_matrix(
+                self.matrix, self.mission.mission_id,
+                project_root=self.project_root)
+            crawler = AuthedCrawler(
+                self.base_url, self.mission.mission_id, matrix=self.matrix,
+                session_store=self.session_store,
+                max_pages=max(12, len(self.paths) * 2),
+                project_root=self.project_root)
+            crawl_report = crawler.crawl(list(self.paths) or ["/"])
+            artifacts = crawler.persist(crawl_report)
+            self.session_store.save()
+            self._log("authed_crawl", {
+                "pages": len(crawl_report.pages),
+                "requests": crawl_report.requests,
+                "differential_paths": crawl_report.differential_paths(),
+                "roles": self.session_store.roles(),
+                "artifacts": artifacts})
 
         # 2.6 Web lane pre-step (plan S1): pre-register OAST canaries for
         # every operator-declared surface so 100% of callbacks attribute.
@@ -2414,6 +2501,64 @@ class MissionRunner:
             matrix = self.matrix
             families.append((lambda b, p: _probe_auth_matrix(b, p, matrix),
                              AUTH_FAMILY[0], AUTH_FAMILY[1]))
+        # Coverage gate at dispatch (master plan §8.3): when a Target Model
+        # exists and PARKS a family's class, the family is skipped and the
+        # skip is recorded — payloads never fire where the model has no
+        # support.  No model ⇒ every family dispatches unchanged.
+        try:
+            from tools.runtime.understanding.dispatch import coverage_gate
+            from tools.runtime.understanding.base import ModelStore
+            model_store = ModelStore(self.mission.target,
+                                     project_root=self.project_root)
+            gated: List[tuple] = []
+            u9 = model_store.load("U9")
+            model_data = u9.data if u9 else None
+            for probe_fn, bug_class, technique in families:
+                verdict = coverage_gate(bug_class, model_data)
+                if verdict["status"] == "parked":
+                    self._log("family_parked", {
+                        "bug_class": bug_class,
+                        "reason": verdict["reason"][:200]})
+                    continue
+                gated.append((probe_fn, bug_class, technique))
+            families = gated
+        except Exception:  # noqa: BLE001 - gate loss never blocks a hunt
+            pass
+        # §8.3 completion (v1.19): U7×U8 predicted chains reorder the swarm —
+        # families owning a predicted class fire FIRST (they are the Hunting
+        # Brief's first probes).  Unmapped families keep their declared
+        # order; no predictions ⇒ this block is a no-op.
+        try:
+            from tools.runtime.understanding.base import ModelStore \
+                as _MS
+            from tools.runtime.understanding.chain_predict import \
+                ChainPredictor as _CP
+            predicted = _CP(_MS(self.mission.target,
+                                project_root=self.project_root)).load()
+            if predicted:
+                families = _order_families_by_predictions(families, predicted)
+                self._log("predicted_chain_priority", {
+                    "predicted_classes": sorted({p.bug_class
+                                                 for p in predicted}),
+                    "family_order": [fam[1] for fam in families]})
+        except Exception:  # noqa: BLE001 - ordering loss never blocks a hunt
+            pass
+        # v1.24 Phase A: learned instincts reorder the swarm.  Families
+        # whose class carries an active signal instinct (proven detector
+        # pattern) float up; noise-pattern classes sink.  Weighting only:
+        # no family is ever added or removed, and loss is a no-op.
+        try:
+            from tools.instincts import dispatch_modifier as _dm
+            by_modifier = sorted(
+                range(len(families)),
+                key=lambda i: -_dm(normalize_family_class(families[i][1]),
+                                   project_root=self.project_root))
+            if by_modifier != list(range(len(families))):
+                families = [families[i] for i in by_modifier]
+                self._log("instinct_priority", {
+                    "family_order": [fam[1] for fam in families]})
+        except Exception:  # noqa: BLE001 - instinct loss never blocks a hunt
+            pass
         for probe_fn, bug_class, technique in families:
             signals = probe_fn(self.base_url, self.paths)
             for sig in signals:
@@ -2788,8 +2933,17 @@ class MissionRunner:
         # -- T4: swarm pass@k over remaining techniques --
         fresh = self.leads.get(lead.lead_id)
         if fresh.tier < TIER_T4:
-            for i, technique in enumerate(
-                    self.leads.untried_techniques(fresh)[:4]):
+            # v1.24 Phase A: active failure-pattern techniques for this
+            # class order LAST (reorder-only; nothing added or removed).
+            try:
+                from tools.instincts import load_instincts as _li, \
+                    order_techniques as _ot
+                _untried = _ot(self.leads.untried_techniques(fresh),
+                               _li(project_root=self.project_root),
+                               normalize_family_class(fresh.bug_class))
+            except Exception:  # noqa: BLE001 - instinct loss never reorders
+                _untried = self.leads.untried_techniques(fresh)
+            for i, technique in enumerate(_untried[:4]):
                 self.leads.record_technique(
                     lead.lead_id, technique, "tried",
                     detail=f"T4 swarm slot {i} (divergent)")

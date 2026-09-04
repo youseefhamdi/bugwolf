@@ -40,6 +40,9 @@ SCHEMA = "bugwolf-browser-driver/v1"
 # the raw payload in the response body is not execution.
 _SIGNATURE_RE = re.compile(r"bwexec-[0-9a-f]{8}")
 
+# Operator/integration-pinned default binding (see set_default_driver).
+_DEFAULT_DRIVER = None
+
 
 @dataclass
 class ClientSideEvidence:
@@ -160,3 +163,42 @@ def blocked_browser_evidence(url: str, blocker: str) -> ClientSideEvidence:
     when the pre-flight connection state machine reports the driver back.
     """
     return ClientSideEvidence(url=url, blocker=blocker)
+
+
+def load_default_driver():
+    """Bind the best available real driver, or return None (honestly).
+
+    Order: Playwright binding first (Phase 2.1), then any driver already
+    set on ``set_default_driver`` by an operator/MCP integration.  Returns
+    None when nothing usable exists — the caller's lead goes to honest
+    ``blocked-browser`` semantics, never a fabricated validation.
+    """
+    global _DEFAULT_DRIVER
+    if _DEFAULT_DRIVER is not None:
+        return _DEFAULT_DRIVER
+    from tools.runtime.browser_driver_playwright import PlaywrightBrowserDriver
+    if PlaywrightBrowserDriver.available():
+        driver = PlaywrightBrowserDriver()
+        _DEFAULT_DRIVER = driver
+        return driver
+    return None
+
+
+def set_default_driver(driver) -> None:
+    """Operator/integration hook: pin a driver as the default binding."""
+    global _DEFAULT_DRIVER
+    _DEFAULT_DRIVER = driver
+
+
+def driver_status() -> dict:
+    """Audit fact: which binding would be used right now (without starting
+    any browser process)."""
+    global _DEFAULT_DRIVER
+    if _DEFAULT_DRIVER is not None:
+        return {"bound": True, "driver": type(_DEFAULT_DRIVER).__name__}
+    from tools.runtime.browser_driver_playwright import PlaywrightBrowserDriver
+    availability = PlaywrightBrowserDriver.availability()
+    return {"bound": False, "driver": "playwright",
+            "available": bool(availability["available"]),
+            "detail": availability["detail"],
+            "hint": availability.get("hint", "")}

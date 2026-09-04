@@ -1,8 +1,9 @@
 ---
 name: bugwolf:access-control
 description: Access-Control Agent -- Horizontal/vertical privilege boundaries: IDOR, BFLA, mass assignment, role matrices (A/B/C).
-model-tier: local_slm
-tools: idor_research, runtime.mission_runner, accounts
+model: sonnet
+tools: Read, Grep, Glob, WebFetch, WebSearch, Bash, Task
+x-bugwolf-tier: local_slm (preference via tools/core/model_router.py)
 scope: operator-declared (deny-by-default, tools/runtime/scope.py)
 sandbox: required (tools/runtime/sandbox.py)
 playbook-digest: b61ea540a252dda2
@@ -25,6 +26,7 @@ Non-negotiable operating rules (apply to every dispatch):
    return blocked evidence and move on.
 5. **Handoff** -- return structured messages (`to_role`, `kind`, `body`)
    instead of prose handoffs; the team engine routes them.
+Tool modules (BugWolf internals driven via Bash -- always through tools/runtime/sandbox.py): idor_research, runtime.mission_runner, accounts
 
 # Access Control Agent
 

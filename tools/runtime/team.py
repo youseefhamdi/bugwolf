@@ -195,6 +195,7 @@ class TeamEngine:
         # recomposition ledger idempotent across re-entry rounds and resume.
         self._recomposed_seen: set = set()
         self._research_pack: Any = None   # built once per run, shared
+        self._predicted_chains: Any = None  # U7×U8 predictions, built once
         self.state: Dict[str, Any] = {
             "schema": SCHEMA,
             "mission_id": mission.mission_id,
@@ -351,6 +352,40 @@ class TeamEngine:
             )
             lane_buckets[home].append(member)
             self.members[member.member_id] = member
+        # §8.3 completion (v1.19): U7×U8 predicted chains are HIGH-PRIORITY
+        # dispatches — their owning specialists are staffed pre-hunt, ahead
+        # of any finding-driven recomposition.  Budget-capped and deduped by
+        # _add_specialist; the coverage gate still wins (a predicted class
+        # the model PARKS is refused, never overridden by prediction).  No
+        # predictions ⇒ this block is a no-op.
+        predicted_classes = self._predicted_high_priority_classes()
+        if predicted_classes:
+            try:
+                from tools.runtime.understanding.dispatch import (
+                    coverage_gate, load_model)
+                model_data = load_model(self.mission.target,
+                                        project_root=self.project_root)
+            except Exception:  # noqa: BLE001 - gate loss never blocks staffing
+                model_data = None
+            staffed, refused = [], []
+            for bug_class in predicted_classes:
+                verdict = coverage_gate(bug_class, model_data)
+                if verdict.get("status") == "parked":
+                    refused.append({"bug_class": bug_class,
+                                    "reason": verdict.get("reason", "")[:200]})
+                    continue
+                from tools.runtime.understanding.chain_predict import \
+                    registry_bug_class
+                member = self._add_specialist(
+                    registry_bug_class(bug_class),
+                    reason=(f"model-predicted chain (U7×U8) — priority "
+                            f"dispatch for predicted '{bug_class}'"),
+                    first_seen=False)
+                if member:
+                    staffed.append(bug_class)
+            self.state["predicted_dispatches"] = {
+                "classes": predicted_classes, "staffed": staffed,
+                "gate_refusals": refused}
         if not self.state.get("team_id"):
             digest = hashlib.sha256(json.dumps(
                 sorted(m.role for m in self.members.values()),
@@ -375,6 +410,47 @@ class TeamEngine:
             return {"tier": spec.tier_affinity,
                     "model_preference": "",
                     "fallback_preference": ""}
+
+    # -- model-predicted chains (§8.3 completion, v1.19) -----------------------
+
+    def _load_predictions(self) -> list:
+        """The target's U7×U8 predicted chains (built once, never raises)."""
+        if self._predicted_chains is not None:
+            return self._predicted_chains
+        self._predicted_chains: list = []
+        try:
+            from tools.runtime.understanding.base import ModelStore
+            from tools.runtime.understanding.chain_predict import ChainPredictor
+            self._predicted_chains = ChainPredictor(
+                ModelStore(self.mission.target,
+                           project_root=self.project_root)).load() or []
+        except Exception:  # noqa: BLE001 - prediction loss never blocks a team
+            self._predicted_chains = []
+        return self._predicted_chains
+
+    def _predicted_high_priority_classes(self) -> List[str]:
+        """Bug classes owning a predicted chain — the pre-hunt priority set."""
+        classes: List[str] = []
+        for prediction in self._load_predictions():
+            bug = str(getattr(prediction, "bug_class", "") or "").strip()
+            if bug and bug not in classes:
+                classes.append(bug)
+        return classes
+
+    def _predictive_intel(self, member_bug_classes: tuple) -> List[Dict[str, Any]]:
+        """The member's slice of the predicted chains (priority-ordered)."""
+        mine: List[Dict[str, Any]] = []
+        try:
+            from tools.runtime.understanding.dispatch import normalize_class
+            mine_classes = {normalize_class(c) for c in member_bug_classes if c}
+        except Exception:  # noqa: BLE001 - vocabulary loss degrades to exact
+            mine_classes = {c.strip().lower() for c in member_bug_classes if c}
+        for prediction in self._load_predictions():
+            if str(getattr(prediction, "bug_class", "")).lower() in mine_classes:
+                entry = prediction.to_dict()
+                entry["priority_dispatch"] = True
+                mine.append(entry)
+        return mine
 
     # -- finding-driven recomposition -----------------------------------------
 
@@ -790,6 +866,36 @@ class TeamEngine:
         except Exception:  # noqa: BLE001
             pass
         intel["member_role"] = member_role
+        # Target-Model slice (master plan §8.3): the agent's dispatch
+        # carries the U-layer slice for its bug classes — workflows/money
+        # paths for business-logic, object IDs/roles for IDOR, boundaries
+        # for authz — plus the coverage gate (a PARKED class is skipped at
+        # dispatch with a recorded fact, not sprayed).  No model ⇒ no-op:
+        # the payload stays byte-identical to the pre-U-layer form.
+        try:
+            from tools.runtime.understanding.dispatch import dispatch_context
+            primary = (member_bug_classes[0] if member_bug_classes else "")
+            ctx = dispatch_context(primary, self.mission.target,
+                                   project_root=self.project_root)
+            intel["target_model"] = ctx["target_model"]
+            intel["model_prompt_block"] = ctx["model_prompt_block"]
+            intel["coverage_gate"] = ctx["gate"]
+            if ctx["gate"]["status"] == "parked":
+                # The skip is a recorded fact (audit + F0.5), never silent.
+                self.state.setdefault("coverage_parks", []).append({
+                    "member": member_role, "bug_class": primary,
+                    "reason": ctx["gate"]["reason"][:200]})
+        except Exception:  # noqa: BLE001 - the model never gates dispatch
+            pass
+        # §8.3 completion (v1.19): predicted chains (U7×U8) owned by this
+        # member's classes ride as PRIORITY dispatches — ranked hypotheses
+        # with a first-probe plan, ahead of generic hunting.
+        try:
+            predicted = self._predictive_intel(tuple(member_bug_classes))
+            if predicted:
+                intel["predicted_chains"] = predicted
+        except Exception:  # noqa: BLE001 - prediction never gates dispatch
+            pass
         # Checklist slice: canonical IDs this member owns (from its bug
         # classes) plus the mission-level slice and attest-gated pending
         # set. Coverage ledger lives at the mission dir; agents write

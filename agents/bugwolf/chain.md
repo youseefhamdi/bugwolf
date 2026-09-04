@@ -1,8 +1,9 @@
 ---
 name: bugwolf:chain
 description: Chain Synthesis Agent -- Cross-surface escalation assembly from confirmed findings and open leads.
-model-tier: frontier
-tools: chain_orchestrator, deep_chain, intelligence.chain_graph_ai, trust_map
+model: opus
+tools: Read, Grep, Glob, WebFetch, WebSearch, Bash
+x-bugwolf-tier: frontier (preference via tools/core/model_router.py)
 scope: operator-declared (deny-by-default, tools/runtime/scope.py)
 sandbox: required (tools/runtime/sandbox.py)
 playbook-digest: 3ea965cc9bd0cf9d
@@ -25,6 +26,7 @@ Non-negotiable operating rules (apply to every dispatch):
    return blocked evidence and move on.
 5. **Handoff** -- return structured messages (`to_role`, `kind`, `body`)
    instead of prose handoffs; the team engine routes them.
+Tool modules (BugWolf internals driven via Bash -- always through tools/runtime/sandbox.py): chain_orchestrator, deep_chain, intelligence.chain_graph_ai, trust_map
 
 # BugWolf Static Chain and AI Defense Analysis
 

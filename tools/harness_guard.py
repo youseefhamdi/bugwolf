@@ -234,6 +234,27 @@ def verify(project_root: Optional[str] = None,
     }
 
 
+def verify_install(skill_root: Optional[str] = None) -> Dict[str, Any]:
+    """Verify the installed tree against its shipped release manifest.
+
+    Phase 6 opsec: an install is only as trustworthy as its hashes.  This
+    re-hashes every file in the skill tree against the SHA256SUMS manifest
+    that shipped with the release (offline, local, fail-closed) and, when
+    the release was signed, verifies the minisign signature too.  No
+    manifest => NOT verified, with the honest reason.
+    """
+    # Executed from installed trees; never write bytecode into a bundle.
+    sys.dont_write_bytecode = True
+    try:
+        from tools.release_signing import verify_tree
+    except ImportError:  # direct script execution: put the code root on path
+        sys.path.insert(0, str(CODE_ROOT))
+        from tools.release_signing import verify_tree
+    result = verify_tree(_skill_root(str(skill_root) if skill_root else None))
+    result["marker"] = CONTRACT_MARKER
+    return result
+
+
 def record_checkpoint(checkpoint: str, project_root: Optional[str] = None,
                       skill_root: Optional[str] = None) -> Dict[str, Any]:
     """Record an orchestrator checkpoint after verifying the contract."""
@@ -263,6 +284,9 @@ def main() -> int:
     action.add_argument("--verify", action="store_true", help="verify contract and skill drift")
     action.add_argument("--record-checkpoint", choices=REQUIRED_SEQUENCE,
                         help="verify and record one research checkpoint")
+    action.add_argument("--verify-install", action="store_true",
+                        help="Phase 6: verify the installed tree against its "
+                             "shipped release manifest (offline, fail-closed)")
     parser.add_argument("--project-root", help="project workspace (default: cwd)")
     parser.add_argument("--skill-root", help="installed skill root (default: bundled code root)")
     parser.add_argument("--json", action="store_true", help="emit JSON")
@@ -275,6 +299,9 @@ def main() -> int:
         elif args.verify:
             result = verify(args.project_root, args.skill_root)
             status = 0 if result["ready"] else 2
+        elif args.verify_install:
+            result = verify_install(args.skill_root)
+            status = 0 if result.get("verified") else 2
         else:
             result = record_checkpoint(args.record_checkpoint,
                                        args.project_root, args.skill_root)
@@ -290,6 +317,15 @@ def main() -> int:
 
     if args.json:
         print(json.dumps(result, indent=2))
+    elif "verified" in result and "ready" not in result:
+        # --verify-install output shape (release integrity, not contract)
+        state = "VERIFIED" if result.get("verified") else "FAILED"
+        print(f"BugWolf install integrity: {state}")
+        for error in result.get("errors", []):
+            print(f"  ERROR: {error}")
+        signature = result.get("signature") or {}
+        if signature:
+            print(f"  signature: {'verified' if signature.get('verified') else signature.get('reason', 'not verified')}")
     else:
         state = "READY" if result.get("ready") else "NOT READY"
         print(f"BugWolf harness contract: {state}")

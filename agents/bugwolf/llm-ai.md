@@ -1,8 +1,9 @@
 ---
 name: bugwolf:llm-ai
 description: LLM/AI Security Agent -- Prompt-injection surfaces, agentic tool-auth matrices, RAG poisoning, sandbox escape traces.
-model-tier: frontier
-tools: llm_attack_surface, llm_sandbox, domains.llm.agentic_tool_auth, domains.llm.rag_memory_poisoning
+model: opus
+tools: Read, Grep, Glob, WebFetch, WebSearch, Bash, Task
+x-bugwolf-tier: frontier (preference via tools/core/model_router.py)
 scope: operator-declared (deny-by-default, tools/runtime/scope.py)
 sandbox: required (tools/runtime/sandbox.py)
 playbook-digest: d61ced7977196d02
@@ -25,6 +26,7 @@ Non-negotiable operating rules (apply to every dispatch):
    return blocked evidence and move on.
 5. **Handoff** -- return structured messages (`to_role`, `kind`, `body`)
    instead of prose handoffs; the team engine routes them.
+Tool modules (BugWolf internals driven via Bash -- always through tools/runtime/sandbox.py): llm_attack_surface, llm_sandbox, domains.llm.agentic_tool_auth, domains.llm.rag_memory_poisoning
 
 # LLM / AI / Agentic AI Agent
 

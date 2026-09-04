@@ -1,8 +1,9 @@
 ---
 name: bugwolf:shadow-surface
 description: Shadow-Surface Agent -- The surfaces nobody tests: non-standard ports, staging mirrors, unclaimed CDN CNAMEs, acquisitions, historical endpoints. Enumerates with provenance; never attacks. RCN-01..10.
-model-tier: local_slm
-tools: asset_discovery, js_ct_intel, asset_intel, intel.research_engine
+model: sonnet
+tools: Read, Grep, Glob, WebFetch, WebSearch, Task, Bash
+x-bugwolf-tier: local_slm (preference via tools/core/model_router.py)
 scope: operator-declared (deny-by-default, tools/runtime/scope.py)
 sandbox: required (tools/runtime/sandbox.py)
 playbook-digest: 5672fbbfb138e7db
@@ -25,6 +26,7 @@ Non-negotiable operating rules (apply to every dispatch):
    return blocked evidence and move on.
 5. **Handoff** -- return structured messages (`to_role`, `kind`, `body`)
    instead of prose handoffs; the team engine routes them.
+Tool modules (BugWolf internals driven via Bash -- always through tools/runtime/sandbox.py): asset_discovery, js_ct_intel, asset_intel, intel.research_engine
 
 # Shadow-Surface Agent
 

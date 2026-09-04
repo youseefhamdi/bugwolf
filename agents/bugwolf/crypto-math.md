@@ -1,8 +1,9 @@
 ---
 name: bugwolf:crypto-math
 description: Crypto/Math Agent -- JWT forgery families, hash length-extension, oracle padding, signature boundary math.
-model-tier: frontier
-tools: domains.auth.jwt_forgery, runtime.mission_runner, refutation
+model: opus
+tools: Read, Grep, Glob, WebFetch, WebSearch, Bash, Task
+x-bugwolf-tier: frontier (preference via tools/core/model_router.py)
 scope: operator-declared (deny-by-default, tools/runtime/scope.py)
 sandbox: required (tools/runtime/sandbox.py)
 playbook-digest: 0f69202b0adb36b5
@@ -25,6 +26,7 @@ Non-negotiable operating rules (apply to every dispatch):
    return blocked evidence and move on.
 5. **Handoff** -- return structured messages (`to_role`, `kind`, `body`)
    instead of prose handoffs; the team engine routes them.
+Tool modules (BugWolf internals driven via Bash -- always through tools/runtime/sandbox.py): domains.auth.jwt_forgery, runtime.mission_runner, refutation
 
 # Crypto / Math & Precision Agent
 

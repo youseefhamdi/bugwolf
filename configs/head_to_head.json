@@ -1,0 +1,29 @@
+{
+  "schema": "bugwolf/head-to-head/v1",
+  "_comment": "Phase 7 head-to-head harness (INTEGRATION_PLAN Phase C, v1.26; methodology from ECC agent-eval, MIT, attributed). Deterministic judges preferred over LLM judges. Every contender runs the SAME tasks against the SAME booted stub under the SAME governor caps. The default contender pair (bugwolf deterministic prober vs ungoverned baseline) is hermetic and CI-runnable; external contender adapters (raw Claude Code, Claude-BugHunter, offensive-claude) are thin subprocess runners configured by the operator at publish time. Cost is recorded per contender and published BESIDE pass rate (a 95% finder at 10x the sends is not the right tool).",
+  "metrics": ["pass_rate", "time_s", "sends", "cost_usd_est", "false_positive_rate", "dup_rate"],
+  "tasks": [
+    {"task_id": "bola-user-1", "from_corpus": "bola-user-1", "budget_caps": {"max_sends": 50, "max_minutes": 20}},
+    {"task_id": "bola-missing-999", "from_corpus": "bola-missing-999", "budget_caps": {"max_sends": 50, "max_minutes": 20}},
+    {"task_id": "mass-assignment-role", "from_corpus": "mass-assignment-role", "budget_caps": {"max_sends": 50, "max_minutes": 20}},
+    {"task_id": "fuzz-crash-ingest", "from_corpus": "fuzz-crash-ingest", "budget_caps": {"max_sends": 50, "max_minutes": 20}},
+    {"task_id": "fin-param-price-trust", "from_corpus": "fin-param-price-trust", "budget_caps": {"max_sends": 50, "max_minutes": 20}},
+    {"task_id": "fin-replay-callback", "from_corpus": "fin-replay-callback", "budget_caps": {"max_sends": 50, "max_minutes": 20}},
+    {"task_id": "fin-voucher-reuse", "from_corpus": "fin-voucher-reuse", "budget_caps": {"max_sends": 50, "max_minutes": 20}},
+    {"task_id": "fin-toctou-price-shift", "from_corpus": "fin-toctou-price-shift", "budget_caps": {"max_sends": 50, "max_minutes": 20}}
+  ],
+  "contenders": [
+    {
+      "name": "bugwolf",
+      "runner": "deterministic",
+      "config": {"probe": "bugwolf_deterministic_prober"},
+      "_note": "the v1.22 benchmark prober + signal functions, governed by the standard caps"
+    },
+    {
+      "name": "ungoverned-baseline",
+      "runner": "deterministic",
+      "config": {"probe": "spray_baseline", "spray_multiplier": 8},
+      "_note": "same probe with 8x the send budget and no signal gating: finds more only by spraying — the cost column exists to expose exactly this"
+    }
+  ]
+}

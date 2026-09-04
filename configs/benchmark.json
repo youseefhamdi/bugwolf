@@ -7,13 +7,46 @@
   "regression_stub": "tests/_stub_target.py",
   "cases": [
     {
+      "case_id": "h2cl-victim-poisoned",
+      "bug_class": "request_smuggling",
+      "transport": "h2cl",
+      "h2cl_mode": "desync",
+      "method": "POST",
+      "path": "/api/checkout",
+      "smuggled_path": "/api/gateway",
+      "victim_path": "/api/users/1",
+      "smuggled_marker": "gw-secret-token",
+      "expected_finding": true,
+      "expected_severity": "critical",
+      "notes": "H2.CL (master plan corpus item): an H2 POST whose headers carry content-length: 0 + transfer-encoding: chunked poisons the desync-switch front-end's pooled backend connection; the next victim's stream returns the smuggled internal-gateway response — a body their route can never produce. Ground truth: the victim-observed anomaly. (v1.22: lab-backed.)"
+    },
+    {
+      "case_id": "h2cl-safe-front-end",
+      "bug_class": "request_smuggling",
+      "transport": "h2cl",
+      "h2cl_mode": "safe",
+      "method": "POST",
+      "path": "/api/checkout",
+      "smuggled_path": "/api/gateway",
+      "victim_path": "/api/users/1",
+      "smuggled_marker": "gw-secret-token",
+      "expected_finding": false,
+      "expected_severity": "none",
+      "notes": "Negative control: the SAME smuggled payload against a conformant front-end (TE stripped, C-L synthesized) must NOT poison — the victim gets exactly what they asked for. A signal here is a false positive and fails the gate. (v1.22: lab-backed.)"
+    },
+    {
       "case_id": "bola-user-1",
       "bug_class": "bola",
       "method": "GET",
       "path": "/api/users/1",
       "expected_finding": true,
       "expected_severity": "high",
-      "notes": "Object-level authorization is never checked; user 1 returns to any caller. (Stub-regression case.)"
+      "notes": "Object-level authorization is never checked; user 1 returns to any caller. (Stub-regression case.)",
+      "u_stages": [
+        "U4",
+        "U5"
+      ],
+      "u_notes": "Feeds: U4 (authz boundary facts) + U5 (sequential-integer object inventory containing user 1) — the IDOR agent's slice."
     },
     {
       "case_id": "bola-admin-42",
@@ -22,7 +55,12 @@
       "path": "/api/users/42",
       "expected_finding": true,
       "expected_severity": "critical",
-      "notes": "Admin record is reachable without authentication. (Stub-regression case.)"
+      "notes": "Admin record is reachable without authentication. (Stub-regression case.)",
+      "u_stages": [
+        "U4",
+        "U5"
+      ],
+      "u_notes": "Feeds: U4 + U5 (object 42 in the inventory; the admin boundary is a recorded differential)."
     },
     {
       "case_id": "bola-missing-999",
@@ -31,17 +69,29 @@
       "path": "/api/users/999",
       "expected_finding": false,
       "expected_severity": "none",
-      "notes": "Negative control: a 404 must never be reported as a finding. (Stub-regression case.)"
+      "notes": "Negative control: a 404 must never be reported as a finding. (Stub-regression case.)",
+      "u_stages": [
+        "U5"
+      ],
+      "u_notes": "Feeds: U5 — the inventory NOT containing 999 is itself the model fact behind the negative control."
     },
     {
       "case_id": "mass-assignment-role",
       "bug_class": "mass_assignment",
       "method": "POST",
       "path": "/api/users",
-      "body": {"username": "mallory", "role": "admin", "isAdmin": true},
+      "body": {
+        "username": "mallory",
+        "role": "admin",
+        "isAdmin": true
+      },
       "expected_finding": true,
       "expected_severity": "critical",
-      "notes": "Role/isAdmin over-binding is trusted by the server. (Stub-regression case.)"
+      "notes": "Role/isAdmin over-binding is trusted by the server. (Stub-regression case.)",
+      "u_stages": [
+        "U5"
+      ],
+      "u_notes": "Feeds: U5 client_controlled_fields — role/isAdmin declared in the OpenAPI and extracted as mass-assignment targets."
     },
     {
       "case_id": "fuzz-crash-ingest",
@@ -50,7 +100,11 @@
       "path": "/api/ingest?q=%27%20OR%20%271%27%3D%271",
       "expected_finding": true,
       "expected_severity": "medium",
-      "notes": "Ingest parser deterministically 5xxes on SQL-ish input. (Stub-regression case.)"
+      "notes": "Ingest parser deterministically 5xxes on SQL-ish input. (Stub-regression case.)",
+      "u_stages": [
+        "U2"
+      ],
+      "u_notes": "Feeds: U2 ranked_surface — the ingest endpoint appears on the ranked attack surface."
     },
     {
       "case_id": "gateway-open",
@@ -59,61 +113,100 @@
       "path": "/api/gateway",
       "expected_finding": false,
       "expected_severity": "none",
-      "notes": "Negative control: an open gateway response is expected, not a finding. (Stub-regression case.)"
+      "notes": "Negative control: an open gateway response is expected, not a finding. (Stub-regression case.)",
+      "u_notes": "No U-stage declaration: this control's semantics are transport-level (an open gateway / a normal login is expected behavior), not model-level."
     },
     {
       "case_id": "login-valid",
       "bug_class": "none",
       "method": "POST",
       "path": "/login",
-      "body": {"username": "alice", "password": "x"},
+      "body": {
+        "username": "alice",
+        "password": "x"
+      },
       "expected_finding": false,
       "expected_severity": "none",
-      "notes": "Negative control: a normal 200 login is expected, not a finding. (Stub-regression case.)"
+      "notes": "Negative control: a normal 200 login is expected, not a finding. (Stub-regression case.)",
+      "u_notes": "No U-stage declaration: this control's semantics are transport-level (an open gateway / a normal login is expected behavior), not model-level."
     },
     {
       "case_id": "fin-param-price-trust",
       "bug_class": "business_logic",
       "method": "POST",
       "path": "/api/checkout",
-      "body": {"item_id": "sku-1", "quantity": 1, "price": 0.01},
+      "body": {
+        "item_id": "sku-1",
+        "quantity": 1,
+        "price": 0.01
+      },
       "signal_check": "\"total\": 0.01",
       "expected_finding": true,
       "expected_severity": "critical",
-      "notes": "FIN-PARAM-02: client-supplied price is trusted; 0.01 totals a 100.00 order. (Stub-regression case.)"
+      "notes": "FIN-PARAM-02: client-supplied price is trusted; 0.01 totals a 100.00 order. (Stub-regression case.)",
+      "u_stages": [
+        "U1",
+        "U3",
+        "U5"
+      ],
+      "u_notes": "Feeds: U1 money_paths + U3 purchase workflow + U5 client_controlled price field."
     },
     {
       "case_id": "fin-replay-callback",
       "bug_class": "business_logic",
       "method": "POST",
       "path": "/api/payment/callback",
-      "body": {"order_id": "ord-1", "amount": 100},
+      "body": {
+        "order_id": "ord-1",
+        "amount": 100
+      },
       "signal_check": "acknowledged",
       "expected_finding": true,
       "expected_severity": "high",
-      "notes": "FIN-REPLAY-01: identical callback acked repeatedly (no nonce). (Stub-regression case.)"
+      "notes": "FIN-REPLAY-01: identical callback acked repeatedly (no nonce). (Stub-regression case.)",
+      "u_stages": [
+        "U1",
+        "U3"
+      ],
+      "u_notes": "Feeds: U1 money_paths + U3 purchase workflow (the callback is a purchase step)."
     },
     {
       "case_id": "fin-voucher-reuse",
       "bug_class": "business_logic",
       "method": "POST",
       "path": "/api/voucher/redeem",
-      "body": {"code": "SAVE10"},
+      "body": {
+        "code": "SAVE10"
+      },
       "signal_check": "\"applied\": true",
       "expected_finding": true,
       "expected_severity": "high",
-      "notes": "FIN-VOUCHER: single-use code redeemable repeatedly. (Stub-regression case.)"
+      "notes": "FIN-VOUCHER: single-use code redeemable repeatedly. (Stub-regression case.)",
+      "u_stages": [
+        "U1",
+        "U3"
+      ],
+      "u_notes": "Feeds: U1 money_paths + U3 redemption workflow."
     },
     {
       "case_id": "fin-toctou-price-shift",
       "bug_class": "business_logic",
       "method": "POST",
       "path": "/api/checkout/confirm",
-      "body": {"order_id": "ord-1", "price": 0.01},
+      "body": {
+        "order_id": "ord-1",
+        "price": 0.01
+      },
       "signal_check": "\"total\": 0.01",
       "expected_finding": true,
       "expected_severity": "critical",
-      "notes": "FIN-TOCTOU: paid-order confirm re-accepts a changed price. (Stub-regression case.)"
+      "notes": "FIN-TOCTOU: paid-order confirm re-accepts a changed price. (Stub-regression case.)",
+      "u_stages": [
+        "U1",
+        "U3",
+        "U5"
+      ],
+      "u_notes": "Feeds: U1 money_paths + U3 purchase workflow + U5 price field."
     }
   ]
 }

@@ -1,8 +1,9 @@
 ---
 name: bugwolf:agentic-hijack
 description: Agentic Goal-Hijack Agent -- ASI01/02/06/07: goal hijack, web-based indirect prompt injection (Unit42 22-technique taxonomy), tool misuse via injected content, memory/context poisoning, inter-agent trust abuse. Canary instructions only.
-model-tier: frontier
-tools: llm_attack_surface, domains.llm.agentic_tool_auth, domains.llm.rag_memory_poisoning, observation
+model: opus
+tools: Read, Grep, Glob, WebFetch, WebSearch, Bash, Task
+x-bugwolf-tier: frontier (preference via tools/core/model_router.py)
 scope: operator-declared (deny-by-default, tools/runtime/scope.py)
 sandbox: required (tools/runtime/sandbox.py)
 playbook-digest: 44158d3693841764
@@ -25,6 +26,7 @@ Non-negotiable operating rules (apply to every dispatch):
    return blocked evidence and move on.
 5. **Handoff** -- return structured messages (`to_role`, `kind`, `body`)
    instead of prose handoffs; the team engine routes them.
+Tool modules (BugWolf internals driven via Bash -- always through tools/runtime/sandbox.py): llm_attack_surface, domains.llm.agentic_tool_auth, domains.llm.rag_memory_poisoning, observation
 
 # Agentic AI Attack Vectors — 2026 Edition
 

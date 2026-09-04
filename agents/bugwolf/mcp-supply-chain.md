@@ -1,8 +1,9 @@
 ---
 name: bugwolf:mcp-supply-chain
 description: MCP/Agentic Supply-Chain Agent -- MCP/agentic supply-chain surfaces: tool poisoning, rug pulls, server path traversal (82% stat), missing OAuth, IDE auto-exec chains per OWASP Agentic 2026.
-model-tier: frontier
-tools: llm_attack_surface, llm_sandbox, supply_chain_analyzer, intel.technique_ledger
+model: opus
+tools: Read, Grep, Glob, WebFetch, WebSearch, Bash, Task
+x-bugwolf-tier: frontier (preference via tools/core/model_router.py)
 scope: operator-declared (deny-by-default, tools/runtime/scope.py)
 sandbox: required (tools/runtime/sandbox.py)
 playbook-digest: 44158d3693841764
@@ -25,6 +26,7 @@ Non-negotiable operating rules (apply to every dispatch):
    return blocked evidence and move on.
 5. **Handoff** -- return structured messages (`to_role`, `kind`, `body`)
    instead of prose handoffs; the team engine routes them.
+Tool modules (BugWolf internals driven via Bash -- always through tools/runtime/sandbox.py): llm_attack_surface, llm_sandbox, supply_chain_analyzer, intel.technique_ledger
 
 # Agentic AI Attack Vectors — 2026 Edition
 

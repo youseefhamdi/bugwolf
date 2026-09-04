@@ -16,6 +16,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Plugin manifest gates (version sync + shape + agent front-matter)
+        run: python3 tools/plugin_manifest.py --all
+
+      - name: Agent registry sync
+        run: python3 scripts/generate_agents.py --check
+
       - name: Full test suite
         run: python3 -m unittest discover -s tests -p "test_*.py"
 

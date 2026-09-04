@@ -1,0 +1,62 @@
+{
+  "name": "bugwolf",
+  "owner": {
+    "name": "Yousef Hamdi",
+    "url": "https://github.com/youseefhamdi"
+  },
+  "metadata": {
+    "description": "Understanding-driven offensive-security agent teams for Claude Code.",
+    "version": "1.24.0"
+  },
+  "plugins": [
+    {
+      "name": "bugwolf",
+      "source": "./",
+      "description": "All-round authorized offensive-security plugin: 39 specialized subagents (web/API, smart contracts EVM/Move/Solana, LLM/agentic AI, cloud/CI-CD, mobile, recon) dispatched in waves by a durable task-graph engine, a deny-by-default scope gate, subprocess sandbox with kill switch, OAST callback tunneling, F0.5 evidence-gated reporting, and submission-ready reports for HackerOne, Bugcrowd, Intigriti & Immunefi.",
+      "version": "1.24.0",
+      "author": {
+        "name": "Yousef Hamdi",
+        "url": "https://github.com/youseefhamdi"
+      },
+      "homepage": "https://bugwolf.xyz",
+      "repository": "https://github.com/youseefhamdi/bugwolf",
+      "license": "MIT",
+      "category": "security",
+      "tags": [
+        "security",
+        "offensive-security",
+        "bug-bounty",
+        "pentest",
+        "red-team",
+        "smart-contracts",
+        "web-security",
+        "llm-security",
+        "recon",
+        "reporting"
+      ],
+      "commands": [
+        "commands/bugwolf.md",
+        "commands/bugwolf-plan.md",
+        "commands/bugwolf-run.md",
+        "commands/bugwolf-status.md",
+        "commands/bugwolf-review.md",
+        "commands/bugwolf-report.md",
+        "commands/bugwolf-stop.md",
+        "commands/bugwolf-resume.md",
+        "commands/bugwolf-sandbox.md",
+        "commands/bugwolf-team.md",
+        "commands/bugwolf-leads.md",
+        "commands/bugwolf-scope.md",
+        "commands/bugwolf-research.md",
+        "commands/bugwolf-chain.md",
+        "commands/bugwolf-doctor.md",
+        "commands/bugwolf-understand.md"
+      ],
+      "agents": "agents/bugwolf/",
+      "hooks": "hooks/hooks.json",
+      "skills": [
+        "SKILL.md"
+      ]
+    }
+  ]
+}

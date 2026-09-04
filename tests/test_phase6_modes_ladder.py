@@ -346,10 +346,19 @@ class PluginPackageTest(EnvMixin, unittest.TestCase):
                          "bugwolf")
         tool_names = {t["name"]
                       for t in replies[1]["result"]["tools"]}
+        # v1.11.0: replay tools; v1.12.0: browser confirmation;
+        # v1.13.0: session context model; v1.21.0: capture→replay.
         self.assertEqual(tool_names, {"bugwolf_status", "bugwolf_plan",
                                       "bugwolf_run", "bugwolf_leads",
                                       "bugwolf_mode", "bugwolf_agents",
-                                      "bugwolf_team"})
+                                      "bugwolf_team",
+                                      "bugwolf_http_replay",
+                                      "bugwolf_http_replay_raw",
+                                      "bugwolf_http_replay_desync",
+                                  "bugwolf_browser_confirm",
+                                  "bugwolf_sessions",
+                                  "bugwolf_understand",
+                                  "bugwolf_capture_replay"})
         planned = json.loads(
             replies[2]["result"]["content"][0]["text"])
         self.assertTrue(any(t.startswith("pf-")

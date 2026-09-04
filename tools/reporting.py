@@ -48,6 +48,76 @@ VALID_REVIEW_DECISIONS = ("confirmed", "rejected", "needs_more_evidence")
 DISCLOSURE_STATES = ("not_started", "contacted", "vendor_response",
                      "patched", "retested", "closed")
 
+# ---------------------------------------------------------------------------
+# Noise filter (INTEGRATION_PLAN Phase B, v1.25; source: ECC
+# security-bounty-hunter skip-list, MIT, attributed).  Platform-rejected
+# noise classes are HELD at the gate with advisory reasons — never
+# silently deleted, and any finding carrying demonstrated impact BYPASSES
+# its category match (impact always outranks the denylist).
+# ---------------------------------------------------------------------------
+NOISE_PATTERNS = (
+    # (category, body/title substrings, why it is noise)
+    ("self-xss",
+     ("self-xss", "self xss"),
+     "requires the victim to paste the payload manually"),
+    ("headers-only",
+     ("missing security header", "security headers"),
+     "header absence alone is informational, not exploitable"),
+    ("rate-limit-generic",
+     ("rate limit", "rate limiting", "no rate limit"),
+     "generic rate-limiting complaint without demonstrated impact"),
+    ("local-only-deserialization",
+     ("pickle.load", "torch.load", "yaml.load"),
+     "local-only sink — needs a remotely reachable path to count"),
+    ("cli-only-exec",
+     ("eval(", "exec("),
+     "CLI-only tooling sink with no remote trigger"),
+    ("hardcoded-shell",
+     ("shell=true", "shell=True"),
+     "fully hardcoded command — no attacker-controlled input"),
+    ("test-only",
+     ("/tests/", "/fixtures/", "/examples/", "example.com"),
+     "test, fixture, or demo surface — not a shippable target"),
+)
+
+# A finding whose impact text matches any of these is demonstrating real
+# impact (ECC's in-scope table): the noise match is overridden.
+_IMPACT_OVERRIDES = (
+    "internal network", "metadata", "cloud metadata", "unauthorized access",
+    "code execution", "rce", "data exfiltration", "session theft",
+    "admin compromise", "authentication bypass", "auth bypass",
+    "arbitrary file", "sql injection", "smuggled", "poisoned",
+)
+
+
+def noise_reasons(finding: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Advisory noise analysis for a finding dict.
+
+    Returns (category, matched_on, why) triples.  Categories whose match is
+    overridden by demonstrated impact text are EXCLUDED (impact outranks
+    the denylist).  Pure function; never mutates or rejects.
+    """
+    title = str(finding.get("title") or "").lower()
+    body = " ".join(str(finding.get(k) or "") for k in
+                    ("reproduction", "trigger_trace", "notes", "summary",
+                     "remediation", "affected_versions")).lower()
+    impact = " ".join(str(finding.get(k) or "") for k in
+                      ("impact_proof", "impact_trace",
+                       "demonstrated_impact")).lower()
+    if any(marker in impact for marker in _IMPACT_OVERRIDES):
+        return []                    # demonstrated impact: nothing is noise
+    reasons: List[Dict[str, str]] = []
+    for category, markers, why in NOISE_PATTERNS:
+        for marker in markers:
+            haystack = title if category in ("self-xss", "headers-only",
+                                             "rate-limit-generic") \
+                else title + " " + body
+            if marker.lower() in haystack:
+                reasons.append({"category": category,
+                                "matched_on": marker, "why": why})
+                break
+    return reasons
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -195,11 +265,14 @@ class ReportingGate:
         )
         self._records[finding_id] = record
         self._persist_all()
+        noise = noise_reasons(finding)
         return {
             "schema": SCHEMA,
             "finding_id": finding_id,
             "reportable": record.is_reportable(),
             "refusal_reasons": record.refusal_reasons(),
+            "noise": noise,                      # advisory (Phase B, v1.25)
+            "noise_held": bool(noise) and not record.is_reportable(),
         }
 
     def review(self, finding_id: str, decision: str, *, reviewer: str = "operator",

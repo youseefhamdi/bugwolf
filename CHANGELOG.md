@@ -1,5 +1,872 @@
 # Changelog
 
+## v1.24.0 — Cross-pollination release: the learning loop closes (INTEGRATION_PLAN Phases A–F)
+
+Implements the full ECC/Agent-Reach integration plan (`docs/INTEGRATION_PLAN.md`):
+six capabilities, each verified against the actual upstream sources (MIT,
+attributed), each deterministic-first, scope-safe, and hermetically testable.
+
+### A — Instincts: the harness learns (`tools/instincts.py`)
+- Post-mission mining over EXISTING ledgers (lead journals, reporting
+  refusals, U-regression failures, benchmark FP/FN, governor refusals)
+  into `state/instincts/instincts.jsonl` — bugwolf-instinct/v1 schema,
+  provenance-carrying (every instinct cites its missions/leads).
+- Active only at ≥2 occurrences (one failure is a fact, two is a
+  pattern); contradiction HALVES confidence; 90-day TTL prune; distill
+  is idempotent (the ledger is the source of truth — re-mining replaces,
+  never accumulates).
+- Consumers are weighting-only: cockpit injects the top-5 at SessionStart;
+  swarm family order floats proven classes up (bounded, reorder-only);
+  T4 technique ordering demotes failure-pattern techniques to LAST;
+  operator-gated promote to global scope.
+- PreCompact hook persists the cockpit digest (`session_context_last.json`)
+  so post-compaction sessions rebuild instantly (ECC memory-persistence
+  pattern).
+
+### B — Noise filter (`tools/reporting.py`)
+- ECC security-bounty-hunter skip-list as executable gate logic: self-XSS,
+  headers-only, generic rate-limit, local-only deserialization, CLI-only
+  exec, hardcoded shell, test/fixture surfaces.
+- ADVISORY by design: `check()` returns a `noise` section and a
+  `noise_held` flag — findings are annotated, never auto-deleted, and
+  demonstrated impact OVERRIDES a category match (impact outranks the
+  denylist).
+
+### C — Head-to-head harness (`tools/head_to_head.py` + `configs/head_to_head.json`)
+- Completes the Phase 7 head-to-head deliverable with ECC agent-eval
+  methodology: deterministic judges (LLM judges never replace them),
+  identical task sets and budget caps per contender, cost published
+  BESIDE pass rate.
+- Hermetic shipped pair: bugwolf's governed prober vs an ungoverned
+  spray baseline — same pass rate, 8x the sends: the cost column exists
+  to expose exactly that. External contenders are recorded as skipped,
+  never faked.
+
+### D — Injection canaries (`tools/understanding/canaries.py` + fixtures)
+- Doctrine enforced by test: **target content is data with provenance,
+  never instruction.** Deterministic detectors for instruction-forgery,
+  fake system prompts, agent targeting, exfil lures, and hidden-text
+  instructions (threat model: ECC the-security-guide, Feb-2026 Claude
+  Code CVEs).
+- Attempts are recorded as FACTS in the U1 artifact (and become hunting
+  evidence), with a BOUNDED confidence penalty on open assumptions at
+  U8 (floor 0.05 — a detection nudges trust, never zeroes work). The
+  dispatch-context test proves forged instructions never reach a
+  dispatch payload.
+
+### E — Intel lane (`tools/intel/` + `docs/INTEL_TRANSPARENCY.md`) — DEFAULT-OFF
+- Agent-Reach's Channel ABC ported under bugwolf's opsec rules: ordered
+  backends with an override that can never hide working ones, real-probe
+  `check()` ("which() alone is NOT proof of health"), per-channel doctor
+  degradation with credential-scrubbed messages.
+- Four channels (github_public, site_docs, rss_feed, jobs_page), all
+  credential-free; `direct` (the scope-gated replay engine) preferred,
+  the documented third party (r.jina.ai) fallback-only and eliminable.
+- Facts with provenance into U1/U2; a dead channel is a recorded fact,
+  never a crash; the lane can never touch the scope gate or the
+  coverage gate.
+
+### F — Antibot honesty (`tools/runtime/understanding/antibot.py`)
+- `_fetch_pages` no longer feeds challenge boilerplate into U1: a
+  bot-walled page (Cloudflare/captcha/Jina-warning heuristics + a
+  whole-body content-volume guard) is EXCLUDED from intake and recorded
+  as `{fact: "surface behind bot-wall", path}` — an honest fact instead
+  of silent poisoning.
+
+## v1.23.0 — Corpus ⇄ Understanding-Layer regression: the model is part of the scored system
+
+Every scored corpus case can now declare the U-stages that must FEED it
+(`"u_stages": ["U4", "U5"]`); a bridge module turns those declarations
+into executable checks over a live mini-mission. A vanished model fact is
+a regression, same class of failure as a missed expected finding.
+
+### Regression bridge (`tools/u_regression.py`)
+- Per-case U-support verification over the stub: pipeline runs U1–U9 on
+  a real mini-mission (per-credential crawl + business pages + OpenAPI),
+  then checks declared-stage artifacts, fact-level support per coverage
+  class (idor → object-ID inventory, mass-assignment → privilege field
+  family, business-logic → workflows), absence facts for negative
+  controls (ID 999 ∉ inventory), and the class HUNTS (not parked).
+- Browser/OAST-gated classes (xss-dom, ssrf-callback) are exempt from
+  the deterministic HUNT check — their stage/fact checks still run.
+- Report persists to `state/benchmark/u_regression.json`.
+
+### Benchmark integration (`tools/benchmark.py`)
+- `enable_u_regression=True` boots a stub and runs the suite; the
+  verdict gains `u_regression_ok`. Hermetic default stays off and
+  honest (`{"enabled": False}`, never a fake pass), mirroring
+  `enable_lab`.
+- CI (`tests.test_benchmark.TestURegressionBridge`): vocabulary pin,
+  live pass over the stub, gate-failure and error-containment paths,
+  and the mismatch-fails semantics (a declared stage with no artifact
+  fails its case).
+
+### Real defects the ground-truth run caught (all fixed)
+1. **Governor starvation in the harness** — the default live-target rate
+   (5 rps, burst 5) let the anon label drain the burst; every
+   AUTHENTICATED crawl send was refused (status-0 facts) and U5's object
+   inventory never filled. The harness now passes an explicit fast-rate
+   governor; budget/circuit/concurrency protections stay active.
+2. **`fuzzing` was invisible to the coverage gate** — dispatch knew the
+   class, `COVERAGE_CLASSES` did not, so it was neither hunted nor
+   parked with a reason. Added with `ranked_surface` (U2) as support,
+   matching `STAGE_REQUIREMENTS`.
+3. **`CrawlReport.to_dict()` crashed on `access_matrix`** — the method
+   called a `@property` with parens, so serialization always raised;
+   `persist()` (no parens) masked it until a real `to_dict()` caller
+   appeared.
+
+### Understanding-Layer improvements
+- U5's client-controlled-field family gains privilege keys
+  (`role`, `isAdmin`, `permissions`) — the mass-assignment surface the
+  filter previously could not name.
+- The stub's OpenAPI now declares surfaces it actually implements
+  (`POST /api/users`, `POST /api/ingest`), so U5's contract-lens checks
+  exercise real agreement between spec and behavior.
+
+## v1.22.1 — H2.CL joins the Phase 7 scoring set (corpus item, lab-backed)
+
+The master plan's corpus item "H2.CL desync (arrives with 1.1b)" is
+redeemed: the benchmark scorer now runs the H2.CL class **live** against
+the real H2 lab.
+
+### Corpus (`configs/benchmark.json`, +2 cases)
+- **`h2cl-victim-poisoned`** (expected finding, critical): the H2.POST
+  C-L:0 + TE:chunked smuggle poisons the desync-switch front-end; the
+  victim's stream returns the internal-gateway response — a body their
+  route can never produce.
+- **`h2cl-safe-front-end`** (negative control): the SAME smuggled
+  payload against the conformant front-end (TE stripped, C-L
+  synthesized) must NOT poison — a signal here is a false positive and
+  fails the gate. The pair differs ONLY in the front-end's desync
+  switch, isolating the vulnerability as the scored variable.
+
+### Scorer (`tools/benchmark.py`)
+- `transport: "h2cl"` cases boot the real lab (stub backend +
+  `H2Frontend` in the case's `h2cl_mode`) — no fake probe, the actual
+  v1.20 desync machinery is the system under test.
+- **Evidence = the victim-observed body**: `request_smuggling` signals
+  on the smuggled route's marker appearing in a stream that never
+  requested it — not on any single status code.
+- **Hermetic honesty**: the default run SKIPS lab cases with a recorded
+  reason (`cases_skipped` + `skipped[]` in the report); they count
+  toward neither TP nor FN — never a fake pass. `enable_lab=True`
+  scores them live (CI: `test_benchmark.TestH2CLCorpus`).
+
+### Verified live
+Full lab run: 9 TP / 0 FP / 0 FN, gate PASS — the desync case detects,
+the safe control stays silent.
+
+## v1.22.0 — Hooks complete: the harness remembers (master plan Phase 3, complete)
+
+The last parity gap closes. The hook layer is now the full nervous
+system the plan demanded: 3.1 denies out-of-scope commands at the
+harness level, 3.2 makes every prompt carry mission context and model
+staleness, 3.3 turns HTTP-ish tool output into tamper-evident evidence
+automatically, and 3.4 turns session start into a cockpit.
+
+### 3.2 UserPromptSubmit (`hooks/bugwolf_hooks.py user-prompt-submit`)
+- Injects **mission context** via `hookSpecificOutput.additionalContext`
+  (never a block): declared target + boundary from the scope contract,
+  open-lead count with the resume-first nudge.
+- **Target-model freshness at every prompt**: a persisted Target Model
+  older than `BUGWOLF_MODEL_MAX_AGE_H` (default 24h) raises
+  `TARGET MODEL STALE — run /bugwolf-understand before hunting`; a
+  bound mission with NO model gets the same nudge. Hunting against a
+  stale model contradicts the Understanding Layer's thesis — staleness
+  is now visible everywhere, not just in the cockpit.
+- Silent when nothing applies: no contract ⇒ no injection, zero UX cost.
+
+### 3.3 PostToolUse evidence ledger
+- HTTP-ish tool outputs auto-captured into
+  `state/orchestrator/<mission>/evidence.jsonl` — **hash-chained**
+  (`prev_head → entry_hash`, head persisted in `evidence_head`), each
+  record carrying **`replay_key` = SHA-256(mission ⊦ target ⊦ method ⊦
+  path ⊦ chain head)**, pinning exactly what the replay engine must
+  re-send to reproduce the observation.
+- bugwolf's own replay reports capture natively: method/path parsed
+  from the `sent_bytes` request wire text. Conservative extraction:
+  only records that unambiguously name a status (or raw HTTP) are
+  captured — bounded recursion, bounded breadth, never a raw dump.
+- Tamper-evidence tested: a forged status recomputes to a different
+  chain hash.
+
+### 3.4 SessionStart cockpit
+- Upgrades the v1.14 preflight digest to the full cockpit:
+  scope-contract state (bound/target/mode), preflight digest, sandbox
+  kill-switch + grant count, open leads by status, mode state, and
+  **target-model freshness** (absent/present/stale with age_hours).
+  Everything read from durable state; nothing probes.
+- The v1.14 session-start shim is unchanged (backward-compatible);
+  the cockpit registers as a second SessionStart hook.
+
+### Registration (`hooks/hooks.json`)
+`UserPromptSubmit` + `PostToolUse` (Bash|WebFetch|Task|mcp__bugwolf__*)
+registered; both new hook surfaces added to the v1.16 opsec beacon-
+surface audit list.
+
+### Tests
+25 new (`tests/test_hooks_3x.py`): context injection/inert semantics,
+staleness window + env override, chain integrity + tamper detection,
+native replay-report capture, cockpit shape (empty → full), kill-switch
+visibility, shim process contract (JSON in/out, garbage stdin, stdlib-
+only enforcement), and hooks.json registration.
+
+## v1.21.0 — The capture→replay loop: every session's traffic becomes replayable evidence (master plan 2.4, complete)
+
+The second parity gap closes. Real engagements start from what the target
+actually did — the operator's browser session, the app's own mobile
+client, another tool's findings. That traffic is now a first-class input:
+capture it through mitmproxy, replay it through the governed engine,
+and read the drift.
+
+### Capture half (`tools/runtime/capture_addon.py`, NEW)
+- **Self-contained by construction**: imports nothing from bugwolf — it
+  runs inside mitmproxy's interpreter, not ours. `mitmproxy -s
+  tools/runtime/capture_addon.py --set bugwolf_out=captures.jsonl --set
+  bugwolf_allow=+.target.example`.
+- **One JSONL line per exchange**: byte-exact downgraded HTTP/1.1 wire
+  text for request and response (original header case/order preserved —
+  latin-1 round-trip, every byte survives), plus method/path/host/port/
+  scheme/status/timestamps.
+- **Framing headers withheld, presence recorded**: C-L/TE/Connection/
+  Host and h2 pseudo-headers are stripped from the emitted wire text
+  (the replay engine's `send_raw` re-derives honest framing); their
+  upstream presence is recorded as `framing_notes` facts — TE on an H2
+  stream (the H2.CL pre-condition) and TE+C-L together (the RFC 7230
+  §3.3.3 ambiguity candidate) are named, not silently dropped.
+- **Allow-list**: suffix semantics (`+.target.example` matches the apex
+  and subdomains, never `eviltarget.example`).
+
+### Replay half (`tools/runtime/capture_replay.py`, NEW)
+- **Fail-closed loader**: every line validates fully (schema, required
+  fields) or is skipped WITH a reason and line number — nothing
+  half-parsed ever reaches the sender.
+- **A capture file never widens scope**: the gate binds the mission
+  target BEFORE any send; records for out-of-scope hosts are counted and
+  skipped as facts (port-tolerant suffix matching). An explicitly-bound
+  mission gate refuses rebinding — `force=True` never overrides it.
+- **Drift = facts**: the captured response is the baseline, the fresh
+  send the experiment; status/body-length movement between two
+  byte-identical sends is recorded (cache variance, session carry-over,
+  nondeterministic backend) — never a verdict.
+- **Artifacts**: `mission/captures/capture_replays.jsonl` (one line per
+  replay: sent bytes, status, drift, transport_error) +
+  `capture_report.json` (counts, per-host split, drift/error tallies).
+  The operator's capture file is never modified.
+- **CLI**: `python3 -m tools.runtime.capture_replay captures.jsonl
+  --target http://target --rate 5`.
+
+### Bridge: `bugwolf_capture_replay` (14th MCP tool)
+Load + filter + replay + summary in one call from the agent surface.
+
+### Real bug found and fixed along the way
+The first draft's loader demanded `bugwolf-capture-replay/v1` while the
+addon emits `bugwolf-capture/v1` — a schema-name collision that would
+have silently rejected **every** real capture line. Caught by unit-test
+lockstep between the two halves, not in production.
+
+### Tests
+18 new (`tests/test_capture_replay.py`): addon handlers with fake mitmproxy
+flows (no mitmproxy needed), blocked-header/notes semantics, allow-list,
+loader validation edge cases, live replay against the stub (status match,
+drift reporting, capture-file immutability, scope skips, gate-refuses-
+foreign-binding), artifacts shape, and the CLI.
+
+## v1.20.0 — The HTTP/2 pseudo-layer: the last desync class, wired (master plan 1.1b, complete)
+
+The send-engine parity gap closes: byte-level HPACK (RFC 7541) and HTTP/2
+framing (RFC 7540) join the replay engine, and the H2.CL desync class —
+unreachable while the engine spoke only HTTP/1.1 — is now demonstrated
+end-to-end on the live stub: the victim's own stream returns the response
+to a request they never made.
+
+### HPACK codec (`tools/runtime/replay/hpack.py`, NEW)
+- **RFC-correct 61-entry static table** (1-indexed; position 0 is the
+  illegal-index placeholder), dynamic table with size accounting + 32-byte
+  entry overhead, eviction from the top, and applied dynamic-table-size
+  updates (not merely consumed).
+- **No-Huffman posture, stated and enforced**: bugwolf emits raw literals
+  (what desync tooling wants — headers stay byte-inspectable); Huffman-
+  coded strings are rejected with a named error, not silently misdecoded.
+- **Non-conformant mode**: `encode_headers(..., raw=True)` emits the
+  forbidden 0x40 incremental-indexing byte pattern WITHOUT inserting into
+  any table — a stateful peer decoder's table diverges from ours, the
+  request-smuggling primitive at the HPACK layer. `raw_header_block()`
+  emits pure length-prefixed verbatim pairs (dup headers preserved).
+
+### HTTP/2 frame layer (`tools/runtime/replay/h2.py`, NEW)
+- **Client side**: `client_preface()`, `build_headers_frame()`
+  (conformant or raw-block), `build_data_frame()`, `build_h2_request()`,
+  `split_frames()` (with preface-skip for client-side buffers), governed
+  through `send_raw` like every other wire format.
+- **Server side**: `H2Frontend` — a deliberately-flawed minimal H2→H1.1
+  gateway over the real stub backend, with `forward_transfer_encoding` as
+  the desync switch (default OFF).
+- **The H2.CL lesson, encoded**: with the switch OFF, the frontend OWNS
+  framing — TE stripped, C-L synthesized from the actual body. The safe-
+  mode control test caught the first draft forwarding the client's TE
+  verbatim alongside the synthesized C-L: the backend honored TE (RFC
+  7230 §3.3.3) and the pool poisoned anyway. The opt-out is now real.
+- **Per-connection read buffers** in the backend pool: recv() over-
+  delivery past a message boundary is exactly where a smuggled response
+  hides — exact-buffer reads make the poisoned-connection observation
+  possible (victim's stream delivers another request's response).
+- **HTTP/1.1 passthrough** on the same port (victims don't speak H2),
+  backend keep-alive hygiene (dead pooled socket → fresh-socket retry).
+
+### Stub target: a real desync lab
+- `H2StubFrontend` reuses the HTTP/1.1 handler's routes; the backend's
+  `_read_body` is desync-aware (TE+C-L ambiguity → 400 with the ambiguity
+  named, mirroring RFC 7230 §3.3.3 rule 4) so the smuggled request
+  survives as leftover evidence rather than being eaten.
+
+### The acceptance, observed live
+Attacker POSTs H2 headers `content-length: 0` + `transfer-encoding:
+chunked` with body `0\r\n\r\nGET /api/gateway ...`. Front-end forwards TE,
+no C-L; backend honors TE, decodes the empty chunked body, and the
+smuggled request pipelines. The next victim — an anonymous H2 GET for
+`/api/users/1` — receives the **internal-gateway admin-token response**, a
+body their route can never produce.
+
+### Tests
+21 new (`tests/test_h2_layer.py`): hpack round-trips/static-table shape/
+size updates/non-conformant poisoning, frame codec edges, live GET/POST,
+H1 passthrough, header audit, the H2.CL desync end-to-end, and the
+safe-mode control proving the switch genuinely opt-in.
+
+## v1.19.0 — Predicted chains: the model sees the hunt coming (master plan §8.3, complete)
+
+The §8.3 completion: CyberStrike's chain engines correlate *findings*;
+bugwolf now **predicts chains before any probing** — a granted capability
+(U7) crossed with a fragile assumption (U8) becomes a ranked,
+terminal-aware, high-priority dispatch.
+
+### Prediction engine (`tools/runtime/understanding/chain_predict.py`, NEW)
+- **Pairing rule**: a capability (role × object × impact × path) pairs with
+  an open assumption *about that object* whose confidence sits in the
+  0.05–0.9 fragility window (near-certain is not a lead; zero-confidence is
+  noise).
+- **Priority** = impact (dollars 4 → privilege 3 → PII/ATO 2 → business 1)
+  + (2 − fragility) + 2 when a terminal class is reachable — ranked
+  dollars→privilege→ATO with fragile assumptions and terminal reach
+  pushing up.
+- **Stage→class map**: U3→business-logic, U4/U7→authz-bypass,
+  U5→mass-assignment; the pool is the U8 seed list itself (operator
+  annotations honored) with per-stage fallback pre-U8.
+- **Terminal chaining** via `deep_chain`'s escalation graph (BFS to the
+  nearest terminal class) — a business-logic prediction aims at
+  funds-drain and says so.
+- **Persistence**: `predicted-chains.json` beside the model artifacts;
+  schema-checked load; capped at 20.
+
+### High-priority dispatch
+- **Team engine** (`team.py`): predicted classes' owning specialists are
+  staffed **pre-hunt** (registry-resolved via the underscore-vocabulary
+  map, budget-capped, deduped) — ahead of any finding-driven
+  recomposition. The coverage gate still wins: a predicted class the model
+  PARKS is refused with a recorded fact, never overridden by prediction.
+  Members' dispatch intel carries their `predicted_chains` slice with
+  `priority_dispatch: true` and the first-probe dispro plan.
+- **Mission runner**: the web-lane family swarm reorders
+  predicted-class-first (`_order_families_by_predictions`, stable sort;
+  no predictions ⇒ byte-identical order), logged as
+  `predicted_chain_priority`.
+
+### Pipeline byproducts (U9)
+- `UnderstandingPipeline.run()` now ends with the predictor: predictions
+  computed while the ledger is fresh, persisted, counted on
+  `PipelineResult` (`predicted_chains`, `predicted_chains_path`), and the
+  **Hunting Brief gains a "Predicted chains — dispatch first" section**
+  with ranked chains and first probes, closed by the honesty line:
+  *"Predicted ≠ confirmed — the chain exists when the terminal impact is
+  EXECUTION-CONFIRMED."*
+
+### Tests
+- `tests/test_chain_prediction.py` (20): pairing rule, priority order,
+  stage→class map, terminal chaining, confidence window + status filter,
+  cap, persistence round-trip + schema rejection, registry mapping,
+  team staffing/gate-refusal/intel, runner ordering (incl. alias
+  vocabulary), and a live-stub E2E: fetch → model → predicted chains →
+  brief. **Fixed on the way:** U8's seed list (not the meta sidecar) is
+  the predictor's source — assumptions.jsonl round-trips every field.
+
+## v1.18.0 — Model-slice dispatch: the model feeds the hunt (master plan §8.3)
+
+The last §8.3 promise, mechanized: **no agent hunts from a blank slate** —
+and the coverage gate is now enforced where it matters, at dispatch.
+
+### Dispatch slice (`tools/runtime/understanding/dispatch.py`, NEW)
+- **Class normalization** across vocabularies: lanes/registry
+  (`access_control`, `waf_bypass`, `client_side`, `business_logic`) and
+  the U-layer (`idor`, `header-trust`, `xss-dom`, `business-logic`) map
+  through one alias table.
+- **Per-class slice selection** (`CLASS_SLICES`): idor → U5 object-ID
+  inventory + U4 roles; business-logic → U3 workflows + U1 money paths;
+  mass-assignment/price-manipulation → U5 client-controlled fields;
+  authz-bypass → U4 boundaries; jwt-confusion → U4 alg/claim shapes;
+  header-trust/xss-dom/ssrf-callback/fuzzing → U2 ranked surface.
+- **`render_prompt_block`** — the markdown block appended to hunting
+  prompts: observed money paths, workflows with steps/fields, authz
+  boundaries with per-identity statuses, object-ID formats with samples,
+  client-controlled fields, top-ranked hypotheses WITH their dispro
+  plans, and the model hash. No model ⇒ empty string: existing prompts
+  are byte-identical to the pre-U-layer form.
+- **Dispatch-time coverage gate** — `hunts` / `parked` (with reason) /
+  `absent` (no model ⇒ dispatch proceeds; the model never blocks a
+  mission that never modeled, it only refuses to endorse) / `unmodeled`.
+
+### Integration
+- **TeamEngine** (`_build_research_context`): every member's intel
+  payload now carries `target_model` (the slice), `model_prompt_block`
+  (the prompt text), and `coverage_gate`; a PARKED class is recorded in
+  engine state (`coverage_parks`) — the skip is a fact, never silent.
+- **MissionRunner** (`_run_web_lane`): families consult the gate before
+  dispatch; a parked family is SKIPPED and logged as `family_parked`
+  (class + reason). No model ⇒ every family dispatches unchanged.
+
+### Tests
+- `tests/test_model_dispatch.py` (15 tests): alias normalization, gate
+  semantics (absent/hunts/parked/unmodeled), per-class slice contents,
+  prompt-block doctrine, byte-identical no-model payload, TeamEngine
+  intel carrying the slice, and LIVE MissionRunner runs against the stub
+  (all-parked model ⇒ families skipped + facts recorded + zero leads;
+  no model ⇒ leads open as before).
+
+## v1.17.0 — The Understanding Layer, built (master plan Part VIII / §8.1–8.3)
+
+The thesis becomes a real pipeline: **you cannot hunt what you haven't
+modeled.** U1→U9 run strict-sequential, hash-chained, fail-closed, and
+incremental — ending in the coverage gate and the Hunting Brief.
+
+### The layer (`tools/runtime/understanding/`)
+- **`base.py`** — `Assumption` (statement, origin observed/inferred/
+  documented, confidence, dispro plan, challenge), `UArtifact` (hash-
+  chained to its inputs), `ModelStore` (per-target
+  `state/targets/<slug>/model/`, tamper-detecting incremental recompute).
+- **`stages.py`** — the nine deterministic engines:
+  - **U1** business model: money/trust/entity extraction over fetched
+    pages, model-type classification (marketplace/SaaS/fintech/content/
+    dev-tool), money paths with term evidence;
+  - **U2** census: surface ranked by BUSINESS criticality (money terms ×6,
+    identity differentials ×8, OpenAPI ops), never generic severity;
+  - **U3** logic: workflows (purchase/auth/redemption/recovery/
+    verification/onboarding/funds-out) from crawl forms + OpenAPI;
+    state-machine candidates from state verbs;
+  - **U4** identity: roles + source attribution, JWT alg/claim inventory,
+    identity matrix, observed authz boundaries from crawl differentials;
+  - **U5** data/state: object-ID inventory by format (sequential/UUID/
+    encoded/opaque), client-controlled fields (mass-assignment surface);
+  - **U6** trust: header families observed + operator probe results;
+  - **U7** capabilities: (role, object, verb, impact) from U1×U4×U5,
+    ranked dollars → privilege → ATO/PII → business;
+  - **U8** the Assumption Ledger: merged, deduped, ranked by fragility
+    ((1−confidence) × stage weight) — **the zero-day seed list**, written
+    as hand-annotatable JSONL (+ meta sidecar for chain integrity);
+  - **U9** synthesis + COVERAGE GATE: the ten executable bug classes are
+    HUNTED only when the model contains their support (object IDs ⇒ idor,
+    differentials ⇒ authz-bypass, client fields ⇒ mass-assignment…);
+    everything else is **PARKED WITH REASON**. Hypotheses ranked by U7
+    impact × U8 fragility; `hunting-brief.md` rendered.
+- **`pipeline.py`** — strict sequence (per-stage prerequisite guard),
+  fail-closed (no facts + no stored model ⇒ error, never a hollow brief),
+  incremental (unchanged inputs ⇒ cached; changed input ⇒ exactly the
+  affected stages recompute; tampered artifact ⇒ detected and recomputed).
+- **`__main__.py`** — CLI: fetches U1 pages + `/openapi.json` through the
+  replay engine (scope gate + governor inherited), loads a mission's
+  crawl/session artifacts, prints the brief.
+
+### Surfaces
+- **`bugwolf_understand` MCP tool** — U1→U9 natively in every session
+  (pages fetched scope-gated; mission artifacts consumed when given).
+- **`/bugwolf-understand`** rewritten to drive the real pipeline (tool
+  first, CLI equivalent, artifact map, dispatch contract).
+- Stub target gains `/pricing` + `/tos` (real U1 surfaces: plans,
+  subscription, voucher, verification, KYC, payouts).
+
+### Tests
+- `tests/test_understanding_layer.py` (20 tests): every stage's
+  extraction, fail-closed hollow-run, per-stage ordering guard, full
+  caching on unchanged inputs, minimal recompute on changed inputs,
+  tamper detection, U8 JSONL seed-list contract, coverage parking, brief
+  rendering, bridge registration, and END-TO-END over HTTP against the
+  live stub (fetch → model → brief; correctly PARKS idor/authz-bypass/
+  jwt-confusion when no accounts are bound).
+
+## v1.16.0 — Opsec & supply-chain hardening (master plan Phase 6)
+
+The home-beacon is dead, releases are signed, and every third party in the
+data path is documented, bounded, and optional.
+
+### The home-beacon is dead (`SKILL.md`)
+- **Removed**: the AUTO-UPDATE SYSTEM that fetched
+  `raw.githubusercontent.com/.../VERSION` at the start of EVERY session —
+  an unsigned trust channel (whatever that file returns is treated as
+  instructions) and an opsec tripwire (a beacon to GitHub before any probe
+  fires; exactly what a defensive SOC flags). A third beacon copy inside
+  the session-startup steps went with it.
+- **Replaced** by the UPDATE POLICY: no network at session start, ever;
+  updates are opt-in only, read tagged releases (never a mutable branch
+  file), and are facts to act on, never instructions to obey.
+
+### Signed releases (`tools/release_signing.py`, NEW)
+- `build_manifest` — deterministic SHA-256 manifest of a tree/bundle.
+- `sign_manifest` / `sign_bytes` — Ed25519 (minisign-style armor)
+  detached signatures via `cryptography`; **absent key ⇒ honestly
+  unsigned, never fabricated**.
+- `verify_manifest` / `verify_tree` — fail-closed install verification:
+  hash mismatch, missing file, AND unlisted file (the backdoor route) all
+  fail; verification artifacts in-tree are exempt from the unlisted rule.
+- `verify_bytes` — verify any release file offline.
+- `check_update` — the opt-in beacon replacement: GitHub releases API,
+  TLS, fails silent, `opt_in: true` in every fact dict.
+- CLI: `--build-manifest / --sign / --sign-file / --verify-file /
+  --verify-tree / --check-update`.
+
+### Install verification (`tools/harness_guard.py`)
+- New `--verify-install`: re-hashes the installed tree against the
+  manifest that shipped with it (signature verified when present),
+  offline and fail-closed. No manifest ⇒ NOT verified, with the honest
+  reason.
+
+### Release workflow (`release.yml`)
+- Builds the tree manifest + signs BOTH `SHA256SUMS.txt` and the manifest
+  with the `RELEASE_SIGNING_KEY` secret (Ed25519 PEM); no secret ⇒ the
+  release publishes **unsigned with the absence stated in the log**.
+- Release assets now include `SHA256SUMS(.txt)?.minisig`.
+
+### Tool installs pinned (`references/recon-tooling.md`)
+- New supply-chain policy: tagged releases never `@latest`/`main`, no
+  pipe-to-shell ever, checksums where published, pinned clones
+  (`--branch <tag> --depth 1`), record resolved versions.
+- **All 36 `go install …@latest` cells pinned to `@<release-tag>`**
+  (duplicates included), all floating `pip install X` cells pinned to
+  `X==<pinned-version>`, the two `cargo install` cells version-pinned,
+  the `git clone` cell branch-pinned, and the one `curl | sh` cell
+  (trufflehog) replaced with verified release binaries.
+
+### OAST transparency (`docs/OAST_TRANSPARENCY.md`, NEW)
+- What OAST is for, the loopback default (no third party), the opt-in
+  public relay (what crosses it, who sees it), and the self-hosted option
+  that eliminates the third party entirely.
+
+### `/bugwolf-doctor`
+- Step 5: `harness_guard --verify-install` (offline integrity gate).
+- Step 6: `--check-update` — explicitly marked operator-asks-only,
+  never unprompted.
+
+### Tests
+- `tests/test_phase6_opsec.py` (24 tests): beacon-absence gates across
+  every session surface, opt-in contract, offline fail-silent update
+  check (mocked), signing round-trip + tamper/missing/unlisted
+  fail-closed, verify-tree without manifest, `--verify-install` CLI
+  wiring, catalog pin gates (no `@latest`, no floating pip, no
+  `curl|sh`), and the OAST trust-model contract.
+
+## v1.15.0 — Operator command surface (master plan Phase 5)
+
+The six commands the plan specifies — including the new front door. Every
+command is a reproducible operator runbook: exact backend commands, what to
+show, what never to do.
+
+### The six commands (`commands/`)
+- **`/bugwolf-leads`** — the lead ledger state machine UI: OPEN → MUTATING →
+  FINDING / PARKED / KILLED, half-verdicts with evidence, deterministic
+  next-mutation (anti-repeat), the kill guard (a refused kill is a park
+  into the chain pool, never a delete), and chain-partner rescan.
+- **`/bugwolf-scope`** — intake + LIVE gate preview: bind a `ScopeGate` in a
+  heredoc and show ALLOW/DENY verdicts for target/subdomain/excluded/
+  lookalike/loopback before anything fires (exclusions beat the wildcard;
+  lookalikes never match by suffix). Surfaces the harness contract
+  (`state/scope_contract.json`) and the PreToolUse hook's inert/clear
+  semantics — never `clear` during a live mission.
+- **`/bugwolf-research`** — R1–R7: the sequence checkpoints (R1 pre-hunt,
+  R2 post-recon with stack context, R3/R4/R5) plus the event-driven pair
+  (R6 blocker→bypass, R7 escalation-before-downgrade), freshness gating,
+  and the citation discipline every hunt dispatch must carry.
+- **`/bugwolf-chain`** — deep_chain walk × differential signals × impact
+  focus: A→B paths from findings + PARKED leads + exploit-feedback
+  hypotheses, differential paths from the crawl's access matrix as landing
+  zones, ONE ranked list by business impact (dollars/PII/ATO) — and chain
+  leads get the partner attached so the hunt tests the combination.
+- **`/bugwolf-doctor`** — the 60-second smoke test: lab runtimes with exact
+  fix commands, the replay + browser engine suites against the stub's real
+  sinks, packaging gates, and honest interpretation (missing Playwright ≠
+  broken engine; client-side verdicts go `blocked-browser`).
+- **`/bugwolf-understand`** — **the front door**: runs the Understanding
+  Layer U1→U9 in strict order (fail-closed, incremental re-runs), grounding
+  in the session store + access matrix + capability manifest (deterministic
+  captures first), the Assumption Ledger with dispro plans as the zero-day
+  seed list, the coverage gate (classes with no model support are parked
+  with reason), and the **Hunting Brief** as the final output — what
+  `/bugwolf-run` dispatches against.
+
+### Packaging
+- All 16 commands registered in `plugin.json` + `marketplace.json`
+  (manifest gate validates existence — drift fails CI).
+
+### Tests
+- `tests/test_phase5_commands.py` (12 tests): registration in both
+  manifests, front-matter contract (description + argument-hint), a
+  **backend drift gate** (every `python3 -m` / `python3 tools|hooks` path a
+  command cites must exist on disk), per-command doctrine pins, and the
+  U1→U9 ordering/coverage-gate/assumption-ledger/Hunting-Brief contract.
+
+## v1.14.0 — Harness-level scope enforcement (master plan Phase 3)
+
+Scope discipline moves **outside the model**: a PreToolUse hook intercepts
+every Bash and WebFetch call at the Claude Code harness level and denies
+out-of-scope network use before execution.  This is enforcement that
+survives model drift, prompt injection, and agent hallucination — the
+gate no longer depends on the agent's cooperation.
+
+### PreToolUse scope hook (`hooks/bugwolf_pretool_scope_hook.py`)
+- Extracts candidate hosts from Bash commands (curl/wget/nc/socat/ssh
+  arguments, `--host`/`--connect-to` flags, scheme:// URLs, Host: header
+  overrides) and from WebFetch input URLs; a plain command with no
+  network surface is allowed without evaluation.
+- Reuses the mission's own scope gate: subdomains allowed under the
+  target wildcard, deny entries beat wildcards, lookalike hosts never
+  match by suffix, loopback mirrors the engine's rule.  Verdicts:
+  allow (exit 0), deny via **exit 2** (un-overridable, stderr fed back
+  to the model) plus a structured `permissionDecision: "deny"` JSON.
+- **Fail-open on harness errors** (malformed stdin must never wedge a
+  session) and **inert without a mission** — zero UX cost outside
+  `bugwolf run`.
+- Every denial is journaled: `state/orchestrator/<mission>/scope_hook/denials.jsonl`
+  (policy fact, command, refused hosts) for audit and F0.5 review.
+
+### Contract persistence (`tools/runtime/scope.py`)
+- `write_scope_contract()` / `clear_scope_contract()` — the hook's
+  authority is a signed-by-structure contract file at
+  `state/scope_contract.json` (targets, deny list, mission, written_at);
+  the hook trusts it only while it exists, so the mission lifecycle
+  installs and revokes enforcement automatically.
+- Honors `BUGWOLF_PROJECT_ROOT` so hooks resolve the contract in any
+  working directory.
+
+### Integration
+- `hooks.json` registers the PreToolUse matcher for Bash + WebFetch
+  (alongside the existing Stop hook); `plugin.json`/`marketplace.json`
+  already ship the hooks file to every install.
+- `MissionRunner.run()` writes the contract at mission start and clears
+  it in the finally block — enforcement exactly spans the mission.
+
+### Tests
+- `tests/test_pretool_scope_hook.py` (17 tests): subprocess-driven
+  fixtures — allow/deny, deny-beats-wildcard, subdomain suffix rule,
+  lookalike refusal, loopback parity with the engine gate, WebFetch
+  enforcement, Host-header override detection, malformed-stdin fail-open,
+  inert-without-contract, denial journaling, hooks.json registration,
+  contract write/clear round-trip.
+
+## v1.13.0 — Session intelligence: authenticated per-credential crawl (master plan Phase 2.2 + 2.3)
+
+Differential access becomes DATA.  With operator accounts bound, BugWolf
+now builds a per-credential model of the target's identity layer
+automatically — the base map the authz lanes and the U4 understanding
+artifact consume.
+
+### Session context store (`tools/runtime/session_context.py`, 2.2)
+- Per-credential model: tokens (memory-first, structurally redacted on
+  every export — `raw_token` only under explicit `include_tokens=True`),
+  **live JWT header+claim decode** (the credential the target actually
+  issued, not static analysis), inferred role with source attribution
+  (jwt → response → operator), object-ID inventory, endpoint reachability
+  per identity, and the label × path identity matrix.
+- Claim-shape redaction for export: claim NAMES survive (structural
+  facts), identity-bearing claim VALUES are redacted.
+- `to_model_dict()` is the U4 identity/authz artifact payload.
+
+### Authenticated crawl (`tools/runtime/authed_crawl.py`, 2.3)
+- The same URL space crawled once per identity (anon / A / B / C) through
+  the Phase 1 replay engine — scope gate + governor inherited, no separate
+  network path.  Governor refusals (circuit/budget/rate) degrade to an
+  honest status-0 fact, never a crash.
+- Records per page: `status_by_label`, title, links, and **form schemas**
+  (action, method, fields).  Differential paths (identities seeing
+  different statuses) are the authz hunt's candidate list — a fact, not a
+  verdict.
+- Session store is fed as a side effect: roles and object IDs accumulate
+  while crawling.
+- Artifacts: `state/orchestrator/<mission>/crawl/access_matrix.json` +
+  `pages.jsonl`.
+
+### Integration
+- `MissionRunner.run()` step 2.7: when accounts bind, the session context
+  is built and a bounded crawl (≥12 pages or 2× operator paths) runs
+  automatically; artifacts persisted, `authed_crawl` event logged with
+  differential paths + inferred roles.
+- **MCP tool `bugwolf_sessions`**: the identity model (roles, JWT shape,
+  object inventory, identity matrix, crawl differentials) natively in
+  every Claude Code session — tokens always redacted.
+- Stub target: `/login` now issues **role-carrying JWTs** (`admin`/
+  `user`), `/dashboard` is identity-rendered HTML, `/admin/panel` is a
+  real 200/403 boundary keyed on the token's role claim — the crawl's
+  differential has a genuine privilege boundary to find.
+
+### Tests
+- 11 new tests: JWT/role inference, redaction (export + claims), object
+  inventory, identity matrix, save/load, U4 artifact shape, and the live
+  crawl differential (anon/A 403 vs C 200 on `/admin/panel`, uniform 200
+  on `/dashboard`, form schema harvest, artifact persistence).
+
+## v1.12.0 — Browser-confirmed client-side verdicts (master plan Phase 2)
+
+The "reflection is not execution" lane now has its browser.  A real
+Chromium confirms client-side findings via console/DOM signature capture —
+with the scope gate enforced at the navigation layer and honest
+blocked-browser semantics when no browser exists.
+
+### The binding (`tools/runtime/browser_driver_playwright.py`)
+- **Real Chromium** behind the existing `BrowserDriver` protocol:
+  navigate, console capture (console messages + uncaught page errors),
+  DOM evaluation (the sink query), and full-page screenshot evidence
+  under `state/evidence/browser/`.
+- **Own-thread execution model**: Playwright's sync API refuses to run
+  inside an asyncio event loop — and BugWolf's hosts (Claude Code MCP
+  bridge, mission runner) live on one.  Every public call marshals onto a
+  dedicated worker thread; the binding works from any thread, including
+  coroutines (regression-tested).
+- **Evidence is per-navigation**: the console/dialog buffer resets on
+  every `navigate` — a reused driver validating many leads sequentially
+  can never let lead N's execution false-confirm lead N+1.
+- **Fail-closed**: Playwright missing ⇒ availability fact with install
+  hint, lead goes to blocked-browser, never a fabricated verdict.  Scope
+  gate runs BEFORE the browser starts — an out-of-scope URL cannot spawn
+  a browser process.  Dialogs auto-dismissed (recorded), timeouts capped.
+
+### Integration
+- **`browser_driver.load_default_driver()` / `set_default_driver()` /
+  `driver_status()`** — binding loader with operator pin support.
+- **`MissionRunner` auto-bind**: `browser_driver=None` (default) loads the
+  real binding automatically — browser-confirmed verdicts out of the box;
+  an injected driver object still wins; `browser_driver=False` forces the
+  deterministic no-driver contract (CI/test runs).
+- **MCP tool `bugwolf_browser_confirm`** — browser-confirmed validation
+  natively in every Claude Code session: EXECUTION-CONFIRMED requires the
+  payload signature in console/DOM; reflection alone reports
+  `reflection_only` and never confirms.
+- **Stub target `/api/notes` is now a REAL HTML page** with unencoded
+  stored-note rendering and a script `eval` sink — the client-side lane
+  has an executable XSS surface instead of a JSON echo.
+
+### Tests
+- 14 browser tests (deterministic fake-driver layer + live Chromium suite
+  skipped honestly when Playwright is absent), including the two doctrine
+  regressions: reflection ≠ execution, and per-navigation evidence reset.
+
+## v1.11.0 — Raw-socket replay send engine (master plan Phase 1)
+
+BugWolf can now put bytes on the wire itself. A byte-exact HTTP replay
+engine replaces the curl-shellout: framing ambiguity is *observable*,
+mutations operate on parsed message structures, and every send is
+scope-gated (deny-by-default) and governor-throttled. Unlocks the
+desync/smuggling and header-ambiguity bug classes that normalized
+HTTP clients physically cannot express.
+
+### The engine (`tools/runtime/replay/`)
+- **message.py** — byte-exact HTTP/1.1 parser/serializer: header case,
+  OWS, duplicate headers, and pipelined trailers round-trip exactly;
+  CL+TE coexistence, duplicate/conflicting Content-Length, and mixed-case
+  Transfer-Encoding are flagged as observed framing conflicts (facts,
+  never auto-resolved).
+- **apply.py** — 15 mutation ops over parsed messages (query surgery,
+  position-preserving header edits, JSON dot-path body edits, cookie ops,
+  positional path rewrite). Body-editing ops repair a stale
+  Content-Length — a mutation can no longer hang the target with a
+  self-inflicted framing mismatch. `body-set-field` sets values exactly
+  (no silent JSON type coercion — type confusion belongs to body-merge).
+- **encode.py** — composable codec pipelines (url/url-double/base64/
+  html-dec/unicode/…): WAF bypass spaces that string concatenation
+  cannot express.
+- **backend_socket.py** — the only component that touches the network:
+  scope gate authorizes FIRST (fail-closed, lowest layer), governor
+  admits second (budget → circuit → concurrency → rate), fresh socket
+  per send, TLS via SNI, response read with body cap and an honest
+  no-bytes timeout fact (never a silent status=None success).
+- **governor.py** — deterministic state machines (CircuitBreaker,
+  AIMD concurrency, TokenBucket, GlobalBudget); time is injected, all
+  unit-testable without sleeps.
+- **observe.py** — facts only: reflections, error-class fingerprints,
+  deterministic A/B deltas; verdicts stay with the F0.5 gate.
+- **batch.py** — compare (baseline vs mutated variants, the IDOR/authz
+  automation) and sweep (one mutation across every query/body/path
+  position).
+- **engine.py + tools/replay_cli.py** — `replay_request` (structured +
+  delta), `replay_raw` (verbatim bytes), `desync_probe` (front+smuggled
+  pair); CLI accepts inline or file mutations and reads request files
+  byte-exactly (no universal-newline mangling).
+- **MCP bridge**: `bugwolf_http_replay`, `bugwolf_http_replay_raw`,
+  `bugwolf_http_replay_desync` — the engine is callable natively from
+  every Claude Code session.
+
+### Scope-gate integration
+- `scope.GATE` is now a PEP 562 module attribute that always resolves
+  the live gate (reset-safe for the bridge, CLI, and tests).
+
+### Stub-target acceptance surfaces
+- `/api/echo-headers`, `/api/param-echo`, `/api/cached/page` (unkeyed
+  header → cache poisoning, X-Cache HIT/MISS), `do_*` catch-all dispatch
+  so odd-case verbs sent raw are observable, BrokenPipe-tolerant writes.
+
+### Tests
+- 49 replay-engine tests (unit + live in-process integration) including
+  regressions for both bugs the CLI smoke caught: stale-CL after body
+  mutation, and silent zero-byte responses.
+
+## v1.10.0 — Claude Code plugin packaging + native subagent dispatch (master plan Phase 0 + 4)
+
+BugWolf's engine was ahead of its packaging. This release makes it a
+first-class Claude Code plugin and fixes the agent fleet's native
+dispatch contract.
+
+### Plugin packaging (Phase 0)
+- **Marketplace install**: added `.claude-plugin/marketplace.json` — the
+  plugin is now installable with `/plugin marketplace add youseefhamdi/bugwolf`
+  then `/plugin install bugwolf@bugwolf`.
+- **plugin.json truth**: version synced to the release (was stale at 1.0.0
+  while VERSION said 1.9.2), plus `repository`, `homepage`, `keywords`, and
+  a structured author identity for the marketplace listing.
+- **MCP wiring**: root `.mcp.json` registers `bridge/bugwolf-mcp.py`, so
+  `bugwolf_status` / `bugwolf_plan` / `bugwolf_run` / `bugwolf_leads` /
+  `bugwolf_mode` are natively available in every Claude Code session with
+  zero setup.
+- **Manifest integrity gate**: new `tools/plugin_manifest.py` checks
+  version sync across VERSION / plugin.json / marketplace.json / CHANGELOG
+  (latest `## vX.Y.Z` heading), manifest shape (referenced commands, hooks,
+  skills, agents must exist), and agent front-matter shape. CI runs it;
+  drift fails the build.
+- **Release pipeline**: `.github/workflows/release.yml` — a `v*` tag runs
+  the full suite, builds both bundles, emits SHA256SUMS, and publishes the
+  GitHub Release with `.skill` + `.freebuff.zip` artifacts.
+- **Trust docs**: `SECURITY.md` (scope model, sandbox, kill switch,
+  reporting policy) and `CONTRIBUTING.md` (registry-first agent edits,
+  test gates, release process).
+
+### Native subagent dispatch (Phase 4)
+- **`model-tier:` was silently ignored** by Claude Code's native Task tool
+  (the field does not exist); tier routing only worked in the CLI-spawn
+  path. The generator now emits the **native `model:` field**
+  (`deterministic → haiku`, `local_slm → sonnet`, `frontier → opus`) and
+  preserves the router vocabulary in a non-reserved **`x-bugwolf-tier:`**
+  key, so `tools/core/model_router.py` and the team engine's CLI pinning
+  keep working unchanged.
+- **`tools:` now names Claude Code tools** (previously BugWolf module names
+  like `runtime.mission_runner`, unresolvable by the Task-tool allowlist).
+  Allowlists are derived per lane: verify/report agents are **read-only
+  (no Bash)** — lane discipline is enforced mechanically; hunt agents get
+  `Bash` + `Task`; workflow agents never dispatch subagents. The BugWolf
+  module list moved into the body preamble ("Tool modules:").
+- All 39 agent definitions regenerated; `generate_agents.py --check` stays
+  green and `plugin_manifest.py --check-agents` locks the new shape.
+
+### Tests
+- New `tests/test_plugin_packaging.py`: version sync, manifest shape,
+  front-matter shape (39 agents), sync-check drift detection, native-Task
+  structural validation (deny-by-default scope + sandbox + verify read-only
+  lane asserted in every dispatch payload).
+
 ## v1.9.2 — Recon depth surfaced in operator reports (status + preflight)
 
 The depth ledger and its evidence recommendations were visible only to

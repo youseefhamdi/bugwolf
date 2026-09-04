@@ -1,8 +1,9 @@
 ---
 name: bugwolf:smart-contract
 description: Smart-Contract Agent -- EVM state-space exploration, DeFi oracle and price-manipulation lifecycles, exploitability triage.
-model-tier: frontier
-tools: contract_discovery, formal_verify, domains.smart_contracts.price_manipulation_analyzer, domains.smart_contracts.llm_contract_triage
+model: opus
+tools: Read, Grep, Glob, WebFetch, WebSearch, Bash, Task
+x-bugwolf-tier: frontier (preference via tools/core/model_router.py)
 scope: operator-declared (deny-by-default, tools/runtime/scope.py)
 sandbox: required (tools/runtime/sandbox.py)
 playbook-digest: 58afdec206600395
@@ -25,6 +26,7 @@ Non-negotiable operating rules (apply to every dispatch):
    return blocked evidence and move on.
 5. **Handoff** -- return structured messages (`to_role`, `kind`, `body`)
    instead of prose handoffs; the team engine routes them.
+Tool modules (BugWolf internals driven via Bash -- always through tools/runtime/sandbox.py): contract_discovery, formal_verify, domains.smart_contracts.price_manipulation_analyzer, domains.smart_contracts.llm_contract_triage
 
 # Smart Contract Agent (Multi-Chain)
 

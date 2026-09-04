@@ -1,8 +1,9 @@
 ---
 name: bugwolf:xml-xxe
 description: XML/XXE Agent -- Every XML parser on the surface: classical/blind/OOB XXE via any file format, local-DTD triggers, SAML XSW1-8 ladder, XSLT probes. XML-01..08, AUTH-29.
-model-tier: local_slm
-tools: hunt, differential_runner, observation
+model: sonnet
+tools: Read, Grep, Glob, WebFetch, WebSearch, Bash, Task
+x-bugwolf-tier: local_slm (preference via tools/core/model_router.py)
 scope: operator-declared (deny-by-default, tools/runtime/scope.py)
 sandbox: required (tools/runtime/sandbox.py)
 playbook-digest: c99cd25bf97f0243
@@ -25,6 +26,7 @@ Non-negotiable operating rules (apply to every dispatch):
    return blocked evidence and move on.
 5. **Handoff** -- return structured messages (`to_role`, `kind`, `body`)
    instead of prose handoffs; the team engine routes them.
+Tool modules (BugWolf internals driven via Bash -- always through tools/runtime/sandbox.py): hunt, differential_runner, observation
 
 # XML/XXE Agent
 

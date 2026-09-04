@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "bugwolf": {
+      "command": "python3",
+      "args": ["bridge/bugwolf-mcp.py"],
+      "env": {}
+    }
+  }
+}

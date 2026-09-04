@@ -8,8 +8,10 @@ Freebuff subagent front-matter:
     ---
     name: bugwolf:<role>
     description: <title> -- <description>
-    model-tier: <tier_affinity> (preference: <model_preference>)
-    tools: <comma-joined tool modules>
+    model: inherit            (sonnet | opus | haiku | inherit -- native Task field)
+    tools: <comma-joined Claude Code tool names>   (Task-tool allowlist)
+    x-bugwolf-tier: <tier_affinity> (preference: <model_preference>)  -- consumed by
+                      tools/core/model_router.py; NOT a Claude Code field
     scope: operator-declared (deny-by-default, runtime/scope.py)
     sandbox: required (runtime/sandbox.py)
     ---
@@ -40,6 +42,43 @@ from tools.core.agent_registry import AgentRegistry, AgentRegistryError  # noqa:
 
 OUT_DIR = ROOT / "agents" / "bugwolf"
 
+# ---------------------------------------------------------------------------
+# Claude Code front-matter mapping (master plan Phase 4.1/4.2)
+#
+# ``model-tier`` is not a Claude Code subagent field (the native field is
+# ``model: sonnet|opus|haiku|inherit``), so the tier preference was silently
+# ignored on native Task dispatch.  Two fixes:
+#   1. emit the real ``model:`` field, mapped from tier affinity;
+#   2. move the tier into ``x-bugwolf-tier:`` (non-reserved key) so
+#      ``tools/core/model_router.py`` keeps its vocabulary and the CLI-spawn
+#      pinning in tools/runtime/team.py keeps working unchanged.
+#
+# ``tools:`` previously listed BugWolf *module* names ("hunt",
+# "runtime.mission_runner"), which Claude Code does not resolve.  The Task
+# tool parses ``tools:`` as an allowlist of Claude Code tool names; emit
+# real names instead, derived per-lane (4.2).  The BugWolf module list stays
+# in the body preamble (``Tool modules:``) so nothing is lost.
+
+# tier affinity -> native model field
+TIER_TO_MODEL = {
+    "deterministic": "haiku",
+    "local_slm": "sonnet",
+    "frontier": "opus",
+}
+
+# Claude Code tool names by team lane.  Read-only lanes (verify/report) get
+# no Bash -- lane discipline is enforced mechanically, not by prompt.
+LANE_TOOLS = {
+    "recon": ("Read", "Grep", "Glob", "WebFetch", "WebSearch", "Task"),
+    "hunt": ("Read", "Grep", "Glob", "WebFetch", "WebSearch", "Bash", "Task"),
+    "verify": ("Read", "Grep", "Glob", "WebFetch", "Task"),
+    "report": ("Read", "Grep", "Glob", "Write"),
+}
+
+# Tool list for lanes that never dispatch subagents.
+LANE_TOOLS_NO_TASK = {lane: tuple(t for t in tools if t != "Task")
+                      for lane, tools in LANE_TOOLS.items()}
+
 PROMPT_PREAMBLE = """You are {title}, a specialized BugWolf subagent dispatched as
 `{harness_role}` inside a multi-agent security team.
 
@@ -62,20 +101,39 @@ Non-negotiable operating rules (apply to every dispatch):
 
 def render(registry: AgentRegistry, role: str) -> str:
     spec = registry.get(role)
+    model = TIER_TO_MODEL.get(spec.tier_affinity, "inherit")
+    # Merge lane allowlists across the agent's lanes; workflow agents
+    # (recon/verify/report lanes) never dispatch subagents, so drop Task.
+    lanes = spec.lanes or ()
+    if spec.entry == "workflow":
+        tool_names = LANE_TOOLS_NO_TASK.get(lanes[0], ()) if lanes else ()
+    else:
+        merged: list[str] = []
+        for lane in lanes:
+            for tool_name in LANE_TOOLS.get(lane, ()):
+                if tool_name not in merged:
+                    merged.append(tool_name)
+        tool_names = tuple(merged)
     front = (
         "---\n"
         f"name: {spec.harness_role}\n"
         f"description: {spec.title} -- {spec.description}\n"
-        f"model-tier: {spec.tier_affinity}\n"
-        f"tools: {', '.join(spec.tools)}\n"
+        f"model: {model}\n"
+        f"tools: {', '.join(tool_names)}\n"
+        f"x-bugwolf-tier: {spec.tier_affinity}"
+        f" (preference via tools/core/model_router.py)\n"
         "scope: operator-declared (deny-by-default, tools/runtime/scope.py)\n"
         "sandbox: required (tools/runtime/sandbox.py)\n"
         f"playbook-digest: {registry.prompt_digest(role)}\n"
         "---\n\n"
     )
     body = registry.load_prompt(role)
+    module_line = (
+        f"Tool modules (BugWolf internals driven via Bash -- "
+        f"always through tools/runtime/sandbox.py): {', '.join(spec.tools)}\n\n"
+    )
     return front + PROMPT_PREAMBLE.format(
-        title=spec.title, harness_role=spec.harness_role) + "\n" + body + "\n"
+        title=spec.title, harness_role=spec.harness_role) + module_line + body + "\n"
 
 
 def main() -> int:

@@ -1,10 +1,25 @@
 {
   "name": "bugwolf",
   "displayName": "BugWolf Agent Orchestrator",
-  "version": "1.0.0",
-  "description": "Performance-first agent orchestrator for offensive-security missions: task graph, lead protocol, persistent modes, pre-flight capability discovery.",
-  "author": "BugWolf",
+  "version": "1.24.0",
+  "description": "Understanding-driven offensive-security agent teams: 39 specialized subagents, durable task-graph orchestration, deny-by-default scope gate, subprocess sandbox, OAST attribution, F0.5 evidence-gated reporting.",
+  "author": {
+    "name": "Yousef Hamdi",
+    "url": "https://github.com/youseefhamdi"
+  },
+  "homepage": "https://bugwolf.xyz",
+  "repository": "https://github.com/youseefhamdi/bugwolf",
   "license": "MIT",
+  "keywords": [
+    "security",
+    "offensive-security",
+    "bug-bounty",
+    "pentest",
+    "red-team",
+    "smart-contracts",
+    "web-security",
+    "llm-security"
+  ],
   "commands": [
     "commands/bugwolf.md",
     "commands/bugwolf-plan.md",
@@ -15,7 +30,13 @@
     "commands/bugwolf-stop.md",
     "commands/bugwolf-resume.md",
     "commands/bugwolf-sandbox.md",
-    "commands/bugwolf-team.md"
+    "commands/bugwolf-team.md",
+    "commands/bugwolf-leads.md",
+    "commands/bugwolf-scope.md",
+    "commands/bugwolf-research.md",
+    "commands/bugwolf-chain.md",
+    "commands/bugwolf-doctor.md",
+    "commands/bugwolf-understand.md"
   ],
   "agents": "agents/bugwolf/",
   "hooks": "hooks/hooks.json",
