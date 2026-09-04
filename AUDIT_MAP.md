@@ -150,6 +150,7 @@ with lead ladders — while domain modules publish typed events onto
 | `tools/runtime/scope.py` | 293 | **Deny-by-default operator scope gate.** Target host + explicit `--scope` entries allowed; `--exclude` carve-outs ALWAYS beat wildcards; fail-closed `ScopeViolation`; process-global, idempotent re-bind, refuses target mixing. `ScopeGate`@56 (`check`@124), `bind_target`@196, `check_url`@209, `load_scope_file`@229 |
 | `tools/runtime/team.py` | 620 | **v1.4: Multi-Agent Team Engine** — waves recon→hunt(parallel specialists)→verify→report; ThreadPoolExecutor bounded by budget; append-only `team/runs.jsonl` ledger; atomic `team/state.json` checkpoints (write+fsync+rename); `TeamEngine`@~215 (`plan`@~330, `run`/`resume`@~430, `_recover_stale`@~410 heartbeat>15min fail-closed, `stop`@~570); member dispatch carries prompt+digest+scope+sandbox flags; no worker bound ⇒ BLOCKED evidence (first-class terminal), never fabricated; typed `TeamMessage` handoffs persisted to `messages.jsonl`. CLI: `--plan/--run/--resume/--status --worker task-tool --timeout` |
 | `tools/runtime/team_dispatch.py` | 421 | **v1.4: Task-tool dispatch bridge** — binds the team engine to live Claude Code subagent dispatch via a durable file queue (`team/dispatch/{jobs,results}/`). Engine side: `TaskToolWorker`@~80 (atomic enqueue, heartbeat refresh while waiting, honest BUDGET-EXHAUSTED on budget expiry). Harness side CLI: `--next` (rename-wins exclusive claim), `--complete`/`--fail`/`--release` (claim-token ownership enforced; impostor ⇒ exit 3), atomic tmp+fsync+rename writes; `bind_heartbeat`@~350 |
+| `tools/runtime/native_dispatch.py` | 264 | **v1.6: native in-process dispatch worker** — `NativeTaskWorker` spawns each member's `bugwolf:<role>` subagent as one bounded `claude --print --output-format json` subprocess (prompt on stdin via `run_bounded_subprocess`, argv-only, process-group kill + honest `BUDGET-EXHAUSTED` on timeout, `ResourceLimitError` → FAILED). Honesty contract identical to the file-queue bridge: non-zero exit / empty output / `is_error` ⇒ FAILED, never fabricated DONE; `lead_status` passes through only when valid. `model_map` maps tier preferences to `--model` (unknown hints dropped, not guessed); `command_builder` is the extension point for pinning `subagent_type`. Team CLI: `--worker native` |
 | `tools/runtime/browser_driver.py` | 162 | Client-side validation behind a `BrowserDriver` protocol; no driver bound → `blocked-browser` evidence lead, never a fabricated result. Scope-gated. `validate_client_side`@103, `blocked_browser_evidence`@156 |
 | `tools/runtime/__init__.py` | 0 | package marker |
 
@@ -712,3 +713,29 @@ desync, browser-powered, queue-poisoning safety law), `graphql`
 All 76 PDFs deleted from the repo (`git rm`) after distillation; their
 knowledge now lives only in the checklist registry, playbooks, and
 coverage tooling. PDFs remain in git history but not in HEAD.
+
+### §17.4 Native in-process dispatch (v1.6)
+
+The two-process drain loop is no longer required. `NativeTaskWorker`
+(`tools/runtime/native_dispatch.py`) implements the same worker seam
+(`worker(payload) -> result-dict`) as the file-queue bridge but dispatches
+each team member **inline**: one bounded headless `claude --print
+--output-format json` subprocess per member, spawned from the engine process
+itself. No queue, no claim tokens, no second terminal:
+
+```bash
+python3 -m tools.runtime.team --mission M --target T --worker native --run --json
+```
+
+Honesty invariants (pinned by `tests/test_native_dispatch.py`, 20 tests):
+subagent non-zero exit / empty output / `is_error` ⇒ **FAILED**; subprocess
+timeout ⇒ **BUDGET-EXHAUSTED** (process group killed via
+`run_bounded_subprocess`); output cap ⇒ **FAILED**; `lead_status`
+(PWNED/REFUTED/BUDGET-EXHAUSTED) passes through only from structured output
+and only when valid. Spawn discipline: argv-only, prompt on stdin (never
+argv — no E2BIG, no process-list leak), model tier mapped via `model_map`
+(unknown preferences dropped, never guessed), `command_builder` extension
+point for pinning `subagent_type` per CLI version. Scope/sandbox flags stay
+in the payload — in-process dispatch does not widen the enforcement plane.
+The task-tool file queue remains available (`--worker task-tool`) for
+two-terminal operation.

@@ -669,10 +669,12 @@ def main() -> int:
     ap.add_argument("--run", action="store_true")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--status", action="store_true")
-    ap.add_argument("--worker", default="", choices=("", "task-tool"),
+    ap.add_argument("--worker", default="", choices=("", "task-tool", "native"),
                     help="execution binding: task-tool = enqueue to the "
                          "file queue drained by the Claude Code session "
-                         "(tools/runtime/team_dispatch.py)")
+                         "(tools/runtime/team_dispatch.py); native = "
+                         "in-process headless Claude Code spawns, no queue "
+                         "(tools/runtime/native_dispatch.py)")
     ap.add_argument("--timeout", type=int, default=900,
                     help="per-member dispatch budget in seconds "
                          "(task-tool worker)")
@@ -697,6 +699,9 @@ def main() -> int:
     if args.worker == "task-tool":
         from tools.runtime.team_dispatch import TaskToolWorker
         worker = TaskToolWorker(mission, timeout_seconds=args.timeout)
+    elif args.worker == "native":
+        from tools.runtime.native_dispatch import NativeTaskWorker
+        worker = NativeTaskWorker(mission, timeout_seconds=args.timeout)
     engine = TeamEngine(mission, worker=worker)
     if args.plan:
         engine.plan(bug_classes=[b for b in args.bugs.split(",") if b])

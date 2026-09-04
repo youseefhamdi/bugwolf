@@ -25,7 +25,26 @@ preference. Verify playbooks are intact before dispatch:
 python3 -m tools.core.agent_registry --verify
 ```
 
-## 2. Run / resume — live Task-tool dispatch
+## 2. Run / resume — live subagent dispatch
+
+### Preferred: native in-process worker (one terminal)
+
+Bind the **native worker** to spawn each `bugwolf:<role>` subagent headlessly
+from the engine process itself — no queue, no second terminal:
+
+```bash
+python3 -m tools.runtime.team --mission <id> --target <target> \
+  --worker native --timeout 900 --run --json
+```
+
+Each member becomes one bounded `claude --print --output-format json`
+subprocess (prompt on stdin, timeout + output cap enforced). Tier preferences
+map to `--model` via `NativeTaskWorker(model_map=...)`; pass
+`command_builder=` to pin `subagent_type` or add flags for your CLI version.
+No bound CLI in the environment ⇒ members close `FAILED` honestly — never
+fabricated results.
+
+### Alternative: task-tool worker (two terminals)
 
 Bind the **task-tool worker** to enqueue member dispatches to the durable
 file queue, then drain it from this session:
@@ -56,7 +75,7 @@ python3 -m tools.runtime.team_dispatch --mission <id> --fail <job-id> --reason "
   `team/state.json`; the queue lives in `team/dispatch/{jobs,results}/`.
 - After a crash: rerun with `--resume` — stale claims (heartbeat older than
   15 min) are recovered, finished members never re-run.
-- Without `--worker task-tool`, execution falls back to a bound Python
+- Without `--worker`, execution falls back to a bound Python
   worker (tests) or BLOCKED evidence per member (no fake results).
 
 ## 3. Status
