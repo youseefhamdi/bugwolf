@@ -75,3 +75,30 @@ the hunt wave weights freshly-discovered surfaces higher.
 takeover candidates routed to `ato-chain`; staging APIs to the API and
 access-control specialists; feed the research engine's version census
 with newly fingerprinted tech stacks.
+
+---
+
+## Corpus addendum v3.1: three live-research techniques (Sept 2026)
+
+From the operator-supplied 2026 recon articles read after the corpus
+distillation (lab-setup 25-tool workflow, bugitrix hidden-surface
+checklist, dorks-to-dollars writeup):
+
+1. **Company-first, domain-second** [RCN-11]: pull subsidiaries from
+   SEC filings/Crunchbase/LinkedIn, then run `crt.sh` per LEGAL ENTITY —
+   certs issued to subsidiary names never mention the parent brand.
+   GitHub orgs, npm, and Docker Hub leak internal hostnames in commit
+   history. AI assist: feed company pages to an LLM, extract every
+   subsidiary/product name, then census each.
+2. **Layered enum + diff** [RCN-12]: passive (subfinder/assetfinder/
+   amass) + permutation (alterx → puredns) in parallel, then diff the
+   sets. Permutations catch `staging-api-v2.` and `internal-uat.`
+   hosts that are never linked and never indexed.
+3. **The staging pivot** [RCN-13]: the $1,500 corpus writeup's decisive
+   move — when the main app is locked (signups disabled, hardened),
+   pivot to UAT/staging/test/demo mirrors of the same API where team
+   detail endpoints return other users' members/roles/UUIDs/keys.
+4. **Subdomain outlier clustering** [RCN-14]: batch resolved hosts
+   into an LLM, cluster by likely function (auth/admin/internal/CDN),
+   and flag the "doesn't belong here" outlier — the pattern-spot that
+   beats squinting at 400 names.

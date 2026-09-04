@@ -333,6 +333,18 @@ _ITEMS: Tuple[ChecklistItem, ...] = (
     _i("RCN-10", "recon", "Acquisition census: Crunchbase/Wikipedia "
        "subsidiaries, reverse whois, tracker/favicon fingerprint pivots",
        "recon"),
+    _i("RCN-11", "recon", "Company-first census: SEC/Crunchbase/LinkedIn "
+       "subsidiary names -> crt.sh per LEGAL ENTITY (not just brand), "
+       "GitHub orgs/npm/Docker Hub leakage", "recon"),
+    _i("RCN-12", "recon", "Layered enum diff: passive + active + "
+       "permutation (alterx) runs, then diff — permutations catch "
+       "staging-api-v2 / internal-uat never linked or indexed", "recon"),
+    _i("RCN-13", "recon", "Staging pivot: when the main app is locked "
+       "(signups closed, hardened), pivot to UAT/staging/test/demo "
+       "mirrors of the same API", "recon"),
+    _i("RCN-14", "recon", "Orphan-infrastructure hunt: cloud buckets, "
+       "old IPs, dangling DNS — highest-ROI 2026 surface; subdomain "
+       "outlier clustering ('doesn't belong here' flag)", "recon"),
 
     # -- CLOUD lane --------------------------------------------------------------
     _i("CLD-01", "cloud", "IAM privesc graph: sts:AssumeRole chains, "
@@ -438,8 +450,9 @@ _CLASS_MAP: Dict[str, Tuple[str, ...]] = {
     "replay_attack": ("LOG-08", "AUTH-22", "LOG-05"),
     "rounding_abuse": ("LOG-02", "LOG-01"),
     "surface_expansion": ("RCN-01", "RCN-03", "RCN-04", "RCN-05",
-                          "RCN-08", "RCN-10"),
-    "staging_exposure": ("RCN-04", "RCN-05"),
+                          "RCN-08", "RCN-10", "RCN-11", "RCN-12",
+                          "RCN-14"),
+    "staging_exposure": ("RCN-04", "RCN-05", "RCN-12", "RCN-13"),
     "takeover_candidate": ("RCN-01", "RCN-03", "RCN-09", "AUTH-25"),
     "acquired_assets": ("RCN-10", "RCN-05"),
     "port_exposure": ("RCN-03", "PLT-04"),
