@@ -21,7 +21,9 @@
 
 > **AI Pentesting Tool:** Run isolated, cloud-hosted pentesting sandboxes at **[bugwolf.xyz](https://bugwolf.xyz)** — your AI key, your Firecracker microVM, your report. Pipeline: recon → hunt → triage → H1-ready report. AI slop gets you rate-limited; BugWolf gets you paid.
 
-> **New in v1.3.0 — boundary-hardened orchestrator:** the Phase 0–8 plan is complete — operator scope gate (deny-by-default, enforced at every network choke point), universal subprocess sandbox with a one-command kill switch, OAST public tunnel so SSRF leads close on attributed callbacks from REMOTE targets, auth A/B/C + FIN business-logic + contract/cloud/LLM lanes, all 13 §5.3 performance targets measured, and readiness level **L2 (clean-checkout reproducible)** with zero warnings. See [CHANGELOG.md](CHANGELOG.md).
+> **New in v1.9.2 — orchestrator-grade multi-agent operations:** finding-driven roster recomposition (hunt/recon recommendations — and recorded recon-depth census evidence — automatically staff specialists mid-mission, budget-capped and idempotent), zero-config dispatch pinning (`--agent bugwolf:<role>`, tier→`--model` mapping), a bounded hunt re-entry loop, crash-safe resume, a `--preflight` readiness report, and the recon **D0–D3 depth ladder** (`tools/recon/depth_ladder.py`) that makes "stopped too shallow" structurally impossible. See [CHANGELOG.md](CHANGELOG.md).
+>
+> **v1.3.0 — boundary-hardened orchestrator:** the Phase 0–8 plan is complete — operator scope gate (deny-by-default, enforced at every network choke point), universal subprocess sandbox with a one-command kill switch, OAST public tunnel so SSRF leads close on attributed callbacks from REMOTE targets, auth A/B/C + FIN business-logic + contract/cloud/LLM lanes, all 13 §5.3 performance targets measured, and readiness level **L2 (clean-checkout reproducible)** with zero warnings. See [CHANGELOG.md](CHANGELOG.md).
 
 > **Also in this series:** v1.0.0 brought the LLM / Agentic AI security track (OWASP GenAI LLM Top 10 2026 + Agentic Top 10 ASI01–ASI10), RAG & embedding attacks, MCP security, mobile + cloud-native vectors, and a zero-day LLM attack-surface detector.
 

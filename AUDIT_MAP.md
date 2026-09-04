@@ -85,7 +85,7 @@ with lead ladders — while domain modules publish typed events onto
 |---|---|---|
 | `README.md` | 891 | Product overview, APT Commander architecture, install (npx/offline), per-tool usage, live harness loop, bugwolf.xyz |
 | `SKILL.md` | 2,705 | The skill definition: universal harness contract `BUGWOLF-HARNESS-CONTRACT-V2`, target intake + attestation, strict workflow, 12-stage pipeline, 5-pillar maps, lead ledger, wild-mode doctrine, research loop R1–R7, deep-hunt tool suite |
-| `CHANGELOG.md` | 649 | v1.0.0 → v1.3.0 (latest: enforced scope gate, sandbox kill switch, OAST public tunnel, FIN lane, L2 readiness) |
+| `CHANGELOG.md` | ~900 | v1.0.0 → v1.9.2 (latest: recomposition, dispatch pinning, recon depth ladder, operator preflight/status depth reporting) |
 | `AUDIT.md` | 82 (generated) | Auto-generated inventory by `scripts/generate_audit.py` — do not hand-edit |
 | `AUDIT_MAP.md` | this file | Full hand-compiled file map |
 | `BUGWOLF_ORCHESTRATOR_PLAN_V2.md` | 550 | Orchestrator plan v2: task graph, lead ladder, modes, preflight, sandbox/scope (sections cited by `tools/runtime/`) |
@@ -96,7 +96,7 @@ with lead ladders — while domain modules publish typed events onto
 | `MISSION_PLAN.md` | 231 | Mission plan: capability truth/readiness telemetry, execution reliability, evidence-state hardening |
 | `PLAN_AUDIT.md` | 84 | Plan-vs-implementation audit notes |
 | `DEPENDENCIES.md` | 135 | AST-verified import graph: leaf modules publish to `core/signal_bus.py`, nothing imports them |
-| `VERSION` | 1 | `1.3.0` |
+| `VERSION` | 1 | `1.9.2` |
 | `LICENSE` | — | project license |
 | `.gitignore` | 14 | ignores state/, .private/, vault/, recon/, research/, dist/, __pycache__/, .bugwolf/ |
 
