@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: blind_ssrf_callback_v1
+bug_class: ssrf
+category: ssrf
+severity: high
+title: "Blind SSRF Triggered by Out-of-Band Callback"
+description: |
+  The server fetches a user-supplied URL but the response is not returned to the attacker. By hosting a collaborator domain that logs the inbound request, the attacker can confirm SSRF even when no data is exfiltrated directly. The callback host header reveals the internal hostname and listening ports.
+detection:
+  signature: "https?://[a-z0-9-]+\\.(burpcollaborator|interactsh|oast)\\.net"
+  method: POST
+  endpoint: "/api/webhooks/preview"
+remediation: |
+  Enforce URL allow-lists keyed to documented integrations, strip user input from URL fragments before fetch, and block resolution of RFC-1918 and link-local addresses at the egress proxy.
+references:
+  - "https://owasp.org/ssrf/"
+  - "https://portswigger.net/web-security/ssrf"
+bounty_range: "$2K — $10K"
+h100_proven: true

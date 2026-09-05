@@ -37,6 +37,13 @@ try:
 except ImportError:  # direct script execution
     from runtime_paths import workspace_root
 
+try:
+    from tools.core.medium_safety import open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
+
 ROOT = workspace_root()
 RESEARCH_ROOT = ROOT / "state" / "research"
 
@@ -167,7 +174,7 @@ class EvidenceStore:
         record_dict = record.__dict__.copy()
         record.record_hash = self._record_hash(record_dict)
         line = json.dumps(record.__dict__, sort_keys=True)
-        with open(self.manifest, "a") as stream:
+        with open_text(self.manifest, "a") as stream:
             if fcntl:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
             stream.write(line + "\n")

@@ -363,3 +363,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# Phase 1.5: scanner export shim
+def export_web3_scanner():
+    from bugwolf.scanners.web3.contract_triage import Web3ContractTriageScanner
+    return Web3ContractTriageScanner()

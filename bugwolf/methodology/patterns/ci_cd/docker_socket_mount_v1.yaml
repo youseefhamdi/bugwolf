@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: docker_socket_mount_v1
+bug_class: ci_cd
+category: ci_cd
+severity: high
+title: "Docker Socket Mount RCE in CI Runner"
+description: |
+  A CI runner mounts `/var/run/docker.sock` into the build container to enable docker-in-docker. The attacker abuses this from a build step to spawn a privileged container on the host, escaping the build sandbox.
+detection:
+  signature: "/var/run/docker\\.sock"
+  method: POST
+  endpoint: "/"
+remediation: |
+  Avoid mounting the Docker socket. Use sysbox, rootless containers, or a properly configured buildah/kaniko pipeline that does not require host docker access.
+references:
+  - "https://owasp.org/ci_cd/"
+  - "https://portswigger.net/web-security/ci_cd"
+bounty_range: "$10K — $40K"
+h100_proven: false

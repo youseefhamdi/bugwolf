@@ -1,0 +1,34 @@
+schema: bugwolf-recon-workflow-v1
+name: ci_cd_recon
+description: |
+  CI / CD recon — find exposed Jenkins, GitLab, GitHub Actions
+  artefacts, Argo CD, Drone, CircleCI, etc.
+phases:
+  - order: 1
+    name: subdomain_brute
+    tools: [dns_brute, subdomain_alts]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: passive
+  - order: 2
+    name: known_ci_paths
+    tools: [httpx]
+    budget:
+      max_requests: 100
+      max_seconds: 1200
+    scope_verb: active
+  - order: 3
+    name: github_actions_history
+    tools: [github_search, wayback]
+    budget:
+      max_requests: 100
+      max_seconds: 1200
+    scope_verb: passive
+  - order: 4
+    name: exposed_pipeline_probe
+    tools: [nuclei, httpx]
+    budget:
+      max_requests: 100
+      max_seconds: 1200
+    scope_verb: active

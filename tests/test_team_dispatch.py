@@ -113,7 +113,34 @@ class TestQueueSemantics(unittest.TestCase):
                            worker_id="owner", summary="legit")
         self.assertEqual(out["status"], "DONE")
 
-    def test_timeout_is_honest_budget_exhausted(self):
+    def test_result_identity_and_status_are_validated(self):
+        worker, payload = self._enqueue(member_id="tm-identity")
+        result_holder = {}
+
+        def harness():
+            job = cli_next(self.root, "m-dispatch", worker_id="h1",
+                           block_seconds=5)
+            result_holder["job"] = job
+            result_path = worker.results_dir() / f"{job['job_id']}.json"
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(json.dumps({
+                "job_id": "different-job",
+                "mission_id": "different-mission",
+                "status": "DONE",
+                "summary": "spoofed",
+            }))
+
+        t = threading.Thread(target=harness)
+        t.start()
+        result = worker(payload)
+        t.join(timeout=5)
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["contract_error"], "identity_mismatch")
+        rejection_log = worker.dispatch_dir() / "rejections.jsonl"
+        self.assertTrue(rejection_log.is_file())
+        self.assertIn("identity mismatch", rejection_log.read_text())
+
+    def test_timeout_expires_job_and_rejects_late_completion(self):
         mission = _mission(self.root)
         worker = TaskToolWorker(mission, project_root=self.root,
                                 poll_interval=0.05, timeout_seconds=1)

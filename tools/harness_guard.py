@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import sys
 # The guard is routinely executed from installed skill trees. Avoid creating
@@ -33,6 +34,8 @@ except ImportError:  # direct script execution
 
 
 CONTRACT_SCHEMA = "bugwolf-harness-contract/v2"
+
+LOG = logging.getLogger(__name__)
 CONTRACT_MARKER = "BUGWOLF-HARNESS-CONTRACT-V2"
 INTELLIGENCE_SCHEMA = "bugwolf-harness-intelligence/v1"
 INTELLIGENCE_MARKER = "BUGWOLF-HARNESS-INTELLIGENCE-V1"
@@ -317,22 +320,31 @@ def main() -> int:
 
     if args.json:
         print(json.dumps(result, indent=2))
+        LOG.debug("harness_guard.json keys=%s",
+                  sorted(result.keys()))
     elif "verified" in result and "ready" not in result:
         # --verify-install output shape (release integrity, not contract)
         state = "VERIFIED" if result.get("verified") else "FAILED"
         print(f"BugWolf install integrity: {state}")
+        LOG.info("harness_guard.install_integrity=%s", state)
         for error in result.get("errors", []):
             print(f"  ERROR: {error}")
+            LOG.warning("harness_guard.install_error: %s", error)
         signature = result.get("signature") or {}
         if signature:
             print(f"  signature: {'verified' if signature.get('verified') else signature.get('reason', 'not verified')}")
+            LOG.info("harness_guard.signature=%s",
+                     signature.get("verified") or signature.get("reason"))
     else:
         state = "READY" if result.get("ready") else "NOT READY"
         print(f"BugWolf harness contract: {state}")
+        LOG.info("harness_guard.contract_state=%s", state)
         for error in result.get("errors", []):
             print(f"  ERROR: {error}")
+            LOG.warning("harness_guard.contract_error: %s", error)
         for warning in result.get("warnings", []):
             print(f"  WARNING: {warning}")
+            LOG.warning("harness_guard.contract_warning: %s", warning)
     return status
 
 

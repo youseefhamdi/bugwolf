@@ -1,0 +1,34 @@
+schema: bugwolf-recon-workflow-v1
+name: cloud_recon
+description: |
+  Cloud footprint discovery — S3 buckets, Azure blobs, GCP storage,
+  CloudFront distributions.  All passive.
+phases:
+  - order: 1
+    name: s3_bucket_enum
+    tools: [s3scanner, cloud_enum]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: passive
+  - order: 2
+    name: cloud_provider_pivot
+    tools: [censys, shodan]
+    budget:
+      max_requests: 100
+      max_seconds: 1200
+    scope_verb: passive
+  - order: 3
+    name: cloud_metadata_dns
+    tools: [dns_brute]
+    budget:
+      max_requests: 100
+      max_seconds: 600
+    scope_verb: passive
+  - order: 4
+    name: cloud_storage_discovery
+    tools: [wayback, github_search]
+    budget:
+      max_requests: 50
+      max_seconds: 600
+    scope_verb: passive

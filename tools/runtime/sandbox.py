@@ -44,7 +44,7 @@ if __package__ in (None, ""):  # direct script execution
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from tools.runtime_paths import workspace_root
-from tools.reliability import run_bounded_subprocess
+from tools.reliability import run_bounded_subprocess, spawn_long_lived_subprocess
 
 SCHEMA = "bugwolf-sandbox/v1"
 
@@ -162,6 +162,53 @@ def _default_allowlist() -> tuple:
         return ()
 
 
+def _deterministic_path() -> str:
+    """Build a deterministic PATH from /etc/environment + a hardcoded default.
+
+    Never inherits the caller's PATH. The hardcoded default is the minimal
+    set required for the sandboxed binaries; operator-granted extras must
+    be referenced by full path through sandbox.grant().
+    """
+    candidates = [
+        "/usr/local/sbin", "/usr/local/bin",
+        "/usr/sbin", "/usr/bin", "/sbin", "/bin",
+    ]
+    try:
+        with open("/etc/environment", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if line.startswith("PATH="):
+                    value = line[len("PATH="):].strip().strip('"').strip("'")
+                    if value:
+                        candidates = [p for p in value.split(":") if p] + candidates
+                    break
+    except OSError:
+        pass
+    # De-duplicate while preserving order.
+    seen, ordered = set(), []
+    for p in candidates:
+        if p and p not in seen:
+            seen.add(p)
+            ordered.append(p)
+    return ":".join(ordered)
+
+
+_ALLOWED_BIN_PREFIXES = (
+    "/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
+    "/usr/local/bin/", "/usr/local/sbin/",
+)
+
+
+def _resolved_path_allowed(resolved: str) -> bool:
+    """True if ``resolved`` is inside one of the allowed system prefixes.
+
+    Phase 0 H-2: defends against PATH substitution by verifying the
+    *resolved* binary lives in an allowed system location rather than
+    trusting the basename alone.
+    """
+    return any(resolved.startswith(p) for p in _ALLOWED_BIN_PREFIXES)
+
+
 def load_grants(root: Optional[str | Path] = None) -> List[str]:
     """Operator-granted extra binaries (durable per workspace)."""
     path = _grants_path(root)
@@ -207,7 +254,18 @@ def _is_allowed(binary: str, root: Optional[str | Path], *,
         return True
     if binary in _default_allowlist():
         return True
-    return binary in load_grants(root)
+    if binary in load_grants(root):
+        return True
+    # Phase 0 H-2: even if the basename is allowed, the caller may have
+    # substituted a different binary via PATH. Resolve argv[0] against a
+    # deterministic PATH (never the caller's) and verify the resolved
+    # path falls inside an allowed prefix.
+    import shutil as _shutil_h2
+    scrubbed = _deterministic_path()
+    resolved = _shutil_h2.which(binary, path=scrubbed)
+    if not resolved:
+        return False
+    return _resolved_path_allowed(resolved)
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +289,12 @@ def scrub_env(overrides: Optional[Mapping[str, str]] = None, *,
         env.pop(key, None)
     for key, value in (overrides or {}).items():
         env[str(key)] = str(value)
-    env.setdefault("PATH", os.environ.get("PATH", "/usr/bin:/bin"))
+    # Phase 0 H-1: deterministic PATH. We never inherit the caller's PATH
+    # because the caller can substitute any binary via env overrides.
+    # PATH is rebuilt from /etc/environment (if present) plus a hardcoded
+    # system default. Operators who need a different PATH use the
+    # sandbox 'grants' mechanism (load_grants / grant) instead.
+    env["PATH"] = _deterministic_path()
     return env
 
 
@@ -307,9 +370,45 @@ def sandboxed_run(command: List[str], *, cwd: str | Path,
     return result
 
 
-# ---------------------------------------------------------------------------
-# Readiness verifier surface
-# ---------------------------------------------------------------------------
+
+def sandboxed_spawn(command: List[str], *, cwd: str | Path,
+                   stdout: Any = subprocess.PIPE,
+                   stderr: Any = subprocess.PIPE,
+                   stdin: Any = subprocess.DEVNULL,
+                   env: Optional[Mapping[str, str]] = None,
+                   root: Optional[str | Path] = None,
+                   allow_unlisted: bool = False,
+                   purpose: str = "") -> subprocess.Popen:
+    """Start a policy-gated long-lived process.
+
+    Unlike :func:`sandboxed_run`, this returns while the child is still
+    running.  The returned process is owned by the caller and must be stopped
+    explicitly; it is always placed in its own process group by the shared
+    reliability primitive.
+    """
+    argv = [str(x) for x in command]
+    if not argv:
+        raise SandboxViolation("empty command")
+    binary = Path(argv[0]).name
+    if kill_switch_engaged(root):
+        _audit(root, "blocked_kill_switch", {
+            "binary": binary, "argv0": argv[0], "purpose": purpose})
+        raise SandboxViolation(
+            f"kill switch engaged: subprocess execution blocked ({binary})",
+            kill_switch=True)
+    if not _is_allowed(binary, root, allow_unlisted=allow_unlisted):
+        _audit(root, "blocked_unlisted_binary", {
+            "binary": binary, "argv0": argv[0], "purpose": purpose})
+        raise SandboxViolation(
+            f"binary {binary!r} is not allowlisted; grant it explicitly via "
+            f"`python3 -m tools.runtime.sandbox grant {binary}`")
+    _audit(root, "spawn_long_lived", {
+        "binary": binary, "purpose": purpose})
+    return spawn_long_lived_subprocess(
+        argv, cwd=cwd, stdout=stdout, stderr=stderr, stdin=stdin,
+        env=scrub_env(env))
+
+
 
 
 def sandbox_state(root: Optional[str | Path] = None) -> Dict[str, Any]:

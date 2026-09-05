@@ -29,6 +29,13 @@ import re
 from pathlib import Path
 
 try:
+    from tools.core.medium_safety import open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
+
+try:
     import fcntl
 except ImportError:  # pragma: no cover - Windows fallback
     fcntl = None
@@ -150,7 +157,7 @@ def _jsonl_count(path: Path) -> int:
 def atomic_append(path: Path, line: str):
     """Append one JSONL line while serializing concurrent writers."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a") as f:
+    with open_text(path, "a") as f:
         if fcntl:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         f.write(line.rstrip("\n") + "\n")
@@ -169,7 +176,7 @@ def ensure_private_gitignore():
         existing = set(l.strip() for l in gi.read_text().splitlines())
     for p in patterns:
         if p not in existing:
-            with open(gi, "a") as f:
+            with open_text(gi, "a") as f:
                 f.write(p + "\n")
 
 

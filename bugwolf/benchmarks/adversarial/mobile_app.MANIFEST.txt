@@ -1,0 +1,45 @@
+# bugwolf/benchmarks — adversarial test apps + scoring
+# SCHEMA: bugwolf-benchmarks-adversarial-mobile-manifest-v1
+# ## Source: original work for Phase 4.3
+# ## License: BugWolf internal
+# ## Capability tier: C0 (passive) only — all benchmarks are local test apps
+# Synthetic AndroidManifest.xml excerpt — the "vulns" being benchmarked
+# are `android:exported="true"` on a sensitive activity and
+# `android:debuggable="true"` on the application. A scanner should flag
+# both as critical/misconfiguration findings.
+#
+# This file is a sibling to `mobile_app.apk` (a 50-ish byte stub file).
+# The `.apk` is intentionally NOT a real APK — it is just a placeholder
+# so the harness can probe an endpoint that resembles a packaged binary.
+# All review happens against THIS manifest, not against the .apk.
+
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="com.bugwolf.synthlab"
+          android:debuggable="true"             <!-- BUG: debuggable in any build -->
+          android:allowBackup="true">           <!-- BUG: allows ADB backup -->
+
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+
+    <application
+        android:label="SynthlabApp"
+        android:usesCleartextTraffic="true">    <!-- BUG: cleartext permitted -->
+
+        <activity android:name=".MainActivity"
+                  android:exported="true">       <!-- BUG: exported with no signature permission -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+        <activity android:name=".AdminActivity"
+                  android:exported="true">       <!-- BUG: sensitive activity exported -->
+        </activity>
+
+        <provider android:name=".DataProvider"
+                  android:exported="true"        <!-- BUG: content-provider exported -->
+                  android:grantUriPermissions="true"/>
+    </application>
+</manifest>

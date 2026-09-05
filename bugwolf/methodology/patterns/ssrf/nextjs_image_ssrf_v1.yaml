@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: nextjs_image_ssrf_v1
+bug_class: ssrf
+category: ssrf
+severity: high
+title: "Next.js Image Optimization SSRF"
+description: |
+  The Next.js image optimizer fetches arbitrary remote URLs to resize and cache them. When the upstream image host is attacker-controlled and returns redirects to internal IPs, the server will fetch and cache metadata-service responses, exposing credentials in the response body.
+detection:
+  signature: "/_next/image\\?url="
+  method: GET
+  endpoint: "/_next/image"
+remediation: |
+  Configure `images.remotePatterns` to an allow-list, disable the optimizer for untrusted deployments, and front it with a proxy that resolves hostnames and validates the destination IP before connecting.
+references:
+  - "https://owasp.org/ssrf/"
+  - "https://portswigger.net/web-security/ssrf"
+bounty_range: "$5K — $20K"
+h100_proven: false

@@ -64,6 +64,20 @@ class KillSwitchTest(unittest.TestCase):
         self.assertTrue(release_kill_switch(self.root))
         self.assertFalse(kill_switch_engaged(self.root))
         self.assertFalse(release_kill_switch(self.root))  # idempotent
+    def test_anvil_fork_is_blocked_by_kill_switch(self):
+        from tools.onchain_executor import AnvilFork, ForkConfig
+        engage_kill_switch(self.root, note="anvil-test")
+        with unittest.mock.patch("tools.onchain_executor.is_anvil_available",
+                                 return_value=True):
+            fork = AnvilFork(
+                ForkConfig(chain="mainnet", rpc_url="http://127.0.0.1:1"),
+                log_dir=Path(self.root) / "onchain",
+                project_root=Path(self.root),
+            )
+            with self.assertRaises(SandboxViolation) as ctx:
+                fork.start(timeout=0.1)
+        self.assertTrue(ctx.exception.kill_switch)
+        self.assertIsNone(fork.process)
 
 
 class AllowlistTest(unittest.TestCase):

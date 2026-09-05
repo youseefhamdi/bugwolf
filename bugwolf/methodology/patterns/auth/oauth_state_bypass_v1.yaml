@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: oauth_state_bypass_v1
+bug_class: auth_bypass
+category: auth
+severity: high
+title: "OAuth State Parameter Validation Missing"
+description: |
+  The OAuth implementation does not validate the state parameter on the callback. The attacker initiates an OAuth flow, captures the victim's authorization code, and exchanges it for a session token bound to the attacker's account.
+detection:
+  signature: "/oauth/callback\\?code="
+  method: GET
+  endpoint: "/oauth/callback"
+remediation: |
+  Generate a cryptographically random state per flow, bind it to the user's session, and reject callbacks whose state does not match the expected value.
+references:
+  - "https://owasp.org/auth/"
+  - "https://portswigger.net/web-security/auth"
+bounty_range: "$5K — $25K"
+h100_proven: true

@@ -274,6 +274,29 @@ def run_bounded_subprocess(command: Sequence[str], *, cwd: str | Path,
         stdout, stderr)
 
 
+def spawn_long_lived_subprocess(
+    command: Sequence[str], *, cwd: str | Path,
+    stdout: Any = subprocess.PIPE, stderr: Any = subprocess.PIPE,
+    stdin: Any = subprocess.DEVNULL,
+    env: Optional[Mapping[str, str]] = None,
+) -> subprocess.Popen[Any]:
+    """Start an owned long-lived process with a new process group.
+
+    Streaming daemons cannot use :func:`run_bounded_subprocess`, which waits
+    for process completion.  Callers must apply their policy gate before
+    invoking this low-level helper; the sandbox wrapper does that for shipped
+    engine code.
+    """
+    if not command or any(not isinstance(item, str) for item in command):
+        raise ValueError("command must be a non-empty string argv sequence")
+    return subprocess.Popen(
+        list(command), cwd=str(Path(cwd).expanduser().resolve()),
+        stdin=stdin, stdout=stdout, stderr=stderr,
+        start_new_session=True,
+        env=dict(env) if env is not None else None,
+    )
+
+
 def operation_record(*, action: str, target: str = "", status: str,
                      metadata: Optional[Mapping[str, Any]] = None,
                      command: Optional[Sequence[str]] = None,

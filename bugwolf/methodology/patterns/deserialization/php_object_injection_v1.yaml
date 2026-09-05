@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: php_object_injection_v1
+bug_class: deserialization
+category: deserialization
+severity: high
+title: "PHP Object Injection via unserialize"
+description: |
+  The PHP service unserializes user-supplied data without restrictions. The attacker submits a serialized object chain that triggers a magic method (__wakeup, __destruct) leading to file write, SQL injection, or RCE.
+detection:
+  signature: "O:\\d+:\\\"[A-Za-z_]+\\\":"
+  method: POST
+  endpoint: "/api/session"
+remediation: |
+  Avoid unserialize on untrusted data; use json_decode instead. If serialization is required, use json_serializable or a strictly typed allow-list.
+references:
+  - "https://owasp.org/deserialization/"
+  - "https://portswigger.net/web-security/deserialization"
+bounty_range: "$5K — $30K"
+h100_proven: true

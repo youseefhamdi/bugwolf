@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: llm_indirect_prompt_injection_v1
+bug_class: llm
+category: llm_ai
+severity: high
+title: "Indirect Prompt Injection via Retrieved Content"
+description: |
+  The LLM agent retrieves documents or web pages and includes the content in its prompt. The attacker plants instructions in a public web page or PDF that the agent ingests, leading to data exfiltration via the agent's function calls.
+detection:
+  signature: "<\\\\s*\\\\|\\\\s*system\\\\s*\\\\|>|<<<.*>>>"
+  method: POST
+  endpoint: "/api/agent/query"
+remediation: |
+  Treat retrieved content as untrusted data, never as instructions. Wrap retrieved content in clearly demarcated data fences and validate any actions the agent attempts.
+references:
+  - "https://owasp.org/llm_ai/"
+  - "https://portswigger.net/web-security/llm_ai"
+bounty_range: "$5K — $30K"
+h100_proven: true

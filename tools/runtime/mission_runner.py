@@ -65,7 +65,7 @@ from tools.domains.llm.agentic_tool_auth import (
 )
 from tools.runtime.scheduler import Scheduler
 from tools.runtime.contracts import (
-    MissionSpec, LEAD_PWNED, LEAD_REFUTED, RESULT_PARTIAL,
+    ContractViolation, MissionSpec, LEAD_PWNED, LEAD_REFUTED, RESULT_PARTIAL,
 )
 
 SCHEMA = "bugwolf-mission-runner/v1"
@@ -84,15 +84,31 @@ class ProbeResult:
     body: str
     latency_ms: int
     headers: Dict[str, str] = field(default_factory=dict)
+    redirects: List[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
         return 200 <= self.status < 300
 
 
+class _ScopedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Authorize every redirect hop before urllib follows it."""
+
+    def __init__(self, redirect_chain: List[str]):
+        super().__init__()
+        self.redirect_chain = redirect_chain
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        from tools.runtime.scope import ScopeViolation, check_url
+        check_url(newurl)
+        self.redirect_chain.append(str(newurl))
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def http_probe(url: str, *, method: str = "GET", body: Optional[Dict] = None,
                headers: Optional[Dict[str, str]] = None,
-               timeout: float = 8.0) -> ProbeResult:
+               timeout: float = 8.0,
+               follow_redirects: bool = True) -> ProbeResult:
     # Execution-boundary scope gate (plan section 2.4; readiness R1 fix):
     # EVERY HTTP lane shares this choke point.  An out-of-scope URL --
     # including an SSRF payload the target could never make us send -- fails
@@ -116,20 +132,26 @@ def http_probe(url: str, *, method: str = "GET", body: Optional[Dict] = None,
         except (TypeError, ValueError):
             return {}
 
+    redirect_chain: List[str] = []
+    opener = urllib.request.build_opener(
+        _ScopedRedirectHandler(redirect_chain)) if follow_redirects \
+        else urllib.request.build_opener(
+            urllib.request.HTTPErrorProcessor())
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with opener.open(req, timeout=timeout) as resp:
             raw = resp.read(4096)
             return ProbeResult(resp.status, raw.decode("utf-8", "replace"),
                                int((time.monotonic() - start) * 1000),
-                               _headers(resp.getheaders()))
+                               _headers(resp.getheaders()), redirect_chain)
     except urllib.error.HTTPError as exc:
         raw = exc.read(4096) if exc.fp else b""
         return ProbeResult(exc.code, raw.decode("utf-8", "replace"),
                            int((time.monotonic() - start) * 1000),
-                           _headers(exc.headers))
+                           _headers(exc.headers), redirect_chain)
     except Exception as exc:  # noqa: BLE001 - network failure is a result
         return ProbeResult(0, f"{type(exc).__name__}: {exc}",
-                           int((time.monotonic() - start) * 1000))
+                           int((time.monotonic() - start) * 1000),
+                           redirects=redirect_chain)
 
 
 def _login_probe(url: str, payload: Dict) -> Tuple[int, str]:
@@ -1155,13 +1177,17 @@ def _fin_toctou(base: str, surface: str, baseline: Optional[Dict]
             return True, f"confirm on {order_id} accepted post-payment mutation"
 
     # Stage 2: the race window -- N identical requests, one barrier release.
+    # v1.24.1+: use H2 single-packet race for HTTPS targets (defeats
+    # network-layer coalescing of separate TCP connections); fall back to
+    # HTTP/1.1 last-byte for cleartext or when the H2 dispatcher is absent.
+    target_url = base + confirm_path
     race = run_race(RaceRequest(
-        url=base + confirm_path,
+        url=target_url,
         method="POST",
         body={"order_id": order_id, "price": 0.01},
         count=4,
         timeout=5.0,
-    ))
+    ), transport="auto")
     if race.successes > 1:
         return True, (f"race window: {race.successes}/{race.attempted} "
                       f"confirms succeeded concurrently on {order_id} "
@@ -2206,6 +2232,11 @@ LANE_FAMILIES = (
 # Domain lanes (plan section 5.6): dispatched ONLY when the mission declares
 # the matching domain (smart_contract / cloud_cicd / llm_ai), so assets are
 # hunted once -- never double-probed by the web lane AND the domain lane.
+#
+# Extended in v1.24.1: 2-of-14 wired -> 14-of-14 wired via domain_adapter.
+# The 12 previously-orphan modules (auth, api, llm.rag, mobile, sc triage,
+# sc price, web smuggling, web parser-diff) now dispatch as full domain lanes
+# when the mission spec declares the corresponding domain key.
 DOMAIN_LANES = {
     "smart_contract": (_probe_contract_matrix, "contract_logic",
                        "argument-fuzzing"),
@@ -2213,6 +2244,19 @@ DOMAIN_LANES = {
                    "policy-dump-analysis"),
     "llm_ai": (_probe_llm_matrix, "llm_tooling", "tool-inventory"),
 }
+
+# v1.24.1+: extended domain lanes (12 previously-orphan modules wired in)
+try:
+    from tools.runtime.domain_adapter import DOMAIN_PROBES, dispatch_domain_probe
+    for _domain_key in DOMAIN_PROBES.keys():
+        if _domain_key not in DOMAIN_LANES:
+            _probe_fn, _bug_class, _t0 = dispatch_domain_probe(
+                _domain_key, "", []
+            )
+            DOMAIN_LANES[_domain_key] = (_probe_fn, _bug_class, _t0)
+    del _domain_key, _probe_fn, _bug_class, _t0
+except Exception:  # noqa: BLE001 - adapter import never breaks runner
+    pass
 
 AUTH_FAMILY = ("auth_bypass", "direct-access")
 
@@ -2350,7 +2394,8 @@ class MissionRunner:
         # hook returns to inert (the operator's session is theirs again).
         try:
             from tools.runtime.scope import clear_scope_contract
-            clear_scope_contract(root=self.project_root)
+            clear_scope_contract(root=self.project_root,
+                                 mission_id=self.mission.mission_id)
         except Exception:  # noqa: BLE001 - shutdown is best effort
             pass
         if self.oast_tunnel is not None:
@@ -2399,12 +2444,25 @@ class MissionRunner:
 
         # 2. Pre-flight: run it, record through the gate task.
         from tools.runtime.preflight import run_preflight
+        from tools.runtime.scope import gate_state
+        scope_digest = hashlib.sha256(
+            json.dumps(gate_state(), sort_keys=True).encode("utf-8")
+        ).hexdigest()
         manifest = run_preflight(
             self.mission.target, project_root=self.project_root,
-            probe_binaries=False)
-        issues = self.scheduler.record_preflight(manifest)
+            probe_binaries=False, mission_id=self.mission.mission_id,
+            operation_profile=getattr(self.mission, "operation_profile", "governed"),
+            scope_digest=scope_digest)
+        # The scheduler validates target, mission, profile, and receipt hash
+        # before opening the first side-effect lane.
+        issues = self.scheduler.record_preflight(manifest, strict=True)
         if issues:
             self._log("preflight_rejected", {"issues": issues})
+            # A failed preflight is a hard side-effect barrier.  Do not
+            # continue into auth binding, browser work, or network lanes.
+            self._log("mission_blocked", {"reason": "preflight_rejected"})
+            return self._mission_report(started, {},
+                                        blocked_reason="preflight_rejected")
         self._log("preflight", {"digest": manifest.get("digest", "")})
 
         # 2.5 Auth matrix binding (plan S6): after pre-flight, before lanes.
@@ -2458,23 +2516,75 @@ class MissionRunner:
                 break
             for node in runnable:
                 task_id = node.task_id
-                self.scheduler.start(task_id)
-                if node.spec.get("domain") == "web_api":
-                    result = self._run_web_lane()
-                elif node.spec.get("domain") == "recon":
-                    result = self._run_recon_lane()
-                elif node.spec.get("domain") == "verify":
-                    result = self._run_verify_lane()
-                elif node.spec.get("domain") == "client_side":
-                    result = self._run_client_side_lane()
-                elif node.spec.get("domain") == "report":
-                    result = self._run_report_lane()
-                elif node.spec.get("domain") in DOMAIN_LANES:
-                    probe_fn, bug_class, t0 = DOMAIN_LANES[
-                        node.spec.get("domain")]
-                    result = self._run_domain_lane(probe_fn, bug_class, t0)
-                else:
-                    result = self._noop_lane(node)
+                try:
+                    self.scheduler.start(task_id)
+                except ContractViolation as exc:
+                    # A reservation/policy failure occurs before lane side
+                    # effects.  Persist it as a terminal task result so the
+                    # mission report remains honest and resumable instead of
+                    # losing the failure in an uncaught exception.
+                    issues = self.scheduler.record_start_failure(
+                        task_id, list(exc.issues))
+                    result = {
+                        "task_id": task_id,
+                        "status": ("budget_exhausted"
+                                   if any("budget" in issue.lower()
+                                          for issue in issues)
+                                   else "agent_failed"),
+                        "open_leads": [],
+                    }
+                    report_tasks[task_id] = {
+                        "status": result["status"],
+                        "issues": issues,
+                        "open_leads": [],
+                    }
+                    self._log("task_start_failed", {
+                        "task_id": task_id, "issues": issues})
+                    continue
+
+                try:
+                    if node.spec.get("domain") in ("web_api", "web"):
+                        result = self._run_web_lane()
+                    elif node.spec.get("domain") == "auth":
+                        result = self._run_auth_lane()
+                    elif node.spec.get("domain") == "business_logic":
+                        result = self._run_business_logic_lane()
+                    elif node.spec.get("domain") == "fuzz":
+                        result = self._run_fuzz_lane()
+                    elif node.spec.get("domain") == "recon":
+                        result = self._run_recon_lane()
+                    elif node.spec.get("domain") == "verify":
+                        result = self._run_verify_lane()
+                    elif node.spec.get("domain") == "client_side":
+                        result = self._run_client_side_lane()
+                    elif node.spec.get("domain") == "report":
+                        result = self._run_report_lane()
+                    elif node.spec.get("domain") in DOMAIN_LANES:
+                        probe_fn, bug_class, t0 = DOMAIN_LANES[
+                            node.spec.get("domain")]
+                        result = self._run_domain_lane(probe_fn, bug_class, t0)
+                    else:
+                        result = self._unsupported_lane(node)
+                except Exception as exc:  # noqa: BLE001 - task failure is durable
+                    # Keep the scheduler alive while preserving the distinction
+                    # between a lane crash and a successful empty result.
+                    result = {
+                        "task_id": task_id,
+                        "agent_role": f"{node.spec.get('domain', 'unknown')}-lane",
+                        "status": "agent_failed",
+                        "summary": f"lane execution failed: {type(exc).__name__}: {exc}"[:1000],
+                        "tool_receipts": [{
+                            "tool": "mission_runner",
+                            "command": "lane_dispatch",
+                            "inputs": {"domain": node.spec.get("domain", "")},
+                            "exit_state": "agent_failed",
+                        }],
+                        "evidence_refs": [],
+                        "mcp_bindings_used": [],
+                    }
+                    self._log("lane_failed", {
+                        "task_id": task_id, "error": str(exc)[:300]})
+
                 result["task_id"] = task_id  # contracts require it
                 issues = self.scheduler.record(task_id, result)
                 report_tasks[task_id] = {
@@ -2486,6 +2596,28 @@ class MissionRunner:
                     self._log("result_rejected", {"task_id": task_id,
                                                   "issues": issues})
         self._log("drained", {"tasks": report_tasks})
+
+        # v1.24.1+: dispatch orphan-orchestrator phases for the 9 previously
+        # orphan top-level modules (kill_chain, trust_map, capability_registry,
+        # adversary_emulation, patch_gap, threat_intel, program_fit,
+        # formal_verify, replay_cli). Each phase persists to JSONL; the
+        # orchestrator is best-effort (failures are recorded, not gates).
+        try:
+            from tools.runtime.orphan_orchestrator import (
+                dispatch_phase, coverage_report,
+            )
+            cov = coverage_report()
+            self._log("orphan_orchestrator_coverage", cov)
+            for phase in ("pre-recon", "hunt", "post-hunt"):
+                r = dispatch_phase(
+                    phase=phase,
+                    target=str(self.mission.target),
+                    mission_id=str(self.mission.mission_id),
+                    findings=list(self.leads.open_lead_records()),
+                )
+                self._log(f"orphan_{phase}", r)
+        except Exception as exc:  # noqa: BLE001
+            self._log("orphan_orchestrator_error", {"error": str(exc)})
 
         # 4. Mission report.
         return self._mission_report(started, report_tasks)
@@ -2638,6 +2770,66 @@ class MissionRunner:
                                "exit_state": "ok"}],
             "evidence_refs": evidence,
             "mcp_bindings_used": [],
+        }
+
+    def _run_auth_lane(self) -> Dict[str, Any]:
+        """Run the auth capability only with an operator account matrix."""
+        if not self.matrix.bound:
+            return self._blocked_capability_lane(
+                "auth", "operator account matrix is required for A/B/C testing")
+        return self._run_domain_lane(
+            lambda base, paths: _probe_auth_matrix(base, paths, self.matrix),
+            "auth_bypass", "direct-access")
+
+    def _run_business_logic_lane(self) -> Dict[str, Any]:
+        """Run the FIN matrix as its own declared capability."""
+        return self._run_domain_lane(_probe_fin_matrix, "business_logic",
+                                     "quantity-mutation")
+
+    def _run_fuzz_lane(self) -> Dict[str, Any]:
+        """Run the bounded deterministic fuzz family as a declared lane."""
+        return self._run_domain_lane(_probe_fuzz_batch, "fuzzing",
+                                     "boundary-length")
+
+    def _blocked_capability_lane(self, domain: str, reason: str) -> Dict[str, Any]:
+        """Record an honest capability/input blocker; never fabricate work."""
+        return {
+            "task_id": "", "agent_role": f"{domain}-lane",
+            "status": "blocked",
+            "summary": f"capability blocked: {reason}",
+            "tool_receipts": [{"tool": "mission_runner",
+                               "command": "capability_gate",
+                               "inputs": {"domain": domain},
+                               "exit_state": "blocked"}],
+            "evidence_refs": [], "mcp_bindings_used": [],
+        }
+
+    def _run_auth_lane(self) -> Dict[str, Any]:
+        """Run auth testing only when operator accounts are actually bound."""
+        if not self.matrix.bound:
+            return self._blocked_capability_lane(
+                "auth", "operator account matrix is required for A/B/C testing")
+        return self._run_domain_lane(
+            lambda base, paths: _probe_auth_matrix(base, paths, self.matrix),
+            "auth_bypass", "direct-access")
+
+    def _run_business_logic_lane(self) -> Dict[str, Any]:
+        return self._run_domain_lane(_probe_fin_matrix, "business_logic",
+                                     "quantity-mutation")
+
+    def _run_fuzz_lane(self) -> Dict[str, Any]:
+        return self._run_domain_lane(_probe_fuzz_batch, "fuzzing",
+                                     "boundary-length")
+
+    def _blocked_capability_lane(self, domain: str, reason: str) -> Dict[str, Any]:
+        return {
+            "task_id": "", "agent_role": f"{domain}-lane", "status": "blocked",
+            "summary": f"capability blocked: {reason}",
+            "tool_receipts": [{"tool": "mission_runner",
+                               "command": "capability_gate",
+                               "inputs": {"domain": domain},
+                               "exit_state": "blocked"}],
+            "evidence_refs": [], "mcp_bindings_used": [],
         }
 
     def _run_domain_lane(self, probe_fn: Callable, bug_class: str,
@@ -2974,21 +3166,24 @@ class MissionRunner:
             "mcp_bindings_used": [],
         }
 
-    def _noop_lane(self, node) -> Dict[str, Any]:
+    def _unsupported_lane(self, node) -> Dict[str, Any]:
+        """Return an explicit blocked result; never report a no-op as done."""
         return {
             "task_id": "", "agent_role": f"{node.spec['domain']}-lane",
-            "status": "completed",
-            "summary": "no Phase 4 executor for this domain yet",
+            "status": "blocked",
+            "summary": "capability has no executable mission-lane adapter",
             "tool_receipts": [{"tool": "mission_runner",
-                               "command": "noop_lane",
+                               "command": "unsupported_lane",
                                "inputs": {"domain": node.spec["domain"]},
-                               "exit_state": "ok"}],
+                               "exit_state": "blocked"}],
+            "evidence_refs": [],
             "mcp_bindings_used": [],
         }
 
     # -- report -----------------------------------------------------------------
 
-    def _mission_report(self, started: float, tasks: Dict[str, Any]) -> Dict[str, Any]:
+    def _mission_report(self, started: float, tasks: Dict[str, Any],
+                        *, blocked_reason: str = "") -> Dict[str, Any]:
         leads = self.leads.list_leads()
         pwned = [l for l in leads if l.status == LEAD_PWNED]
         refuted = [l for l in leads if l.status == LEAD_REFUTED]
@@ -3007,6 +3202,8 @@ class MissionRunner:
                          for l in pwned],
             "counts": {"findings": len(pwned), "refuted": len(refuted),
                        "open": len(open_leads), "total_leads": len(leads)},
+            "blocked_reason": blocked_reason,
+            "execution_profile": getattr(self.mission, "operation_profile", "governed"),
             "events": self._events,
         }
 

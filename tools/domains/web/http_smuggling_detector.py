@@ -469,3 +469,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# Phase 1.5: scanner export shim
+def export_smuggling_scanner():
+    from bugwolf.scanners.web.http_smuggling import HTTPSmugglingScanner
+    return HTTPSmugglingScanner()

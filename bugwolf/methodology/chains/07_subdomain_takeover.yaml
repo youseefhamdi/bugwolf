@@ -1,0 +1,23 @@
+schema: bugwolf-methodology-chain-v1
+id: 07_subdomain_takeover
+title: "Subdomain Takeover via Dangling DNS"
+bounty: "$15K H100"
+prerequisites:
+  - id: dangling_cname
+  - id: third_party_hostile_claim
+steps:
+  - order: 1
+    description: "Enumerate subdomains via CT logs + brute force"
+  - order: 2
+    description: "Resolve each — record DNS records and target service"
+  - order: 3
+    description: "Identify 'no such bucket / no such host' response on target"
+  - order: 4
+    description: "Claim the corresponding resource on the third-party provider"
+  - order: 5
+    description: "Host attacker content under subdomain → cookie theft / phishing"
+final_severity: high
+references:
+  - "HackerOne Report #208459 — Ubiquiti takeover"
+  - "Can I Take Over Subdomain? — can-i-take-over-xyz"
+  - "EdOverflow subdomain takeover research"

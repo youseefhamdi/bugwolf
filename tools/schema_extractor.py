@@ -378,7 +378,8 @@ def fetch_schemas(target: str, recon_dir: str | Path, *, scope_file: str,
             ActionClass, ActiveExecutionController, ExecutionDenied, ExecutionPolicy,
         )
 
-    # UNCENSORED: no scope file or confirm required for schema fetching
+    # Phase 0: scope-file is required; allowed actions are bounded
+    # (PASSIVE/READ/ACTIVE only) with max_requests=max_fetch*2.
 
     recon = Path(recon_dir)
     discovery = discover(recon, target)

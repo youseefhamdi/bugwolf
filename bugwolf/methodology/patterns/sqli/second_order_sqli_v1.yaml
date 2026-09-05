@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: second_order_sqli_v1
+bug_class: sqli
+category: sqli
+severity: high
+title: "Second-Order SQL Injection in Profile Update"
+description: |
+  The profile update endpoint escapes user input before storage, but the data is later concatenated into a raw SQL query when generating an admin report. The injected payload fires in the second query, allowing the attacker to escalate by attacking the admin's session.
+detection:
+  signature: "';--|';\\s*DROP\\s+TABLE"
+  method: POST
+  endpoint: "/api/profile/update"
+remediation: |
+  Apply parameterized queries at every layer, not just at the entry point, and ensure escape helpers are not bypassed when reusing stored data.
+references:
+  - "https://owasp.org/sqli/"
+  - "https://portswigger.net/web-security/sqli"
+bounty_range: "$3K — $15K"
+h100_proven: true

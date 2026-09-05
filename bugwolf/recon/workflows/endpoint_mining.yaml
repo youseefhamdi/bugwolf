@@ -1,0 +1,34 @@
+schema: bugwolf-recon-workflow-v1
+name: endpoint_mining
+description: |
+  Endpoint mining — extract URLs from archives, JS, and probe common
+  API paths.
+phases:
+  - order: 1
+    name: wayback_endpoints
+    tools: [wayback]
+    budget:
+      max_requests: 200
+      max_seconds: 600
+    scope_verb: passive
+  - order: 2
+    name: gau_endpoints
+    tools: [gau]
+    budget:
+      max_requests: 200
+      max_seconds: 600
+    scope_verb: passive
+  - order: 3
+    name: crawl_endpoints
+    tools: [katana, gospider]
+    budget:
+      max_requests: 500
+      max_seconds: 1800
+    scope_verb: active
+  - order: 4
+    name: wordlist_fuzz
+    tools: [ffuf, feroxbuster, dirsearch]
+    budget:
+      max_requests: 1000
+      max_seconds: 3600
+    scope_verb: active

@@ -4,7 +4,7 @@ Current as of the last verified run. The full suite passes:
 
 ```text
 python3 -m unittest discover -s tests -p 'test*.py'
-Ran 1030 tests
+Ran 1920 tests
 OK
 ```
 

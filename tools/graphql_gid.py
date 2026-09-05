@@ -45,6 +45,13 @@ try:
 except ImportError:  # direct script execution
     from idor_research import IdorValidationPlan  # type: ignore
 
+try:
+    from tools.core.medium_safety import path_open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def path_open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
+
 SCHEMA_VERSION = "bugwolf-graphql-gid-v1"
 DEFAULT_MAX_CANDIDATES = 64
 
@@ -409,10 +416,10 @@ def main() -> None:
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    with (out_dir / "gid-candidates.jsonl").open("w") as stream:
+    with path_open_text(out_dir / "gid-candidates.jsonl", "w") as stream:
         for candidate in candidates:
             stream.write(json.dumps(candidate.to_dict(), sort_keys=True) + "\n")
-    with (out_dir / "gid-validation-plans.jsonl").open("w") as stream:
+    with path_open_text(out_dir / "gid-validation-plans.jsonl", "w") as stream:
         for plan in plans:
             stream.write(json.dumps(asdict(plan), sort_keys=True) + "\n")
     harvested = harvest_artifacts(artifacts)

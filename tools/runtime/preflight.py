@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -333,7 +334,9 @@ def capability_digest(caps: List[Dict[str, Any]]) -> str:
 
 def run_preflight(target: str, *, project_root: Optional[str] = None,
                   probe_binaries: bool = True,
-                  mission_id: str = "") -> Dict[str, Any]:
+                  mission_id: str = "",
+                  operation_profile: str = "governed",
+                  scope_digest: str = "") -> Dict[str, Any]:
     """Run the full pre-flight, persist the manifest, publish the event.
 
     Returns the manifest dict.  Never raises for probe failures; only a
@@ -352,6 +355,8 @@ def run_preflight(target: str, *, project_root: Optional[str] = None,
         "target": target,
         "target_slug": target_slug(target),
         "mission_id": mission_id,
+        "operation_profile": operation_profile,
+        "scope_digest": scope_digest,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
         "capabilities": caps,
         "connections": connection_snapshot(),
@@ -383,11 +388,46 @@ def run_preflight(target: str, *, project_root: Optional[str] = None,
     return manifest
 
 
-def artifact_ref(manifest: Dict[str, Any]) -> Dict[str, Any]:
+def validate_manifest_for_mission(manifest: Dict[str, Any], *, target: str,
+                                   mission_id: str = "",
+                                   operation_profile: str = "governed",
+                                   scope_digest: str = "") -> List[str]:
+    """Validate that a preflight receipt belongs to the active mission.
+
+    The receipt hash is computed over the manifest without its hash field,
+    matching ``run_preflight``.  A valid-looking digest is not enough: a
+    changed target, profile, scope, or capability list must invalidate it.
+    """
+    issues: List[str] = []
+    if manifest.get("schema") != SCHEMA:
+        issues.append("preflight schema mismatch")
+    if str(manifest.get("target") or "") != str(target):
+        issues.append("preflight target mismatch")
+    if mission_id and str(manifest.get("mission_id") or "") != mission_id:
+        issues.append("preflight mission_id mismatch")
+    if str(manifest.get("operation_profile") or "governed") != operation_profile:
+        issues.append("preflight operation profile mismatch")
+    if scope_digest and str(manifest.get("scope_digest") or "") != scope_digest:
+        issues.append("preflight scope digest mismatch")
+    recorded_hash = str(manifest.get("sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", recorded_hash):
+        issues.append("preflight receipt missing valid sha256")
+    else:
+        unsigned = dict(manifest)
+        unsigned.pop("sha256", None)
+        calculated = hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        if calculated != recorded_hash:
+            issues.append("preflight receipt sha256 does not match contents")
+    return issues
+
+
+def artifact_ref(manifest: Dict[str, Any], *, project_root: Optional[str] = None) -> Dict[str, Any]:
     """ArtifactRef-shaped dict for MissionSpec.preflight_manifest_ref (PF3)."""
     return {
         "artifact_id": "preflight-" + manifest.get("sha256", "")[:12],
-        "path": str(manifest_path()),
+        "path": str(manifest_path(project_root=project_root)),
         "kind": ARTIFACT_PREFLIGHT,
         "producer_task": "preflight",
         "sha256": manifest.get("sha256", ""),

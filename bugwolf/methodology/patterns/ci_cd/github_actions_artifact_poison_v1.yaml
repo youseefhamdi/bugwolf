@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: github_actions_artifact_poison_v1
+bug_class: ci_cd
+category: ci_cd
+severity: high
+title: "GitHub Actions Artifact Poisoning"
+description: |
+  The workflow uploads a build artifact that contains attacker-controlled paths. When a downstream job downloads and extracts the artifact, path traversal writes files outside the intended directory, leading to code execution in the consuming job.
+detection:
+  signature: "actions/upload-artifact|actions/download-artifact"
+  method: POST
+  endpoint: "/"
+remediation: |
+  Verify artifact checksums, validate extracted files against a strict path allow-list, and minimize the use of shared artifacts between jobs.
+references:
+  - "https://owasp.org/ci_cd/"
+  - "https://portswigger.net/web-security/ci_cd"
+bounty_range: "$5K — $25K"
+h100_proven: true

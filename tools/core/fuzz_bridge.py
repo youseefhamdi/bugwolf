@@ -276,6 +276,16 @@ def run_fuzzing_campaign(
             url = path
         else:
             url = f"{base}{path}" if base else path
+        # Phase 0 H-4: scope check before every transport invocation. A fuzz
+        # probe must not become an out-of-scope outbound — the surface model
+        # is the planner's view, not the gate's. Violations are counted as
+        # errors and skipped (the campaign continues with the next mutation).
+        try:
+            from tools.runtime.scope import check_url, ScopeViolation
+            check_url(url)
+        except ScopeViolation:
+            summary.errors += 1
+            continue
         method = str(getattr(mutation, "method", "GET") or "GET").upper()
         body = getattr(mutation, "mutated", None)
         headers = {"Accept": "application/json, */*"}

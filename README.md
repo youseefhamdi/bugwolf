@@ -916,4 +916,69 @@ BugWolf is intended for authorized security research and bug bounty programs onl
 
 ---
 
+## Company Model
+
+BugWolf is organized as a "security-research AI company" modeled on
+the Japanese brain-market convention of **11 departments, 31
+employees**. We adopt that framing and extend it:
+
+- **11+ lanes** — the top-level capability areas
+- **19 agents** — the focused specialists inside each lane
+- **21+ directions** — the bug-class taxonomies each agent owns
+- **Tier 1** — the strongest directions (production-ready, full
+  evidence chain, regression coverage)
+
+### Lanes (11+)
+
+| Lane               | Scope                                              |
+|--------------------|----------------------------------------------------|
+| web                | Web/API attack surface                             |
+| auth               | OAuth / JWT / SAML / session                        |
+| infra              | CI/CD + cloud + supply chain                        |
+| llm                | LLM/Agentic AI attack surface                      |
+| api                | GraphQL / gRPC / REST                              |
+| orchestrator       | Multi-agent + multi-lane dispatch                  |
+| scanners           | 68 specialized scanners                            |
+| fuzz               | 9 fuzz engines                                     |
+| taint              | Source-to-sink flow analysis                       |
+| semantic           | Business-logic / auth-flow / diff                  |
+| regression         | Baselines + canaries + chains                      |
+| chain              | A→B→C attack synthesis (12 H100 chains)            |
+| methodology        | 70 patterns + 10 templates                         |
+| recon              | 15-phase recon engine                              |
+| osint              | Passive intel + transparency                      |
+| web3               | EVM/Move/Solana/TRON + 62 EVM patterns             |
+| cloud              | Terraform / IAM / S3 / SG / STS                    |
+| cicd               | GitHub Actions + runners + artifact poisoning      |
+| mobile             | MASVS / MASWE / Frida / deep links                 |
+| distributed        | Redis master/worker + IPC + load balancer          |
+| benchmarks         | synthlab + adversarial + regression + scoring      |
+
+### Agents (19)
+
+Each agent is a focused specialist. The full list is in
+`docs/COMPANY.md`. Examples: `web_xss`, `auth_oauth`,
+`web3_reentrancy`, `llm_prompt_injection`, `cloud_iam`,
+`mobile_frida`, `cicd_actions`, `fuzz_coverage`,
+`taint_python`, `semantic_business_logic`.
+
+### Directions (21+)
+
+Each direction is a bug class that one or more agents own.
+Tier 1 directions are production-ready with regression coverage.
+Full table in `docs/COMPANY.md`.
+
+### Tier table (top 6)
+
+| Direction              | Tier | Notes                                    |
+|------------------------|------|------------------------------------------|
+| XSS                    | 1    | Best — full evidence chain                |
+| SQLi                   | 1    | Best — multi-DB                          |
+| SSRF                   | 1    | Best — DNS rebinding + IPv6              |
+| IDOR                   | 1    | Best — object + function-level           |
+| OAuth                  | 1    | Best — code interception + ATO chain     |
+| JWT                    | 1    | Best — alg confusion + key confusion     |
+
+For the full tier table (21+ directions), see `docs/COMPANY.md`.
+
 Built by [@youseefhamdi](https://github.com/youseefhamdi)

@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: waf_xss_event_split_v1
+bug_class: waf_bypass
+category: waf_bypass
+severity: high
+title: "XSS Filter Bypass via Attribute Splitting"
+description: |
+  The WAF scans for onerror= but the attacker splits the attribute across newlines or whitespace that the browser tolerates. The payload on error=alert(1) evades the WAF and executes in the victim browser.
+detection:
+  signature: "on[ \\t]+error=|on[\\r\\n]+error="
+  method: GET
+  endpoint: "/page?html="
+remediation: |
+  Apply a strict allow-list of allowed tags and attributes. Encode all dynamic values, and use Trusted Types to lock down DOM sinks.
+references:
+  - "https://owasp.org/waf_bypass/"
+  - "https://portswigger.net/web-security/waf_bypass"
+bounty_range: "$1K — $5K"
+h100_proven: false

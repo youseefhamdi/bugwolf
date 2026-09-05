@@ -73,6 +73,14 @@ if str(Path(__file__).resolve().parent.parent.parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from tools.runtime_paths import workspace_root
+try:
+    from tools.core.medium_safety import fdopen_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def fdopen_text(fd, mode="r", **kw):  # type: ignore[no-redef]
+        import os as _os
+        return _os.fdopen(fd, mode,
+                          encoding=kw.get("encoding", "utf-8"),
+                          errors=kw.get("errors", "replace"))
 
 SCHEMA = "bugwolf-team-dispatch/v1"
 
@@ -166,19 +174,63 @@ class TaskToolWorker:
                 # late/corrupt results carry no terminal power here: the
                 # claim checks happen harness-side; engine trusts the file
                 # that matches its own job id
+                if (result.get("job_id") not in (None, job_id)
+                        or result.get("mission_id") not in (None, self.mission.mission_id)):
+                    # A result written under the right filename is not enough:
+                    # bind its identity to both the queued job and mission.
+                    self._record_rejection(job_id, "result identity mismatch")
+                    return {"status": "FAILED",
+                            "summary": "harness result identity mismatch",
+                            "contract_error": "identity_mismatch",
+                            "worker_id": self.worker_id}
+                status = str(result.get("status") or "").strip().upper()
+                if status not in RESULT_STATUSES:
+                    self._record_rejection(job_id, "invalid result status")
+                    return {"status": "FAILED",
+                            "summary": "harness result has invalid status",
+                            "contract_error": "invalid_status",
+                            "worker_id": self.worker_id}
                 return {
-                    "status": str(result.get("status") or "DONE"),
+                    "status": status,
                     "summary": str(result.get("summary") or ""),
                     "lead_status": result.get("lead_status", ""),
                     "messages": result.get("messages") or [],
                     "artifacts": result.get("artifacts") or [],
                     "worker_id": result.get("worker_id", ""),
+                    "job_id": job_id,
+                    "mission_id": self.mission.mission_id,
                 }
             self._touch_heartbeat(payload.get("member_id", ""))
             time.sleep(self.poll_interval)
+        self._expire_job(job_id)
         return {"status": "BUDGET-EXHAUSTED",
                 "summary": f"no harness result within {self.timeout_seconds}s",
-                "timed_out": True}
+                "timed_out": True,
+                "job_id": job_id,
+                "mission_id": self.mission.mission_id}
+
+    def _record_rejection(self, job_id: str, reason: str) -> None:
+        path = self.dispatch_dir() / "rejections.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"schema": SCHEMA, "mission_id": self.mission.mission_id,
+                                 "job_id": job_id, "reason": reason,
+                                 "at": _utc_now()}, sort_keys=True) + "\n")
+
+    def _expire_job(self, job_id: str) -> None:
+        """Seal a timed-out job so a late harness result cannot resurrect it."""
+        path = self.jobs_dir() / f"{job_id}.json"
+        job = _read_json(path) or {}
+        if job.get("status") in ("pending", "claimed"):
+            job["status"] = "expired"
+            job["expired_at"] = _utc_now()
+            job["expiry_reason"] = "engine budget timeout"
+            _fsync_write(path, job)
+            try:
+                (self.jobs_dir() / f"{job_id}.claim").unlink()
+            except OSError:
+                pass
+            self._record_rejection(job_id, "engine budget timeout")
 
     def _touch_heartbeat(self, member_id: str) -> None:
         """Keep the engine-side member record visibly alive while waiting.
@@ -241,7 +293,7 @@ def cli_next(root: Path, mission_id: str, *, worker_id: str,
                 try:
                     # O_CREAT|O_EXCL: exactly one claimer wins
                     fd = os.open(str(claim), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                    with os.fdopen(fd, "w") as fh:
+                    with fdopen_text(fd, "w") as fh:
                         fh.write(json.dumps({"worker_id": worker_id,
                                              "claimed_at": _utc_now()}))
                 except FileExistsError:
@@ -265,6 +317,8 @@ def _read_json(path: Path) -> Optional[Dict[str, Any]]:
 
 def _check_claim(root: Path, mission_id: str, job_id: str,
                  worker_id: str) -> Dict[str, Any]:
+    if not _valid_job_id(job_id):
+        raise ValueError(f"invalid job id: {job_id!r}")
     claim = _read_json(_claim_path(root, mission_id, job_id))
     if not claim:
         raise ValueError(f"job {job_id} has no claim token")
@@ -273,6 +327,20 @@ def _check_claim(root: Path, mission_id: str, job_id: str,
             f"job {job_id} claimed by {claim.get('worker_id')!r}, "
             f"not {worker_id!r}")
     return claim
+
+
+def _claimed_job(root: Path, mission_id: str, job_id: str) -> Dict[str, Any]:
+    """Load and validate the job state before accepting a terminal result."""
+    job = _read_json(_job_path(root, mission_id, job_id))
+    if not job:
+        raise ValueError(f"job {job_id} is missing or corrupt")
+    if job.get("mission_id") not in (None, "", mission_id):
+        raise ValueError(f"job {job_id} belongs to another mission")
+    if job.get("job_id") not in (None, "", job_id):
+        raise ValueError(f"job {job_id} identity mismatch")
+    if job.get("status") != "claimed":
+        raise ValueError(f"job {job_id} is not claimable for completion (status={job.get('status')!r})")
+    return job
 
 
 def cli_complete(root: Path, mission_id: str, job_id: str, *,
@@ -284,9 +352,12 @@ def cli_complete(root: Path, mission_id: str, job_id: str, *,
     if status not in RESULT_STATUSES:
         raise ValueError(f"status must be one of {RESULT_STATUSES}")
     _check_claim(root, mission_id, job_id, worker_id)
+    job = _claimed_job(root, mission_id, job_id)
     result = {
         "schema": SCHEMA,
         "job_id": job_id,
+        "mission_id": mission_id,
+        "member_id": job.get("member_id", ""),
         "status": status,
         "summary": summary,
         "messages": messages or [],
@@ -298,7 +369,6 @@ def cli_complete(root: Path, mission_id: str, job_id: str, *,
     results_dir.mkdir(parents=True, exist_ok=True)
     _fsync_write(_result_path(root, mission_id, job_id), result)
     # mark the job done and drop the claim token
-    job = _read_json(_job_path(root, mission_id, job_id)) or {}
     job["status"] = "done"
     job["result_status"] = status
     _fsync_write(_job_path(root, mission_id, job_id), job)

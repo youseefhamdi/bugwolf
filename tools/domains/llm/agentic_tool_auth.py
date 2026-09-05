@@ -380,3 +380,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# Phase 1.5: scanner export shim
+def export_llm_scanner():
+    from bugwolf.scanners.llm.tool_auth import ToolAuthScanner
+    return ToolAuthScanner()

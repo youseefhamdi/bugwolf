@@ -1,0 +1,119 @@
+schema: bugwolf-playbook-v1
+name: supabase
+description: |
+  Supabase Row-Level Security (RLS) bypass probes. Tests the documented
+  PostgREST failure modes (anon role, service role leakage, RLS-disabled
+  tables, JWT-with-role claim), against a cooperating test user. Mirrors
+  the methodology playbook's confirmation-only posture: no real tenant
+  data is ever enumerated or dumped.
+preconditions:
+  target_is_reachable: true
+  scope_allows_active: true
+  supabase_endpoint_identified: true
+  test_user_pair_available: true
+payload_catalog:
+  - id: anon_role_read
+    request:
+      method: GET
+      path: /rest/v1/notes?select=*
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [rls_disabled]
+    requires_scope_verb: passive
+  - id: anon_role_write
+    request:
+      method: POST
+      path: /rest/v1/notes
+    expected_status: 201
+    expected_body_match: ""
+    sinks: [rls_writable_anon]
+    requires_scope_verb: active
+  - id: service_role_exposed
+    request:
+      method: GET
+      path: /rest/v1/admin_secrets?select=*
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [service_role_leak]
+    requires_scope_verb: active
+  - id: jwt_role_claim_swap
+    request:
+      method: GET
+      path: /rest/v1/users?select=*
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [jwt_role_swap]
+    requires_scope_verb: active
+  - id: cross_tenant_idor
+    request:
+      method: GET
+      path: /rest/v1/orders?id=eq.42
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [cross_tenant_idor]
+    requires_scope_verb: active
+  - id: storage_object_idor
+    request:
+      method: GET
+      path: /storage/v1/object/private/test.txt
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [storage_idor]
+    requires_scope_verb: active
+  - id: rls_filter_or_injection
+    request:
+      method: GET
+      path: /rest/v1/users?or=(id.eq.1)
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [rls_filter_bypass]
+    requires_scope_verb: active
+  - id: missing_authorization_header
+    request:
+      method: GET
+      path: /rest/v1/private
+    expected_status: 401
+    expected_body_match: ""
+    sinks: [missing_auth_gate]
+    requires_scope_verb: passive
+  - id: graphql_introspection
+    request:
+      method: POST
+      path: /graphql/v1
+    expected_status: 200
+    expected_body_match: "__schema"
+    sinks: [supabase_graphql_introspection]
+    requires_scope_verb: passive
+  - id: realtime_subscription_authz
+    request:
+      method: GET
+      path: /realtime/v1/channels
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [realtime_authz]
+    requires_scope_verb: passive
+evidence_collection:
+  - type: response_capture
+    target: response
+  - type: header_diff
+    target: response.headers
+    config:
+      keys: [content-profile, x-supabase]
+  - type: body_diff
+    target: response.body
+    config:
+      baseline_key: test_user_only
+post_conditions:
+  finding_emitted: true
+  evidence_block_recorded: true
+  test_user_records_cleaned: true
+budget:
+  max_requests: 60
+  max_wall_clock: 150
+  min_interval_ms: 75
+governance:
+  requires_approval: true
+  scope_class: active
+  require_reproducible_evidence: true
+  destructive_allowed: false
+  notes: "Test user pair only; clean up created records at post-condition."

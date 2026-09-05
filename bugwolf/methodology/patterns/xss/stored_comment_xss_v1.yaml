@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: stored_comment_xss_v1
+bug_class: xss
+category: xss
+severity: high
+title: "Stored XSS via Comment Markdown Rendering"
+description: |
+  User-submitted comments are rendered through a Markdown processor that allows raw HTML. The attacker injects a script tag with event handlers that fire when the comment is viewed by any user, including moderators. The payload persists in the database and runs in the victim's browser context.
+detection:
+  signature: "<script[^>]*>|on(load|error|click|mouseover)=|javascript:"
+  method: POST
+  endpoint: "/api/comments"
+remediation: |
+  Use a strict Markdown renderer with HTML stripping enabled by default, sanitize attribute whitelists, and apply a CSP that disallows inline scripts and unsafe-eval.
+references:
+  - "https://owasp.org/xss/"
+  - "https://portswigger.net/web-security/xss"
+bounty_range: "$1K — $10K"
+h100_proven: true

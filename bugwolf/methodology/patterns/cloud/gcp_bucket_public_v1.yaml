@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: gcp_bucket_public_v1
+bug_class: cloud
+category: cloud
+severity: high
+title: "GCS Bucket Uniform Bucket-Level Access Disabled"
+description: |
+  The Google Cloud Storage bucket has uniform bucket-level access disabled and individual objects are granted `allUsers` READER. The attacker enumerates the bucket name and downloads every public object.
+detection:
+  signature: "storage\\.googleapis\\.com|\\.storage\\.googleapis\\.com"
+  method: GET
+  endpoint: "/"
+remediation: |
+  Enable uniform bucket-level access on every bucket, audit IAM bindings for `allUsers`, and use VPC Service Controls to limit bucket exposure.
+references:
+  - "https://owasp.org/cloud/"
+  - "https://portswigger.net/web-security/cloud"
+bounty_range: "$2K — $15K"
+h100_proven: true

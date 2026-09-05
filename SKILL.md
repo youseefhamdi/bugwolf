@@ -7,6 +7,32 @@ description: All-round bug bounty skill covering smart contract audits (EVM/Soli
 
 > **Operating mode:** Production operation begins with an operator-supplied target spec and attestation. The operator defines the boundary and Rules of Engagement; the plugin records that provenance and uses maximum capability within it. Local fixtures are pipeline-validation environments only, never the production boundary.
 
+## @-References
+
+The following companion documents live alongside this SKILL.md.
+Read them in the order listed when you need the deep context:
+
+1. `MAX_DEPTH_METHODOLOGY.md` — full methodology corpus (70 patterns, 10 templates, 12 chains)
+2. `MAX_DEPTH_GOVERNANCE.md` — governance contracts (scope, question, CVSS, OPSEC, evidence)
+3. `MAX_DEPTH_ARCHITECTURE.md` — layered architecture (Layers 0–6)
+4. `MAX_DEPTH_BENCHMARKS.md` — synthlab, adversarial, regression, scoring
+5. `MAX_DEPTH_OPERATIONS.md` — operator runbook (install, test, troubleshoot, recover)
+6. `MAX_DEPTH_SECURITY.md` — threat model + 5 CRITICAL + 18 HIGH + 36 MEDIUM findings
+7. `MAX_DEEP_CHAINS.md` — H100 chains worked examples
+8. `MAX_DEEP_PATTERNS.md` — pattern schema + how to add a new pattern
+9. `MAX_DEEP_TEMPLATES.md` — engagement templates
+10. `MAX_DEEP_BYPASS.md` — WAF bypass table (15 techniques)
+11. `SECURITY_AUDIT_REPORT.md` — full audit findings + remediation map
+12. `CHANGELOG.md` — release history
+13. `docs/ARCHITECTURE.md` — architecture overview
+14. `docs/GOVERNANCE.md` — governance modules deep-dive
+15. `docs/METHODOLOGY.md` — methodology public APIs
+16. `docs/BENCHMARKS.md` — benchmark suite
+17. `docs/OPERATIONS.md` — operator runbook
+18. `docs/SECURITY.md` — security model
+19. `docs/COMPANY.md` — company / agent / lane / direction model
+20. `MEMORY.md` — long-term core info (auto-loaded by Claude Code)
+
 ## UNIVERSAL HARNESS CONTRACT — RELOAD, DO NOT IMPROVISE
 
 `BUGWOLF-HARNESS-CONTRACT-V2` applies to Claude Code, Freebuff/Codebuff,
@@ -2712,7 +2738,7 @@ python3 tools/infra_deploy.py --type http-callback --port 8080 \
 For missions whose breadth warrants parallel specialists, dispatch the
 **BugWolf team** (`commands/bugwolf-team.md`):
 
-1. Compose the roster — `python3 -m tools.runtime.team --mission <id> --target <target> --plan --json`. The registry (25 specialized agents: web-api, access-control, business-logic, waf-bypass, http-smuggling, race-condition, cache-poisoning, graphql, smart-contract, llm-ai, cloud-cicd, mobile-client, credential-leak, crypto-math, …) selects members deterministically and caps at the budget.
+1. Compose the roster — `python3 -m tools.runtime.team --mission <id> --target <target> --plan --json`. The registry (39 specialized agents: web-api, access-control, business-logic, waf-bypass, http-smuggling, race-condition, cache-poisoning, graphql, smart-contract, llm-ai, cloud-cicd, mobile-client, credential-leak, crypto-math, …) selects members deterministically and caps at the budget.
 2. Verify playbooks — `python3 -m tools.core.agent_registry --verify`.
 3. Execute through waves — recon → hunt (parallel specialists) → verify → report. Members dispatch as `bugwolf:<role>` subagents (definitions in `agents/bugwolf/`) with per-member model-tier preferences from `tools/core/model_router.route_agent_dispatch` (frontier chain/crypto work never degrades below frontier; deterministic regression work never burns a model call). Two bindings: `--worker native` (preferred) spawns each subagent headlessly in-process via `tools/runtime/native_dispatch.py` — one bounded `claude --print` subprocess per member, no queue; `--worker task-tool` enqueues to the durable file queue (`tools/runtime/team_dispatch.py`) for a separate drain-loop session.
 4. The team engine is a **record**, not a bypass: the scope gate and sandbox hold for every member at the same choke points as single-session missions. A lead any member opens obeys the same lead protocol (PWNED / REFUTED / BUDGET-EXHAUSTED, replayable evidence required).

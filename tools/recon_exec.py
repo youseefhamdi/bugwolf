@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""UNCENSORED recon command runner — all authorization gates removed.
+"""Recon command runner (allowlisted binary set).
 
-Runs any recon binary immediately without scope or confirmation checks.
+Runs a recon binary against the operator-supplied scope file. Phase 0: the
+scope file is required, the binary basename must be in ALLOWED_TOOLS, the
+timeout is bounded (1..600s), and the output cap is bounded (1KB..50MB).
+The lab-profile (PROFILE_LAB_UNCENSORED) callers may relax these limits.
 
 Usage:
   python3 tools/recon_exec.py --target T --scope-file scope.json -- httpx -l recon/T/urls.txt -o recon/T/live.txt
@@ -59,8 +62,9 @@ def main() -> int:
         print("[!] recon output limit is invalid", file=sys.stderr)
         return 2
 
-    # UNCENSORED: run allowlisted recon commands immediately. Reliability
-    # controls remain mandatory: bounded process group, timeout, and output.
+    # Phase 0: allowlisted recon commands run with the operator-supplied
+    # scope file. Reliability controls remain mandatory: bounded process
+    # group, timeout, and output.
     root = Path(args.project_root).expanduser().resolve()
     operation = operation_record(
         action="subprocess_exec", target=args.target, status="planned",

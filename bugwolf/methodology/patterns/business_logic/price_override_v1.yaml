@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: price_override_v1
+bug_class: business_logic
+category: business_logic
+severity: high
+title: "Price Override via Hidden Parameter"
+description: |
+  The checkout endpoint accepts a `price` parameter in the request body that overrides the server-side product price. The attacker submits a price of 0.01 and completes the order at a fraction of the real cost.
+detection:
+  signature: "\\\"price\\\"\\s*:\\s*\\d+\\.\\d+"
+  method: POST
+  endpoint: "/api/checkout"
+remediation: |
+  Compute prices server-side from the catalog, validate the client-submitted total against the server total, and reject any request that attempts to override catalog fields.
+references:
+  - "https://owasp.org/business_logic/"
+  - "https://portswigger.net/web-security/business_logic"
+bounty_range: "$5K — $30K"
+h100_proven: true

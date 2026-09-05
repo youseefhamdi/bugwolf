@@ -1,0 +1,71 @@
+schema: bugwolf-recon-workflow-v1
+name: full_recon
+description: |
+  Full target recon — passive + active + deep crawl.  Use when the
+  operator has signed off on both passive intel harvesting and active
+  probing.  All phases are sequential; each phase depends on the
+  previous one's findings.
+phases:
+  - order: 1
+    name: passive_subdomain_enum
+    tools: [crt_sh, dns_brute, shodan, subdomain_alts]
+    budget:
+      max_requests: 50
+      max_seconds: 600
+    scope_verb: passive
+  - order: 2
+    name: passive_tech_fingerprint
+    tools: [censys, wayback, github_search]
+    budget:
+      max_requests: 50
+      max_seconds: 600
+    scope_verb: passive
+  - order: 3
+    name: email_pattern_harvest
+    tools: [email_patterns, github_search]
+    budget:
+      max_requests: 25
+      max_seconds: 300
+    scope_verb: passive
+  - order: 4
+    name: active_port_scan
+    tools: [naabu, nmap]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: active
+  - order: 5
+    name: active_web_crawl
+    tools: [katana, gospider, waybackurls]
+    budget:
+      max_requests: 500
+      max_seconds: 1800
+    scope_verb: active
+  - order: 6
+    name: active_tech_fingerprint
+    tools: [httpx, nuclei]
+    budget:
+      max_requests: 100
+      max_seconds: 1200
+    scope_verb: active
+  - order: 7
+    name: deep_js_analysis
+    tools: [katana, nuclei]
+    budget:
+      max_requests: 100
+      max_seconds: 1200
+    scope_verb: active
+  - order: 8
+    name: deep_endpoint_mining
+    tools: [paramspider, arjun]
+    budget:
+      max_requests: 200
+      max_seconds: 1200
+    scope_verb: active
+  - order: 9
+    name: supply_chain_leak_hunt
+    tools: [trufflehog, gitleaks]
+    budget:
+      max_requests: 50
+      max_seconds: 600
+    scope_verb: passive

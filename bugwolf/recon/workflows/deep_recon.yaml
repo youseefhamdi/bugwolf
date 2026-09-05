@@ -1,0 +1,41 @@
+schema: bugwolf-recon-workflow-v1
+name: deep_recon
+description: |
+  Deep crawl + JS bundle analysis.  Run after active_recon has surfaced
+  an initial asset inventory.
+phases:
+  - order: 1
+    name: full_web_crawl
+    tools: [katana, gospider, waybackurls, gau]
+    budget:
+      max_requests: 1000
+      max_seconds: 3600
+    scope_verb: active
+  - order: 2
+    name: js_endpoint_extraction
+    tools: [katana, nuclei]
+    budget:
+      max_requests: 500
+      max_seconds: 1800
+    scope_verb: active
+  - order: 3
+    name: js_secret_scan
+    tools: [trufflehog]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: active
+  - order: 4
+    name: graphql_probe
+    tools: [graphql-introspector]
+    budget:
+      max_requests: 50
+      max_seconds: 600
+    scope_verb: active
+  - order: 5
+    name: parameter_mining
+    tools: [paramspider, arjun]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: active

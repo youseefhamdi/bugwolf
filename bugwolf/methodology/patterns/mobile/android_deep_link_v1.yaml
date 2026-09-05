@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: android_deep_link_v1
+bug_class: mobile
+category: mobile
+severity: high
+title: "Android Deep Link Hijacking"
+description: |
+  An exported activity registers an intent-filter for a deep link without verifying the incoming URI. The attacker sends a crafted intent from another application, allowing them to drive the app into privileged states or bypass authentication.
+detection:
+  signature: "<intent-filter>|android.intent.action.VIEW"
+  method: POST
+  endpoint: "/deeplink"
+remediation: |
+  Validate all deep-link parameters server-side, require signature verification for sensitive intents, and use `android:exported="false"` for internal activities.
+references:
+  - "https://owasp.org/mobile/"
+  - "https://portswigger.net/web-security/mobile"
+bounty_range: "$2K — $15K"
+h100_proven: true

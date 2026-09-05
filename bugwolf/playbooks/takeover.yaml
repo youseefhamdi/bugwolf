@@ -1,0 +1,109 @@
+schema: bugwolf-playbook-v1
+name: takeover
+description: |
+  Subdomain takeover detection only. Performs DNS CNAME/SRV/MX/NULL
+  resolution against the target's enumerated subdomains and confirms the
+  endpoint's response fingerprint against known dangling-service
+  signatures. NEVER registers or claims the dangling resource; the
+  remediation step is reported to the operator queue for human action.
+preconditions:
+  target_is_reachable: true
+  scope_allows_active: false
+  subdomain_inventory_complete: true
+  operator_acknowledged_passive_only: true
+payload_catalog:
+  - id: dns_cname_probe
+    request:
+      method: GET
+      path: /dns/cname?host=docs.example.com
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [dns_dangling]
+    requires_scope_verb: passive
+  - id: http_probe_s3_signature
+    request:
+      method: GET
+      path: /probe?host=docs.example.com
+    expected_status: 404
+    expected_body_match: "NoSuchBucket"
+    sinks: [takeover_s3]
+    requires_scope_verb: passive
+  - id: http_probe_azure_signature
+    request:
+      method: GET
+      path: /probe?host=app.example.com
+    expected_status: 404
+    expected_body_match: "404 Web Site not found"
+    sinks: [takeover_azure]
+    requires_scope_verb: passive
+  - id: http_probe_github_pages
+    request:
+      method: GET
+      path: /probe?host=site.example.com
+    expected_status: 404
+    expected_body_match: "There isn't a GitHub Pages site here"
+    sinks: [takeover_github_pages]
+    requires_scope_verb: passive
+  - id: http_probe_heroku
+    request:
+      method: GET
+      path: /probe?host=app.example.com
+    expected_status: 404
+    expected_body_match: "no such app"
+    sinks: [takeover_heroku]
+    requires_scope_verb: passive
+  - id: http_probe_shopify
+    request:
+      method: GET
+      path: /probe?host=store.example.com
+    expected_status: 404
+    expected_body_match: "Sorry, this shop is currently unavailable"
+    sinks: [takeover_shopify]
+    requires_scope_verb: passive
+  - id: http_probe_pantheon
+    request:
+      method: GET
+      path: /probe?host=dev.example.com
+    expected_status: 404
+    expected_body_match: "404 Unknown site"
+    sinks: [takeover_pantheon]
+    requires_scope_verb: passive
+  - id: http_probe_fly_io
+    request:
+      method: GET
+      path: /probe?host=api.example.com
+    expected_status: 404
+    expected_body_match: "Could not resolve host"
+    sinks: [takeover_fly]
+    requires_scope_verb: passive
+  - id: srv_record_probe
+    request:
+      method: GET
+      path: /dns/srv?name=_sip._tcp.example.com
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [dns_dangling_srv]
+    requires_scope_verb: passive
+evidence_collection:
+  - type: response_capture
+    target: response
+  - type: header_diff
+    target: response.headers
+  - type: body_diff
+    target: response.body
+    config:
+      signatures: [s3, azure, github_pages, heroku, shopify, pantheon, fly]
+post_conditions:
+  finding_emitted: true
+  evidence_block_recorded: true
+  operator_ticket_queued: true
+budget:
+  max_requests: 100
+  max_wall_clock: 240
+  min_interval_ms: 50
+governance:
+  requires_approval: true
+  scope_class: passive
+  require_reproducible_evidence: true
+  destructive_allowed: false
+  notes: "Detection only. Operator must approve any claim attempt outside scope."

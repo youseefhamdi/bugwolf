@@ -29,11 +29,16 @@ if str(ROOT) not in sys.path:
 HOOK = ROOT / "hooks" / "bugwolf_pretool_scope_hook.py"
 
 
-def _run_hook(event: dict, workspace: str) -> subprocess.CompletedProcess:
+def _run_hook(event: dict, workspace: str, mission_id: str = "") -> subprocess.CompletedProcess:
+    env = {**os.environ, "BUGWOLF_PROJECT_ROOT": workspace}
+    if mission_id:
+        env["BUGWOLF_MISSION_ID"] = mission_id
+    else:
+        env.pop("BUGWOLF_MISSION_ID", None)
     return subprocess.run(
         [sys.executable, str(HOOK)],
         input=json.dumps(event), capture_output=True, text=True,
-        env={**os.environ, "BUGWOLF_PROJECT_ROOT": workspace}, timeout=30)
+        env=env, timeout=30)
 
 
 def _write_contract(workspace: str, *, target: str,
@@ -150,6 +155,13 @@ class TestHookEnforcement(unittest.TestCase):
             env={**os.environ, "BUGWOLF_PROJECT_ROOT": self.ws}, timeout=30)
         self.assertEqual(out.returncode, 0)
 
+    def test_mission_id_mismatch_fails_closed(self):
+        _write_contract(self.ws, target="target.example", mission_id="m-owner")
+        out = _run_hook(_bash("curl https://target.example/"), self.ws,
+                        mission_id="m-other")
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("mission_id", out.stderr)
+
     def test_denial_is_journaled(self):
         _write_contract(self.ws, target="target.example",
                         mission_id="m-journal")
@@ -211,6 +223,13 @@ class TestContractPersistence(unittest.TestCase):
         finally:
             scope_mod.reset()
             scope_mod.clear_scope_contract(root=self.ws)
+
+    def test_clear_mismatched_mission_does_not_remove_contract(self):
+        _write_contract(self.ws, target="target.example", mission_id="m-owner")
+        from tools.runtime import scope as scope_mod
+        self.assertFalse(scope_mod.clear_scope_contract(
+            root=self.ws, mission_id="m-other"))
+        self.assertTrue((Path(self.ws) / "state" / "scope_contract.json").exists())
 
     def test_clear_makes_hook_inert(self):
         from tools.runtime import scope as scope_mod

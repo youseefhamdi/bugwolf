@@ -1,0 +1,18 @@
+[package]
+name = "bugwolf-rs"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "bugwolf_rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
+[[bin]]
+name = "healthcheck"
+path = "src/bin/healthcheck.rs"
+
+[dependencies]

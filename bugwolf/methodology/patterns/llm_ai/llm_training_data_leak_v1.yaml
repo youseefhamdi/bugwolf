@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: llm_training_data_leak_v1
+bug_class: llm
+category: llm_ai
+severity: high
+title: "Training Data Memorization Leak"
+description: |
+  The fine-tuned model has memorized sensitive snippets from its training corpus. The attacker crafts prompts that elicit memorized outputs, including emails, PII, or internal documentation that should never have been ingested.
+detection:
+  signature: "my (email|phone|address) is|dear customer"
+  method: POST
+  endpoint: "/api/chat"
+remediation: |
+  Audit training data for sensitive content, apply output filters that scan for known-bad patterns, and prefer RAG over fine-tuning for sensitive data sources.
+references:
+  - "https://owasp.org/llm_ai/"
+  - "https://portswigger.net/web-security/llm_ai"
+bounty_range: "$5K — $25K"
+h100_proven: true

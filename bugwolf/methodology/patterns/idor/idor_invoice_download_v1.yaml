@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: idor_invoice_download_v1
+bug_class: idor
+category: idor
+severity: high
+title: "IDOR on Invoice Download"
+description: |
+  Invoice download URLs use a sequential numeric ID. The attacker iterates IDs to download every customer's invoice, exposing revenue, customer names, and order details without authorization.
+detection:
+  signature: "/api/invoices/(\\d+)/download"
+  method: GET
+  endpoint: "/api/invoices/1/download"
+remediation: |
+  Authorize each download against the resource owner, audit access logs for cross-tenant access patterns, and migrate sensitive IDs to opaque tokens.
+references:
+  - "https://owasp.org/idor/"
+  - "https://portswigger.net/web-security/idor"
+bounty_range: "$3K — $20K"
+h100_proven: true

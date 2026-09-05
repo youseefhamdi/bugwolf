@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: github_actions_pr_target_v1
+bug_class: ci_cd
+category: ci_cd
+severity: high
+title: "GitHub Actions pull_request_target Checkout Abuse"
+description: |
+  A workflow triggers on `pull_request_target` and checks out the attacker-controlled ref. The attacker opens a PR whose workflow file executes arbitrary code in the trusted CI environment with access to repository secrets.
+detection:
+  signature: "pull_request_target"
+  method: POST
+  endpoint: "/repos/:owner/:repo/pulls"
+remediation: |
+  Avoid checking out attacker refs in pull_request_target workflows. If unavoidable, require explicit approval from maintainers and gate execution behind a label.
+references:
+  - "https://owasp.org/ci_cd/"
+  - "https://portswigger.net/web-security/ci_cd"
+bounty_range: "$10K — $50K"
+h100_proven: true

@@ -1,0 +1,78 @@
+# bugwolf-chain-h100-v1
+## Source: Shopify #446585 ($11,000), H1 #341876 (Capital One style SSRF)
+## License: bugwolf-MIT
+# Port: 2026-09-05
+# Severity: critical
+# Bounty band: $10K – $50K
+schema: bugwolf-chain-h100-v1
+id: 02_ssrf_to_rce
+title: "SSRF → IMDS → IAM → RCE"
+bounty: "$30K H100"
+prerequisites:
+  - id: ssrf_in_http_fetch_endpoint
+    description: "A web endpoint fetches user-supplied URLs server-side"
+  - id: imds_reachable
+    description: "IMDSv1 or IMDSv2-token-leak allows metadata retrieval"
+  - id: iam_role_with_priv
+    description: "The metadata service exposes a role with high privileges"
+steps:
+  - order: 1
+    description: "Confirm SSRF on a fetch/import/webhook endpoint via an out-of-band canary"
+    protocol: http
+    technique: ssrf_oob_confirm
+    evidence:
+      kind: http_request
+      method: POST
+      url: "/api/v1/fetch"
+    destructive: false
+  - order: 2
+    description: "Probe cloud metadata endpoints (AWS, GCP, Azure, DigitalOcean, Alibaba)"
+    protocol: http
+    technique: metadata_probe
+    evidence:
+      kind: http_request
+      targets:
+        - "http://169.254.169.254/latest/meta-data/"
+        - "http://metadata.google.internal/computeMetadata/v1/"
+        - "http://169.254.169.254/metadata/instance?api-version=2021-02-01"
+    destructive: false
+  - order: 3
+    description: "Extract IAM role credentials (AccessKeyId, SecretAccessKey, Token)"
+    protocol: cloud
+    technique: iam_credential_dump
+    evidence:
+      kind: secret
+      service: imds
+    destructive: false
+  - order: 4
+    description: "Use the credentials to enumerate S3 / compute / lambda / ECR"
+    protocol: cloud
+    technique: cloud_enumeration
+    evidence:
+      kind: action
+      service: sts
+    destructive: false
+  - order: 5
+    description: "Find a Lambda or EC2 userdata that grants SSH / SSM access"
+    protocol: cloud
+    technique: compute_pivot
+    evidence:
+      kind: action
+      service: ssm
+    destructive: false
+  - order: 6
+    description: "Execute payload on a cloud-controlled instance (reverse shell or ssm send-command)"
+    protocol: cloud
+    technique: rce_via_ssm
+    preconditions:
+      - "scope_approval"
+      - "iam_role_allows_ssm"
+    evidence:
+      kind: action
+      service: ssm
+    destructive: true
+final_severity: critical
+references:
+  - "Shopify #446585 — SSRF to AWS metadata ($11,000)"
+  - "HackerOne #341876 — SSRF in Capital One (style precedent)"
+  - "HackerOne #498052 — New Relic SSRF chain"

@@ -804,3 +804,37 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.4: thin shim — re-exports the new bugwolf.regression module
+# alongside the existing PatchGapMonitor.
+# ---------------------------------------------------------------------------
+def patch_gap_regression_bridge():
+    """Return the RegressionPatchGap instance bridging this module to bugwolf.regression.
+
+    STUB-SAFE: never raises.  When :mod:`bugwolf.regression` cannot be
+    imported (very early bootstrap, packaging error, etc.) the bridge
+    still returns an object whose ``.scan`` returns an empty report
+    with an ``unavailable_reason`` set.
+    """
+    try:
+        from bugwolf.regression import RegressionPatchGap
+        try:
+            return RegressionPatchGap()
+        except Exception:
+            return RegressionPatchGap()
+    except Exception:
+        # Last-ditch stub — never raise per STUB-SAFE contract.
+        class _Stub:
+            def scan(self, *_args, **_kwargs):
+                class _Report:
+                    entries = ()
+                    seen_cve_ids = ()
+                    tech_keywords = ()
+                    min_cvss = 0.0
+                    unavailable_reason = "bugwolf.regression unavailable"
+                    is_empty = lambda self: True
+                    ok = lambda self: False
+                return _Report()
+        return _Stub()

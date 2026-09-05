@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: dom_xss_hash_v1
+bug_class: xss
+category: xss
+severity: high
+title: "DOM-Based XSS via Location Hash"
+description: |
+  JavaScript on the client side reads `location.hash` and writes it directly into the DOM via `innerHTML` or `document.write`. The attacker crafts a URL whose hash contains HTML and delivers it to victims. The server is not involved — the payload executes purely in the browser.
+detection:
+  signature: "document\\.write|innerHTML\\s*=|location\\.hash"
+  method: GET
+  endpoint: "/page#"
+remediation: |
+  Replace `innerHTML` assignments with `textContent`, parse untrusted data with safe APIs, and use Trusted Types to enforce non-injectable DOM sinks.
+references:
+  - "https://owasp.org/xss/"
+  - "https://portswigger.net/web-security/xss"
+bounty_range: "$2K — $15K"
+h100_proven: false

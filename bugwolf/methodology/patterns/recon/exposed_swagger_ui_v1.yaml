@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: exposed_swagger_ui_v1
+bug_class: recon
+category: recon
+severity: high
+title: "Exposed Swagger UI in Production"
+description: |
+  The Swagger UI for the production API is publicly accessible. The attacker enumerates every endpoint, parameter, and schema, dramatically reducing reconnaissance time and surfacing internal-only endpoints.
+detection:
+  signature: "/swagger|/api-docs|/openapi\\.json"
+  method: GET
+  endpoint: "/swagger-ui.html"
+remediation: |
+  Disable Swagger UI in production, gate the OpenAPI spec behind authentication, and audit any staging or internal docs sites that mirror the production schema.
+references:
+  - "https://owasp.org/recon/"
+  - "https://portswigger.net/web-security/recon"
+bounty_range: "$500 — $5K"
+h100_proven: true

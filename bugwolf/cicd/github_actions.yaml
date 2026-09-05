@@ -1,0 +1,249 @@
+# GitHub Actions security rule catalog (bugwolf Phase 2.3)
+#
+# This file documents the six rule categories that the bugwolf CI/CD
+# scanner recognises in workflow YAML.  Each rule has:
+#   * rule_id   — stable identifier
+#   * severity  — critical | high | medium | low
+#   * signature — regex over the workflow text
+#   * GHSA      — backing GitHub Security Advisory
+#   * remediation — what to do
+#
+# The scanner implementation in :mod:`bugwolf.cicd.scanner` mirrors
+# these rules one-to-one.
+
+schema: bugwolf-cicd-rules/v1
+
+categories:
+
+  - id: expression-injection
+    title: Expression injection in run: blocks
+    description: |
+      GitHub Actions substitutes `${{ ... }}` expressions *before* the
+      shell parses the line.  When the expression contains
+      attacker-controlled input (issue title, PR body, comment body,
+      branch name, head_ref, etc.), the attacker can break out of any
+      surrounding quoting and execute arbitrary shell commands.  This
+      is the most exploited CI vulnerability class of 2022-2025.
+    rules:
+      - id: GH-EXP-001
+        severity: critical
+        signature: 'run:[^\n]*\${{ *github\.event\.(issue|pull_request|comment|review|discussion|head_commit|page_name)\b'
+        ghsa:
+          - GHSA-7x29-q3w7-r4j5
+        remediation: |
+          Pass the value through an environment variable and quote it
+          at the shell level:
+            env:
+              TITLE: ${{ github.event.issue.title }}
+            run: |
+              echo "$TITLE"
+        references:
+          - https://securitylab.github.com/research/github-actions-untrusted-input/
+      - id: GH-EXP-002
+        severity: high
+        signature: 'run:[^\n]*\${{ *github\.event\.pull_request\.title'
+        ghsa:
+          - GHSA-7x29-q3w7-r4j5
+        remediation: |
+          Route through env: and shell-quote.
+      - id: GH-EXP-003
+        severity: high
+        signature: 'run:[^\n]*\${{ *github\.event\.comment\.body'
+        ghsa:
+          - GHSA-7x29-q3w7-r4j5
+        remediation: |
+          Use `jq` to parse structured comment bodies; never pass the
+          raw string into `run:`.
+      - id: GH-EXP-004
+        severity: critical
+        signature: 'run:[^\n]*>> *\$\{?GITHUB_ENV'
+        ghsa:
+          - GHSA-mw99-9chc-xw7r
+        remediation: |
+          Append only validated values to GITHUB_ENV.  Use
+          `delim <<EOF` + `key=value` + `EOF` and validate `key` is
+          alphanumeric.
+
+  - id: untrusted-checkout
+    title: Untrusted checkout patterns
+    description: |
+      `actions/checkout` of an attacker-controlled SHA on a public
+      repository combined with `persist-credentials: true` leaves the
+      `GITHUB_TOKEN` available to subsequent steps that load attacker
+      code.  Pulling submodules or LFS objects from the PR head can
+      execute arbitrary hooks.
+    rules:
+      - id: GH-CKO-001
+        severity: critical
+        signature: 'actions/checkout@[\w.]+(?!\s*[\s\S]{0,400}?persist-credentials:\s*false)'
+        ghsa:
+          - GHSA-8q4w-6p9f-9cx6
+        remediation: |
+          Add `persist-credentials: false` to every checkout step in a
+          PR-triggered workflow.
+      - id: GH-CKO-002
+        severity: high
+        signature: 'ref:\s*\${{ *github\.event\.pull_request\.head\.sha'
+        ghsa:
+          - GHSA-vmqv-4p9m-2w2g
+        remediation: |
+          Verify the SHA with the GitHub API before checking out;
+          reject the run if the SHA does not exist on the base branch.
+      - id: GH-CKO-003
+        severity: high
+        signature: 'submodules:\s*recursive'
+        ghsa:
+          - GHSA-3cwj-8x4q-c4w2
+        remediation: |
+          Default `submodules: false`.  When submodules are required,
+          use `submodules: '0'` (shallow) only.
+      - id: GH-CKO-004
+        severity: medium
+        signature: 'lfs:\s*true'
+        ghsa:
+          - GHSA-6v3w-9p4q-w4q6
+        remediation: |
+          Disable LFS unless required; if required, pin origin.
+
+  - id: artifact-cache-poisoning
+    title: Artifact / cache poisoning
+    description: |
+      `actions/cache` keys that include attacker-controlled inputs
+      (PR title, branch name, file content hash) allow an attacker
+      to prime a cache entry from a fork and have it restored into
+      the protected branch, substituting build inputs.
+    rules:
+      - id: GH-ART-001
+        severity: high
+        signature: 'actions/cache@[\w.]+[\s\S]*?key:\s*\${{'
+        ghsa:
+          - GHSA-4w3m-q4gh-2c5r
+        remediation: |
+          Pin the cache key to the commit SHA + workflow identity.
+          Avoid branch-name-only keys.
+      - id: GH-ART-002
+        severity: high
+        signature: 'actions/upload-artifact@[\w.]+[\s\S]*?path:\s*\${{'
+        ghsa:
+          - GHSA-jq43-27x9-3v6r
+        remediation: |
+          Restrict the upload path to non-PR-controllable directories
+          (e.g. /tmp/build-output).  Never upload `**` from a
+          PR-controllable tree.
+      - id: GH-ART-003
+        severity: medium
+        signature: 'restore-keys:\s*\|[\s\S]*?-'
+        ghsa:
+          - GHSA-fw29-p3q3-3v6r
+        remediation: |
+          Replace wildcard restore-keys with explicit
+          branch-and-SHA prefixes.
+
+  - id: self-hosted-runner
+    title: Self-hosted runner on PR workflows
+    description: |
+      Public-PR workflows that execute on a long-lived self-hosted
+      runner allow an attacker to compromise the runner and pivot
+      into the private network.  GitHub-hosted ephemeral runners
+      with `pull_request_target` are equally dangerous when combined
+      with a self-hosted runner.
+    rules:
+      - id: GH-RUN-001
+        severity: critical
+        signature: 'runs-on:\s*self-hosted[\s\S]{0,500}?pull_request_target'
+        ghsa:
+          - GHSA-2c69-3wq3-c4w8
+        remediation: |
+          Use GitHub-hosted ephemeral runners for PR workflows.  If a
+          self-hosted runner is required, gate it behind an `if:`
+          expression that compares `github.event.pull_request.head.repo.full_name`
+          against `github.repository`.
+      - id: GH-RUN-002
+        severity: high
+        signature: 'pull_request_target[\s\S]{0,200}?runs-on:\s*self-hosted'
+        ghsa:
+          - GHSA-2c69-3wq3-c4w8
+        remediation: |
+          Use a separate label per trust boundary; never reuse the
+          production runner for untrusted PRs.
+      - id: GH-RUN-003
+        severity: high
+        signature: 'labels:\s*\[self-hosted[^\]]*\][\s\S]{0,200}?pull_request_target'
+        ghsa:
+          - GHSA-2c69-3wq3-c4w8
+        remediation: |
+          Carve out a dedicated runner pool for PRs with no shared
+          credentials.
+
+  - id: oidc-trust
+    title: OIDC token trust misconfigurations
+    description: |
+      GitHub Actions can mint OIDC tokens (`id-token: write`) and
+      exchange them for short-lived cloud credentials.  Misconfigured
+      trust policies or missing `aud` constraints let an attacker
+      who compromises one workflow pivot to cloud roles.
+    rules:
+      - id: GH-OID-001
+        severity: critical
+        signature: 'aws-actions/configure-aws-credentials@[\w.]+[\s\S]*?role-to-assume'
+        ghsa:
+          - GHSA-qq5w-3q26-9fwp
+        remediation: |
+          Pin `audience` to the role ARN.  Set the IAM trust policy
+          `Condition` to `token.actions.githubusercontent.com:aud =
+          sts.amazonaws.com` and the role ARN.
+      - id: GH-OID-002
+        severity: high
+        signature: 'id-token:\s*write[\s\S]{0,200}?role-to-assume'
+        ghsa:
+          - GHSA-qq5w-3q26-9fwp
+        remediation: |
+          Constrain the trust policy to
+          `token.actions.githubusercontent.com:sub = repo:owner/name:ref:refs/heads/main`.
+      - id: GH-OID-003
+        severity: medium
+        signature: 'AWS_ACCESS_KEY_ID:\s*\${{ *secrets\.'
+        ghsa:
+          - GHSA-qq5w-3q26-9fwp
+        remediation: |
+          Migrate to OIDC.  Rotated static keys remain a primary
+          attack vector even when rotated.
+
+  - id: action-pinning
+    title: Action pinning by SHA
+    description: |
+      Referencing an action by mutable tag (`@v1`, `@v3.2`) leaves
+      the workflow exposed to tag-overwrite attacks.  Pin to a full
+      40-character commit SHA and update with a deliberate review.
+    rules:
+      - id: GH-PIN-001
+        severity: high
+        signature: 'uses:\s*[^@\s]+@(?![\da-f]{40})[^\s]+'
+        ghsa:
+          - GHSA-q26p-9ph8-wqh7
+        remediation: |
+          Pin to the full SHA: `uses: actions/checkout@<40-char-sha> # v4.1.7`.
+          Use Dependabot to surface new SHAs.
+      - id: GH-PIN-002
+        severity: medium
+        signature: 'uses:\s*[^/\s]+/[^/\s]+/(?!main)[^@]+@v?\d+'
+        ghsa:
+          - GHSA-q26p-9ph8-wqh7
+        remediation: |
+          Move first-party actions in-tree; pin third-party to SHA.
+      - id: GH-PIN-003
+        severity: high
+        signature: 'uses:\s*\./\.github/actions/'
+        ghsa:
+          - GHSA-x4j9-3fvq-3q2r
+        remediation: |
+          Move local actions to a separate repository with explicit
+  release tags.
+
+detection_priority:
+  - expression-injection
+  - untrusted-checkout
+  - self-hosted-runner
+  - oidc-trust
+  - action-pinning
+  - artifact-cache-poisoning

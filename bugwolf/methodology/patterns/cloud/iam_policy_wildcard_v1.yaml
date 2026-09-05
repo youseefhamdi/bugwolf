@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: iam_policy_wildcard_v1
+bug_class: cloud
+category: cloud
+severity: high
+title: "IAM Policy Wildcard Action Misconfiguration"
+description: |
+  An IAM role grants `iam:PassRole` to any resource (`Resource: *`). Combined with a service that supports passRole (EC2, Lambda, ECS), the attacker escalates to arbitrary code execution in the cloud account.
+detection:
+  signature: "iam:PassRole|iam:CreateRole"
+  method: POST
+  endpoint: "/"
+remediation: |
+  Scope IAM actions to specific resource ARNs, restrict iam:PassRole to trusted principals, and use IAM Access Analyzer to surface wildcard grants.
+references:
+  - "https://owasp.org/cloud/"
+  - "https://portswigger.net/web-security/cloud"
+bounty_range: "$5K — $30K"
+h100_proven: true

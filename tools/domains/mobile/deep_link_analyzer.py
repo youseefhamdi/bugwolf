@@ -447,3 +447,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# Phase 1.5: scanner export shim
+def export_mobile_scanner():
+    from bugwolf.scanners.mobile.deep_link import DeepLinkScanner
+    return DeepLinkScanner()

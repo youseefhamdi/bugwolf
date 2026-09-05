@@ -442,3 +442,22 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# Phase 1.1: thin shim that re-exports the new runtime so existing callers
+# can import the runtime without changing their import paths.
+def get_runtime_for_harness():
+    """Return a Router pre-configured with all available backends."""
+    from bugwolf.runtime import Router
+    from bugwolf.runtime.backends import (
+        ClaudeBackend, OpenAIBackend, OllamaBackend, GroqBackend,
+        DeepSeekBackend, GrokBackend, GeminiBackend, KimiBackend,
+        MistralBackend, TogetherBackend, CerebrasBackend, PerplexityBackend,
+        OpenRouterBackend, OrcaRouterBackend,
+    )
+    return Router([
+        ClaudeBackend(), OpenAIBackend(), OllamaBackend(), GroqBackend(),
+        DeepSeekBackend(), GrokBackend(), GeminiBackend(), KimiBackend(),
+        MistralBackend(), TogetherBackend(), CerebrasBackend(),
+        PerplexityBackend(), OpenRouterBackend(), OrcaRouterBackend(),
+    ])

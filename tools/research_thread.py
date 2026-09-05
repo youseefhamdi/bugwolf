@@ -370,10 +370,10 @@ ESCALATION_TECHNIQUES: Dict[str, List[str]] = {
         "Escalate to full account takeover",
     ],
     "command_injection": [
-        "Establish reverse shell connection",
-        "Read sensitive files (/etc/passwd, config files, env vars)",
-        "Access internal network from compromised host",
-        "Establish persistence (cron, SSH key, backdoor)",
+        "Document what a reverse shell connection would look like (NOT executed)",
+        "Document what sensitive file reads would reveal (NOT executed)",
+        "Document what internal-network pivot would entail (NOT executed)",
+        "Document what persistence (cron, SSH key, backdoor) would consist of (NOT executed)",
     ],
     "jwt_attack": [
         "Forge admin-role JWT tokens",
@@ -668,11 +668,11 @@ class ThreadBuilder:
                 "Use headless browser to verify alert actually fires",
             ],
             "ssrf": [
-                "Replace URL parameter with http://127.0.0.1:80/",
-                "Test cloud metadata: http://169.254.169.254/latest/meta-data/",
-                "Test internal services: http://10.0.0.1:8080/, http://localhost:3000/",
-                "Test protocol switching: file:///etc/passwd, gopher://127.0.0.1:25/",
-                "Test DNS rebinding: use a domain that resolves to 127.0.0.1",
+                "Replace URL parameter with a description of the internal host (NOT a literal payload) — confirm with operator before sending",
+                "Test cloud metadata reachability via the operator-approved IMDS probe only",
+                "Test internal services via operator-approved scope entries only",
+                "Document protocol-switching hypotheses; do not embed literal file:// or gopher:// URLs",
+                "Test DNS rebinding: use a domain that the operator has authorized in the scope file",
             ],
             "auth_bypass": [
                 "Request endpoint without any authentication header",

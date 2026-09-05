@@ -1,0 +1,78 @@
+# bugwolf-chain-h100-v1
+## Source: H1 #150138 (Uber), multiple subdomain takeover reports
+## License: bugwolf-MIT
+# Port: 2026-09-05
+# Severity: high
+# Bounty band: $500 – $5,000
+schema: bugwolf-chain-h100-v1
+id: 07_subdomain_takeover
+title: "Dangling DNS → Subdomain Takeover → Phishing / Cookie Theft"
+bounty: "$3K H100"
+prerequisites:
+  - id: dangling_cname
+    description: "Subdomain CNAME points to a deprovisioned third-party service"
+  - id: claimable_service
+    description: "Service provider allows the dangling name to be re-claimed"
+  - id: cookies_inherited
+    description: "Subdomain shares the parent domain's session cookie scope"
+steps:
+  - order: 1
+    description: "Enumerate all subdomains via CT logs, amass, subfinder"
+    protocol: dns
+    technique: subdomain_enum
+    evidence:
+      kind: list
+      tools: [amass, subfinder, crt.sh]
+    destructive: false
+  - order: 2
+    description: "Resolve each subdomain and classify the apex service (AWS, Azure, Heroku, GitHub Pages, Pantheon)"
+    protocol: dns
+    technique: service_classification
+    evidence:
+      kind: list
+      services: [s3.amazonaws.com, azurewebsites.net, herokuapp.com]
+    destructive: false
+  - order: 3
+    description: "Test each apex service for a claimable dangling record (HTTP 404 + provider claim flow)"
+    protocol: http
+    technique: claim_probe
+    evidence:
+      kind: action
+      description: "curl the subdomain; observe provider-specific 404 marker"
+    destructive: false
+  - order: 4
+    description: "Claim the dangling record on the provider (creates an attacker-controlled page)"
+    protocol: http
+    technique: claim_record
+    preconditions:
+      - "scope_approval"
+      - "attacker_provider_account"
+    evidence:
+      kind: action
+      description: "Create S3 bucket / Heroku app / GitHub Pages site matching the subdomain"
+    destructive: false
+  - order: 5
+    description: "Host a phishing page that mimics the legitimate subdomain"
+    protocol: http
+    technique: phishing_page
+    preconditions:
+      - "scope_approval"
+    evidence:
+      kind: page
+      description: "Login form styled to match the parent brand"
+    destructive: false
+  - order: 6
+    description: "Capture credentials or session cookies submitted to the phishing page"
+    protocol: http
+    technique: cred_capture
+    preconditions:
+      - "scope_approval"
+    evidence:
+      kind: server_log
+      fields: [email, password, cookie]
+    destructive: false
+final_severity: high
+references:
+  - "HackerOne #150138 — Uber subdomain takeover (style reference)"
+  - "HackerOne #217848 — GitHub Pages takeover"
+  - "Can I Take Over XYZ — provider-specific takeover reference"

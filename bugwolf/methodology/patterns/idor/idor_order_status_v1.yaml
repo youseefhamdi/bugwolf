@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: idor_order_status_v1
+bug_class: idor
+category: idor
+severity: high
+title: "IDOR on Order Status Update"
+description: |
+  The order-status update endpoint accepts an order ID in the request body. The attacker modifies the status of any other customer's order, enabling fraud or refund abuse.
+detection:
+  signature: "/api/orders/(\\d+)/status"
+  method: PUT
+  endpoint: "/api/orders/1/status"
+remediation: |
+  Enforce authorization at the resource level, derive order ownership from the session, and validate that the action role (e.g. merchant) is permitted for the target order.
+references:
+  - "https://owasp.org/idor/"
+  - "https://portswigger.net/web-security/idor"
+bounty_range: "$2K — $10K"
+h100_proven: true

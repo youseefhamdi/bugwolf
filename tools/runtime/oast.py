@@ -39,6 +39,12 @@ if str(Path(__file__).resolve().parent.parent.parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from tools.core.signal_bus import publish_or_warn
+try:
+    from tools.core.medium_safety import path_open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def path_open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
 
 SCHEMA = "bugwolf-oast/v1"
 
@@ -79,7 +85,7 @@ class OastRegistry:
         token = _canary_token(lead_id, str(self.dir.parent.parent))
         entry = {"token": token, "lead_id": lead_id, "ts": _now_iso()}
         with self._lock:
-            with self.registry_path.open("a") as fh:
+            with path_open_text(self.registry_path, "a") as fh:
                 fh.write(json.dumps(entry) + "\n")
         return token
 
@@ -88,7 +94,7 @@ class OastRegistry:
         if not self.registry_path.exists():
             return None
         found: Optional[str] = None
-        with self.registry_path.open() as fh:
+        with path_open_text(self.registry_path) as fh:
             for line in fh:
                 try:
                     entry = json.loads(line)
@@ -104,7 +110,7 @@ class OastRegistry:
         """Persist one interaction (attribution included) and return it."""
         record = {"ts": _now_iso(), **interaction}
         with self._lock:
-            with self.interactions_path.open("a") as fh:
+            with path_open_text(self.interactions_path, "a") as fh:
                 fh.write(json.dumps(record) + "\n")
         return record
 
@@ -113,7 +119,7 @@ class OastRegistry:
         if not self.interactions_path.exists():
             return []
         out: List[Dict] = []
-        with self.interactions_path.open() as fh:
+        with path_open_text(self.interactions_path) as fh:
             for line in fh:
                 try:
                     item = json.loads(line)

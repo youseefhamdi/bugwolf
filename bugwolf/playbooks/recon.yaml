@@ -1,0 +1,115 @@
+schema: bugwolf-playbook-v1
+name: recon
+description: |
+  Passive and active reconnaissance probes drawn from the Phase 0 recon
+  corpus. Establishes scope, language, and framework fingerprinting before
+  any vulnerability-specific playbook runs. Every payload is bounded by
+  the recon rate limit and never performs destructive actions.
+preconditions:
+  target_is_reachable: true
+  scope_allows_active: true
+  asset_intel_complete: true
+payload_catalog:
+  - id: passive_robots
+    request:
+      method: GET
+      path: /robots.txt
+    expected_status: 200
+    expected_body_match: "User-agent"
+    sinks: [info_disclosure]
+    requires_scope_verb: passive
+  - id: passive_security_txt
+    request:
+      method: GET
+      path: /.well-known/security.txt
+    expected_status: 200
+    expected_body_match: "Contact"
+    sinks: [info_disclosure]
+    requires_scope_verb: passive
+  - id: passive_sitemap
+    request:
+      method: GET
+      path: /sitemap.xml
+    expected_status: 200
+    expected_body_match: "<urlset"
+    sinks: [info_disclosure]
+    requires_scope_verb: passive
+  - id: active_health_probe
+    request:
+      method: GET
+      path: /healthz
+    expected_status: 200
+    expected_body_match: "status"
+    sinks: [endpoint_discovery]
+    requires_scope_verb: active
+  - id: active_openapi
+    request:
+      method: GET
+      path: /openapi.json
+    expected_status: 200
+    expected_body_match: "openapi"
+    sinks: [api_surface]
+    requires_scope_verb: active
+  - id: active_swagger_ui
+    request:
+      method: GET
+      path: /swagger
+    expected_status: 200
+    expected_body_match: "swagger"
+    sinks: [api_surface]
+    requires_scope_verb: active
+  - id: active_framework_header
+    request:
+      method: GET
+      path: /__version__
+    expected_status: 200
+    expected_body_match: "version"
+    sinks: [version_disclosure]
+    requires_scope_verb: active
+  - id: passive_cors_preflight
+    request:
+      method: OPTIONS
+      path: /api/whoami
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [cors_signal]
+    requires_scope_verb: passive
+  - id: active_login_surface
+    request:
+      method: GET
+      path: /auth/login
+    expected_status: 200
+    expected_body_match: "password"
+    sinks: [auth_surface]
+    requires_scope_verb: active
+  - id: active_admin_path
+    request:
+      method: GET
+      path: /admin/
+    expected_status: 401
+    expected_body_match: ""
+    sinks: [admin_surface]
+    requires_scope_verb: active
+evidence_collection:
+  - type: response_capture
+    target: response
+  - type: header_diff
+    target: response.headers
+    config:
+      keys: [server, x-powered-by, x-frame-options]
+  - type: body_diff
+    target: response.body
+post_conditions:
+  finding_emitted: false
+  evidence_block_recorded: true
+  asset_intel_updated: true
+budget:
+  max_requests: 80
+  max_wall_clock: 180
+  min_interval_ms: 50
+governance:
+  requires_approval: false
+  scope_class: active
+  require_reproducible_evidence: true
+  destructive_allowed: false
+  notes: "Bounded recon only; no crawling outside scope, no credential usage."

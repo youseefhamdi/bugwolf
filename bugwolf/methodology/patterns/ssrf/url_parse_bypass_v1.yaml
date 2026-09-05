@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: url_parse_bypass_v1
+bug_class: ssrf
+category: ssrf
+severity: high
+title: "URL Parser Confusion SSRF Bypass"
+description: |
+  The application's URL validator rejects known-bad hosts but allows alternative URL representations that resolve to internal addresses. Common bypasses include decimal-form IPs, IPv6 zone identifiers, DNS rebinding, and URL-encoded schemes that confuse the allow-list parser.
+detection:
+  signature: "https?://0x[a-f0-9]+|https?://2130706433|https?://\\[::"
+  method: GET
+  endpoint: "/api/proxy"
+remediation: |
+  Resolve the hostname to an IP before validation, reject any IP that falls within private, loopback, or link-local ranges, and re-resolve at connection time to defeat DNS rebinding.
+references:
+  - "https://owasp.org/ssrf/"
+  - "https://portswigger.net/web-security/ssrf"
+bounty_range: "$3K — $15K"
+h100_proven: true

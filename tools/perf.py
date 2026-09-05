@@ -59,6 +59,13 @@ try:
 except ImportError:  # direct script execution
     from runtime_paths import CODE_ROOT, workspace_root
 
+try:
+    from tools.core.medium_safety import runtime_check as _runtime_check
+except Exception:  # pragma: no cover - tools.* not always importable
+    def _runtime_check(condition, message):  # type: ignore[no-redef]
+        if not condition:
+            raise AssertionError(message)
+
 SCHEMA = "bugwolf/perf/v1"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -145,7 +152,7 @@ def measure_first_plan(project_root: str) -> float:
     start = time.monotonic()
     sched.plan_mission()
     elapsed = time.monotonic() - start
-    assert sched._graph_path.is_file(), "plan artifact missing"
+    _runtime_check(sched._graph_path.is_file(), "plan artifact missing")
     return round(elapsed, 4)
 
 

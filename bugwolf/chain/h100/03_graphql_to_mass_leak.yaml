@@ -1,0 +1,73 @@
+# bugwolf-chain-h100-v1
+## Source: H1 #489146 (1,032 upvotes), H1 #792927, H1 #2032716
+## License: bugwolf-MIT
+# Port: 2026-09-05
+# Severity: critical
+# Bounty band: $2,500 – $15,000
+schema: bugwolf-chain-h100-v1
+id: 03_graphql_to_mass_leak
+title: "GraphQL Introspection → Missing Field AuthZ → Mass PII Leak"
+bounty: "$10K H100"
+prerequisites:
+  - id: graphql_endpoint
+    description: "Target exposes a /graphql endpoint that accepts introspection"
+  - id: field_level_authz_missing
+    description: "Sensitive resolvers do not enforce row-level or field-level authZ"
+  - id: pagination_or_batching
+    description: "Endpoint supports query batching or pagination of sensitive types"
+steps:
+  - order: 1
+    description: "Run the canonical introspection query to enumerate the full schema"
+    protocol: graphql
+    technique: introspection_query
+    evidence:
+      kind: query
+      body: "{ __schema { queryType { name } mutationType { name } types { name kind fields { name type { name kind ofType { name } } } } } }"
+    destructive: false
+  - order: 2
+    description: "Identify sensitive object types (User, Account, Invoice, Customer, ApiKey)"
+    protocol: graphql
+    technique: type_classification
+    evidence:
+      kind: list
+      types: [User, Account, Invoice, Customer]
+    destructive: false
+  - order: 3
+    description: "Locate a connection/list field that returns arrays of those types"
+    protocol: graphql
+    technique: list_field_discovery
+    evidence:
+      kind: field
+      name: "users(first: 100) { edges { node { id email } } }"
+    destructive: false
+  - order: 4
+    description: "Authenticate as a low-privilege account and issue the discovered query"
+    protocol: graphql
+    technique: low_priv_query
+    preconditions:
+      - "low_priv_session"
+    evidence:
+      kind: request
+      url: "/graphql"
+    destructive: false
+  - order: 5
+    description: "Paginate the connection field to extract the full user database"
+    protocol: graphql
+    technique: pagination_walk
+    evidence:
+      kind: action
+      description: "Use cursors `after` until edges array is empty"
+    destructive: false
+  - order: 6
+    description: "Cross-check extracted records for PII (email, phone, address, tax_id)"
+    protocol: db
+    technique: pii_classification
+    evidence:
+      kind: list
+      fields: [email, phone, address, tax_id]
+    destructive: false
+final_severity: critical
+references:
+  - "HackerOne #489146 — GraphQL introspection to mass PII (1,032 upvotes)"
+  - "HackerOne #792927 — GraphQL field authZ bypass to user dump"
+  - "HackerOne #2032716 — GraphQL pagination leak"

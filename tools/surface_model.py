@@ -29,7 +29,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 SCHEMA_VERSION = "bugwolf-surface-model-v1"
 
-_MAX_DEPTH = 4
+_MAX_DEPTH = 64  # Phase 0 L-12: cap raised from 4 to 64 (audit: $ref cycle safety)
 _MAX_PARAMS = 200
 _MAX_OPS = 2000
 
@@ -280,18 +280,35 @@ def _parse_parameter(pspec: Dict[str, Any], body: bool = False) -> Optional[Para
 
 
 def _flatten_schema(schema: Dict[str, Any], prefix: str, *, depth: int = 0,
-                    required_fields: Optional[set] = None) -> List[Parameter]:
-    """Flatten a JSON schema into dotted-name scalar parameters (bounded)."""
+                    required_fields: Optional[set] = None,
+                    seen_refs: Optional[set] = None) -> List[Parameter]:
+    """Flatten a JSON schema into dotted-name scalar parameters (bounded).
+
+    Phase 0 L-12: $ref cycles are tracked via ``seen_refs`` (a set of $ref
+    strings already visited on this recursion path) and capped at
+    _MAX_DEPTH so a maliciously cyclic schema cannot blow the stack.
+    """
     if depth >= _MAX_DEPTH or not isinstance(schema, dict):
         return []
     required_fields = required_fields or set()
+    seen_refs = seen_refs or set()
+    # Phase 0 L-12: defend against $ref cycles. When a sub-schema is itself
+    # just a $ref pointer, recurse into the resolved sub-schema with the ref
+    # tracked so a cycle short-circuits to an empty parameter list rather
+    # than recursing forever.
+    if "$ref" in schema:
+        ref = str(schema.get("$ref") or "")
+        if ref in seen_refs:
+            return []
+        seen_refs = seen_refs | {ref}
     type_ = _norm_type(schema.get("type", "object"))
 
     if type_ == "array":
         items = schema.get("items", {})
         if isinstance(items, dict) and _norm_type(items.get("type", "object")) == "object":
             return _flatten_schema(items, prefix, depth=depth + 1,
-                                   required_fields=set(items.get("required", [])))
+                                   required_fields=set(items.get("required", [])),
+                                   seen_refs=seen_refs)
         return [_param(prefix, ParamLocation.BODY, type_="array",
                        required=prefix in required_fields,
                        fmt=schema.get("format", ""))]
@@ -302,15 +319,23 @@ def _flatten_schema(schema: Dict[str, Any], prefix: str, *, depth: int = 0,
         req = set(schema.get("required", []))
         for key, sub in props.items():
             child_name = f"{prefix}.{key}" if prefix else key
+            # Phase 0 L-12: short-circuit $ref cycles before descending.
+            if isinstance(sub, dict) and "$ref" in sub:
+                ref = str(sub.get("$ref") or "")
+                if ref in seen_refs:
+                    continue
+                seen_refs = seen_refs | {ref}
             sub_type = _norm_type(sub.get("type", "object"))
             if sub_type == "object":
                 out.extend(_flatten_schema(sub, child_name, depth=depth + 1,
-                                           required_fields=set(sub.get("required", []))))
+                                           required_fields=set(sub.get("required", [])),
+                                           seen_refs=seen_refs))
             elif sub_type == "array":
                 items = sub.get("items", {})
                 if isinstance(items, dict) and _norm_type(items.get("type", "object")) == "object":
                     out.extend(_flatten_schema(items, child_name, depth=depth + 1,
-                                               required_fields=set(items.get("required", []))))
+                                               required_fields=set(items.get("required", [])),
+                                               seen_refs=seen_refs))
                 else:
                     out.append(_param(child_name, ParamLocation.BODY, type_="array",
                                       required=key in req, fmt=sub.get("format", "")))

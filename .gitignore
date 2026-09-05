@@ -10,3 +10,6 @@ dist/
 build/
 *.egg-info/
 .bugwolf/
+bugwolf-rs/target/
+bugwolf-rs/Cargo.lock
+.omc/

@@ -1,0 +1,83 @@
+# bugwolf-chain-h100-v1
+## Source: Multiple DeFi + fintech reports, H1 #944256 style precedents
+## License: bugwolf-MIT
+# Port: 2026-09-05
+# Severity: critical
+# Bounty band: $5K – $100K
+# NOTE: BugWolf executes this chain as ANALYSIS-ONLY. The destructive
+#       double-spend step is gated behind a destructive-verb flag.
+schema: bugwolf-chain-h100-v1
+id: 09_race_double_spend
+title: "Race Condition → Double Spend → Fund Drain"
+bounty: "$25K H100"
+prerequisites:
+  - id: balance_check_endpoint
+    description: "An endpoint reads a balance/credit then writes a debit without atomic compare-and-swap"
+  - id: rate_limit_window
+    description: "No per-account rate limit prevents concurrent requests within the race window"
+  - id: test_token_or_staging
+    description: "Staging or test-token environment is available for safe observation"
+steps:
+  - order: 1
+    description: "Identify the balance-check / debit endpoint and capture the request shape"
+    protocol: http
+    technique: endpoint_inspect
+    evidence:
+      kind: http_request
+      method: POST
+      url: "/api/v1/wallet/transfer"
+    destructive: false
+  - order: 2
+    description: "Measure the atomicity window with a single-thread timing pass on the staging env"
+    protocol: http
+    technique: window_measure
+    preconditions:
+      - "staging_or_test_token"
+    evidence:
+      kind: timing
+      fields: [read_to_write_ms, race_window_ms]
+    destructive: false
+  - order: 3
+    description: "Plan a same-connection or multi-connection fan-out (N parallel POSTs)"
+    protocol: http
+    technique: fanout_plan
+    evidence:
+      kind: plan
+      description: "Send N concurrent transfers; do not execute beyond plan"
+    destructive: false
+  - order: 4
+    description: "Run the fan-out against the staging env; record the response set for analysis"
+    protocol: http
+    technique: staged_fanout
+    preconditions:
+      - "staging_or_test_token"
+      - "scope_approval"
+    evidence:
+      kind: response_set
+      fields: [status, body_hash, server_time]
+    destructive: false
+  - order: 5
+    description: "If production-equivalent behaviour is observed, file a non-destructive report"
+    protocol: internal
+    technique: report
+    evidence:
+      kind: report
+      description: "Document the race window; explicitly do NOT exercise double-spend on production"
+    destructive: false
+  - order: 6
+    description: "(DESTRUCTIVE — pre-gated) Demonstrate the actual double-spend against production"
+    protocol: http
+    technique: production_fanout
+    preconditions:
+      - "destructive_flag_approved"
+      - "scope_approval"
+      - "loss_bond_acknowledged"
+    evidence:
+      kind: action
+      description: "Multi-connection fan-out; user accepts full liability for the loss"
+    destructive: true
+final_severity: critical
+references:
+  - "HackerOne #944256 — Race condition style precedent"
+  - "OpenZeppelin docs: re-entrancy and race-condition guidance"
+  - "Trail of Bits: Not So Smart Contracts — race conditions"

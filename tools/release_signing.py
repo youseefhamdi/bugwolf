@@ -28,11 +28,24 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+LOG = logging.getLogger(__name__)
+
+try:
+    from tools.core.medium_safety import safe_json_loads as _safe_json_loads
+except Exception:  # pragma: no cover - tools.* not always importable
+    def _safe_json_loads(text, *, default=None, context=""):  # type: ignore[no-redef]
+        try:
+            import json as _json
+            return _json.loads(text)
+        except Exception:
+            return default
 
 SCHEMA = "bugwolf-release-signing/v1"
 
@@ -123,7 +136,8 @@ def _ed25519_available() -> bool:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import (
             Ed25519PrivateKey)  # noqa: F401
         return True
-    except Exception:
+    except Exception as exc:
+        LOG.debug("release_signing.ed25519_unavailable: %s", exc)
         return False
 
 
@@ -271,7 +285,8 @@ def verify_bytes(data: bytes, signature_text: str,
             serialization.PublicFormat.Raw)).verify(signature, data)
         return {"schema": SCHEMA, "verified": True, "reason": "",
                 "algorithm": "ed25519"}
-    except Exception:
+    except Exception as exc:
+        LOG.info("release_signing.verify_ed25519_failed: %s", exc)
         return {"schema": SCHEMA, "verified": False,
                 "reason": "signature does not match data",
                 "algorithm": "ed25519"}
@@ -374,6 +389,7 @@ def check_update(current_version: str, *, timeout: float = 5.0) -> Dict[str, Any
     except Exception as exc:  # noqa: BLE001 - fail silent by contract
         fact["network"] = "failed"
         fact["error"] = f"{type(exc).__name__}: {exc}"
+        LOG.warning("release_signing.update_check_failed: %s", exc)
     return fact
 
 
@@ -417,7 +433,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         result: Dict[str, Any] = manifest
         status = 0
     elif args.sign:
-        manifest = json.loads(Path(args.sign[0]).read_text(encoding="utf-8"))
+        manifest = _safe_json_loads(
+            Path(args.sign[0]).read_text(encoding="utf-8"),
+            default={},
+            context="release_signing.sign_manifest")
         result = sign_manifest(manifest, args.sign[1])
         if args.out and result.get("signed"):
             write_signature(result, args.out)
@@ -446,19 +465,37 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         status = 0
 
     if args.json:
-        print(json.dumps(result, indent=2, sort_keys=True))
+        _signed_blob = result if isinstance(result, dict) else {"result": result}
+        if "signature" in _signed_blob and isinstance(_signed_blob.get("signature"), str):
+            display = dict(_signed_blob)
+            sig = display["signature"]
+            display["signature"] = sig[:6] + "…[REDACTED len=" + str(len(sig)) + "]"
+        else:
+            display = _signed_blob
+        print(json.dumps(display, indent=2, sort_keys=True))
+        LOG.debug("release_signing.json: keys=%s",
+                  sorted(result.keys()))
     else:
         if "verified" in result:
             print("VERIFIED" if result["verified"] else "FAILED")
+            LOG.info("release_signing.verified=%s errors=%d",
+                     result["verified"], len(result.get("errors", [])))
             for error in result.get("errors", []):
                 print(f"  ERROR: {error}")
+                LOG.warning("release_signing.error: %s", error)
         elif result.get("signed") is not None:
             print("SIGNED" if result.get("signed") else "NOT SIGNED",
                   result.get("reason", ""))
+            LOG.info("release_signing.signed=%s reason=%s",
+                     result.get("signed"), result.get("reason", ""))
         elif "files" in result:
             print(f"manifest: {result['file_count']} files")
+            LOG.info("release_signing.manifest files=%d",
+                     result['file_count'])
         else:
             print(json.dumps(result, indent=2, sort_keys=True))
+            LOG.debug("release_signing.result: keys=%s",
+                      sorted(result.keys()))
     return status
 
 

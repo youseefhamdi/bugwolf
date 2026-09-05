@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: subdomain_takeover_v1
+bug_class: recon
+category: recon
+severity: high
+title: "Subdomain Takeover via Dangling DNS"
+description: |
+  The target's DNS records point to a third-party service (AWS, Heroku, Shopify, Pantheon) whose subscription has lapsed. The attacker registers the corresponding service, takes over the subdomain, and serves arbitrary content under the parent domain.
+detection:
+  signature: "CNAME\\s+\\w+\\.amazonaws\\.com|NS\\s+\\w+\\.herokuapp\\.com"
+  method: GET
+  endpoint: "/"
+remediation: |
+  Audit CNAME records for services no longer in use, remove stale records, and use a DNS health-check that alerts on resolution failures.
+references:
+  - "https://owasp.org/recon/"
+  - "https://portswigger.net/web-security/recon"
+bounty_range: "$2K — $15K"
+h100_proven: true

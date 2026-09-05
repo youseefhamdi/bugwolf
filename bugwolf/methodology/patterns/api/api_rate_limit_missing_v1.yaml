@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: api_rate_limit_missing_v1
+bug_class: api
+category: api
+severity: high
+title: "Missing Rate Limit on Credential Endpoint"
+description: |
+  The login or 2FA endpoint has no rate limit. The attacker launches a credential-stuffing or 2FA brute-force attack at full network speed.
+detection:
+  signature: "429 Too Many Requests|Retry-After"
+  method: POST
+  endpoint: "/api/login"
+remediation: |
+  Apply per-IP and per-account rate limits, integrate with a bot-management service, and lock accounts after repeated failures with a secure recovery flow.
+references:
+  - "https://owasp.org/api/"
+  - "https://portswigger.net/web-security/api"
+bounty_range: "$1K — $5K"
+h100_proven: true

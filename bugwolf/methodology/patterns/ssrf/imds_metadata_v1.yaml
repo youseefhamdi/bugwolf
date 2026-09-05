@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: imds_metadata_v1
+bug_class: ssrf
+category: ssrf
+severity: high
+title: "Cloud Metadata SSRF via URL Parameter"
+description: |
+  The application fetches a user-supplied URL without validation, allowing an attacker to reach the cloud instance metadata service. In AWS, requesting 169.254.169.254 returns IAM credentials that can be used to pivot into cloud infrastructure. The vulnerable parameter is often an image proxy, webhook tester or PDF renderer.
+detection:
+  signature: "169\\.254\\.169\\.254|metadata\\.google\\.internal|169\\.254\\.170\\.2"
+  method: GET
+  endpoint: "/api/fetch?url="
+remediation: |
+  Disable IMDSv1, require IMDSv2 hop-limit checks, validate URL allow-lists against an RFC-1918 deny-list, and ensure application-side metadata endpoints reject internal addresses. Consider a network-level egress proxy.
+references:
+  - "https://owasp.org/ssrf/"
+  - "https://portswigger.net/web-security/ssrf"
+bounty_range: "$10K — $50K"
+h100_proven: true

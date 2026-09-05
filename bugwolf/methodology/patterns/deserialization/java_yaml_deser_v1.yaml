@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: java_yaml_deser_v1
+bug_class: deserialization
+category: deserialization
+severity: high
+title: "Java SnakeYAML Deserialization RCE"
+description: |
+  The Java service uses SnakeYAML's Yaml.load() to parse user input. The attacker submits a YAML payload using the !!javax.script.ScriptEngineManager tag to achieve remote code execution.
+detection:
+  signature: "!!javax|!!org\\.yaml|!!java"
+  method: POST
+  endpoint: "/api/import"
+remediation: |
+  Use Yaml.loadAs() with an explicit class, or Yaml.safeLoad(). Add a denylist for known gadget tags and validate input against a schema.
+references:
+  - "https://owasp.org/deserialization/"
+  - "https://portswigger.net/web-security/deserialization"
+bounty_range: "$10K — $50K"
+h100_proven: true

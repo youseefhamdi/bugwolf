@@ -1,0 +1,41 @@
+schema: bugwolf-recon-workflow-v1
+name: active_recon
+description: |
+  Active probing — assumes passive intel has been gathered and the
+  operator has authorised active scans.
+phases:
+  - order: 1
+    name: port_discovery
+    tools: [naabu, masscan]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: active
+  - order: 2
+    name: service_detection
+    tools: [nmap]
+    budget:
+      max_requests: 100
+      max_seconds: 1800
+    scope_verb: active
+  - order: 3
+    name: http_probe
+    tools: [httpx, httprobe]
+    budget:
+      max_requests: 200
+      max_seconds: 1200
+    scope_verb: active
+  - order: 4
+    name: web_crawl
+    tools: [katana, gospider]
+    budget:
+      max_requests: 500
+      max_seconds: 1800
+    scope_verb: active
+  - order: 5
+    name: nuclei_scan
+    tools: [nuclei]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: active

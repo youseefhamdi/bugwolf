@@ -1,0 +1,34 @@
+schema: bugwolf-recon-workflow-v1
+name: supply_chain
+description: |
+  Supply chain discovery — find CI configs, package manifests, leaked
+  credentials in public repos, npm / PyPI / gem footprints.
+phases:
+  - order: 1
+    name: github_code_search
+    tools: [github_search]
+    budget:
+      max_requests: 100
+      max_seconds: 600
+    scope_verb: passive
+  - order: 2
+    name: secret_scan
+    tools: [trufflehog, gitleaks]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: passive
+  - order: 3
+    name: ci_pipeline_discovery
+    tools: [wayback, github_search]
+    budget:
+      max_requests: 50
+      max_seconds: 600
+    scope_verb: passive
+  - order: 4
+    name: dependency_manifest_hunt
+    tools: [github_search]
+    budget:
+      max_requests: 50
+      max_seconds: 600
+    scope_verb: passive

@@ -1,29 +1,11 @@
 #!/usr/bin/env python3
-"""BugWolf generated capability manifest (orchestrator plan v2, Phase 8).
-
-Readiness-driven release artifact: every documented capability is verified
-against the implementation and measured — "any documented-but-missing
-capability fails release" (the honesty rule).  Generated output lands at
-``state/release/capability_manifest.json``.
-
-Verified dimensions:
-  * module presence + importability of every orchestrator engine,
-  * every documented CLI resolves (--help exit 0),
-  * readiness manifest validates (claims/config truth),
-  * perf gate from the last measured dashboard,
-  * benchmark gate from the last benchmark run,
-  * plugin package integrity (plugin.json, hooks, 9 commands, bridge),
-  * phase completion recorded per the orchestrator plan.
-
-Exit 0 = releasable manifest generated; exit 1 = unmet capabilities.
-"""
+"""BugWolf generated capability manifest (orchestrator plan v2, Phase 8)."""
 
 from __future__ import annotations
 
 import argparse
 import importlib
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -36,7 +18,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# Every documented engine module (plan section 4 architecture + phases).
 ENGINE_MODULES = {
     "contracts": "tools.runtime.contracts",
     "model_router": "tools.core.model_router",
@@ -59,7 +40,6 @@ ENGINE_MODULES = {
     "harness_guard": "tools.harness_guard",
 }
 
-# Documented CLIs (commands/*.md, runbook) that must resolve.
 DOCUMENTED_CLIS = {
     "scheduler_plan": [sys.executable, "-m", "tools.runtime.scheduler",
                        "--target", "verify.local", "--plan"],
@@ -77,7 +57,6 @@ DOCUMENTED_CLIS = {
     "hook_shim": [sys.executable, "hooks/bugwolf_stop_hook.py", "stop"],
 }
 
-# Orchestrator plan phase -> shipped-in evidence.
 PLAN_PHASES = {
     "phase_0_baseline": "AUDIT_MAP + benchmark lab present",
     "phase_1_contracts": "tools/runtime/contracts.py (validated TaskSpec/TaskResult)",
@@ -102,7 +81,7 @@ def _check_modules() -> List[Dict[str, Any]]:
             importlib.import_module(module)
             out.append({"capability": f"module:{name}", "module": module,
                         "status": "ready"})
-        except Exception as exc:  # noqa: BLE001 - missing = release failure
+        except Exception as exc:  # noqa: BLE001
             out.append({"capability": f"module:{name}", "module": module,
                         "status": "missing", "detail": str(exc)[:200]})
     return out
@@ -110,28 +89,25 @@ def _check_modules() -> List[Dict[str, Any]]:
 
 def _check_clis() -> List[Dict[str, Any]]:
     out = []
-    # Engine self-check spawns route through the subprocess sandbox
-    # (allow_unlisted: the interpreter itself is not an operator-facing
-    # binary).  An engaged kill switch fails the release gate CLOSED.
     from tools.runtime.sandbox import sandboxed_run, SandboxViolation
     for name, cmd in sorted(DOCUMENTED_CLIS.items()):
         try:
             proc = sandboxed_run(
-                cmd, cwd=str(REPO_ROOT), timeout=60, purpose=f"cli-check:{name}",
-                env={"BUGWOLF_PROJECT_ROOT": str(
-                    tempfile.mkdtemp(prefix="bw-cap-"))},
+                cmd, cwd=str(REPO_ROOT), timeout=60,
+                purpose=f"cli-check:{name}",
+                env={"BUGWOLF_PROJECT_ROOT": tempfile.mkdtemp(prefix="bw-cap-")},
                 allow_unlisted=True)
-            ok = proc.returncode in (0, 2)  # 2 = clean not-found (scheduler)
+            ok = proc.returncode in (0, 2)
             detail = "" if ok else ((proc.stderr or b"") + (proc.stdout or b"")).decode(
                 "utf-8", "replace")[:200]
         except subprocess.TimeoutExpired:
             ok, detail = False, "timeout"
         except SandboxViolation as exc:
-            ok, detail = False, ("KILL SWITCH ENGAGED -- release gate fails "
-                                 f"closed" if exc.kill_switch
-                                 else f"sandbox: {exc}")
-        out.append({"capability": f"cli:{name}", "status":
-                    "ready" if ok else "missing", "detail": detail})
+            ok, detail = False, ("KILL SWITCH ENGAGED -- release gate fails closed"
+                                 if exc.kill_switch else f"sandbox: {exc}")
+        out.append({"capability": f"cli:{name}",
+                    "status": "ready" if ok else "missing",
+                    "detail": detail})
     return out
 
 
@@ -160,6 +136,27 @@ def _check_plugin() -> List[Dict[str, Any]]:
     return out
 
 
+def _benchmark_gate_status(path: Path) -> Dict[str, Any]:
+    """Classify stale transport-only reports as unmeasured, not passed."""
+    if not path.is_file():
+        return {"status": "unmeasured",
+                "detail": f"{path.relative_to(REPO_ROOT)} absent; run the gate"}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        return {"status": "missing", "detail": str(exc)[:200]}
+    if bool(data.get("passed") or data.get("gate_passed")):
+        return {"status": "ready", "detail": "last run passed"}
+    results = data.get("results") or []
+    transport_only = bool(results) and all(
+        isinstance(item, dict) and int(item.get("status") or 0) == 0
+        for item in results)
+    if transport_only:
+        return {"status": "unmeasured",
+                "detail": "last run had only transport errors; run against a live or hermetic target"}
+    return {"status": "missing", "detail": "last run FAILED"}
+
+
 def _check_gates() -> List[Dict[str, Any]]:
     out = []
     try:
@@ -171,29 +168,30 @@ def _check_gates() -> List[Dict[str, Any]]:
     except Exception as exc:  # noqa: BLE001
         out.append({"capability": "gate:readiness_manifest",
                     "status": "missing", "detail": str(exc)[:200]})
-    for label, path in (("gate:benchmark", "state/benchmark/latest.json"),
-                        ("gate:perf", "state/perf/dashboard.json")):
-        p = REPO_ROOT / path
-        if not p.is_file():
-            out.append({"capability": label, "status": "unmeasured",
-                        "detail": f"{path} absent; run the gate"})
-            continue
+
+    out.append({"capability": "gate:benchmark", **_benchmark_gate_status(
+        REPO_ROOT / "state" / "benchmark" / "latest.json")})
+
+    perf_path = REPO_ROOT / "state" / "perf" / "dashboard.json"
+    if not perf_path.is_file():
+        out.append({"capability": "gate:perf", "status": "unmeasured",
+                    "detail": "state/perf/dashboard.json absent; run the gate"})
+    else:
         try:
-            data = json.loads(p.read_text())
+            data = json.loads(perf_path.read_text())
             passed = bool(data.get("passed") or data.get("gate_passed"))
-            out.append({"capability": label,
+            out.append({"capability": "gate:perf",
                         "status": "ready" if passed else "missing",
                         "detail": "last run passed" if passed else
                         "last run FAILED"})
-        except ValueError as exc:
-            out.append({"capability": label, "status": "missing",
+        except (OSError, ValueError) as exc:
+            out.append({"capability": "gate:perf", "status": "missing",
                         "detail": str(exc)[:200]})
     return out
 
 
 def generate(root: Optional[str] = None) -> Dict[str, Any]:
-    checks = (_check_modules() + _check_clis() + _check_plugin()
-              + _check_gates())
+    checks = _check_modules() + _check_clis() + _check_plugin() + _check_gates()
     unmet = [c for c in checks if c["status"] == "missing"]
     manifest = {
         "schema": SCHEMA,
@@ -205,8 +203,7 @@ def generate(root: Optional[str] = None) -> Dict[str, Any]:
         "honesty": {
             "zero_day_guarantee": False,
             "unmet_count": len(unmet),
-            "note": "any documented-but-missing capability fails release; "
-                    "unmet entries above are the release blockers",
+            "note": "any documented-but-missing capability fails release; unmet entries are release blockers",
         },
         "releasable": not unmet,
     }
@@ -231,9 +228,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         for cap in manifest["capabilities"]:
             mark = {"ready": "ok ", "missing": "MISSING",
                     "unmeasured": "?"}.get(cap["status"], "?")
-            name = cap["capability"]
-            detail = cap.get("detail", "")
-            print(f"  {name:38s} {mark} {detail[:60]}")
+            print(f"  {cap['capability']:38s} {mark} {cap.get('detail', '')[:60]}")
         print(f"  releasable: {'YES' if manifest['releasable'] else 'NO'}")
     return 0 if manifest["releasable"] else 1
 

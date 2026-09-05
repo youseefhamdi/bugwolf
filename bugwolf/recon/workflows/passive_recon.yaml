@@ -1,0 +1,55 @@
+schema: bugwolf-recon-workflow-v1
+name: passive_recon
+description: |
+  Passive-only recon — zero active probing.  Safe to run against any
+  in-scope target without escalation.
+phases:
+  - order: 1
+    name: subdomain_enum
+    tools: [crt_sh, dns_brute, subdomain_alts]
+    budget:
+      max_requests: 50
+      max_seconds: 600
+    scope_verb: passive
+  - order: 2
+    name: wayback_history
+    tools: [wayback]
+    budget:
+      max_requests: 100
+      max_seconds: 600
+    scope_verb: passive
+  - order: 3
+    name: shodan_passive
+    tools: [shodan]
+    budget:
+      max_requests: 25
+      max_seconds: 300
+    scope_verb: passive
+  - order: 4
+    name: censys_passive
+    tools: [censys]
+    budget:
+      max_requests: 25
+      max_seconds: 300
+    scope_verb: passive
+  - order: 5
+    name: github_code_search
+    tools: [github_search]
+    budget:
+      max_requests: 50
+      max_seconds: 600
+    scope_verb: passive
+  - order: 6
+    name: email_pattern_inference
+    tools: [email_patterns]
+    budget:
+      max_requests: 25
+      max_seconds: 300
+    scope_verb: passive
+  - order: 7
+    name: google_dork_templates
+    tools: [google_dorks]
+    budget:
+      max_requests: 25
+      max_seconds: 120
+    scope_verb: passive

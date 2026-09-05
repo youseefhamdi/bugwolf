@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: email_verification_disclosure_v1
+bug_class: recon
+category: recon
+severity: high
+title: "User Enumeration via Forgot-Password Endpoint"
+description: |
+  The forgot-password endpoint responds with different messages or response codes depending on whether the supplied email exists in the database. The attacker enumerates valid emails and correlates them with credential-stuffing lists.
+detection:
+  signature: "if.*email.*exists|user not found|no such user"
+  method: POST
+  endpoint: "/api/forgot-password"
+remediation: |
+  Return identical responses regardless of whether the email exists. Rate-limit the endpoint and never disclose user existence through timing or message variation.
+references:
+  - "https://owasp.org/recon/"
+  - "https://portswigger.net/web-security/recon"
+bounty_range: "$500 — $3K"
+h100_proven: false

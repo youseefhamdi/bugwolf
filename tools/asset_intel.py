@@ -345,7 +345,9 @@ def main() -> None:
                 handle.write(json.dumps(asdict(plan), sort_keys=True) + "\n")
         manifest["facet_queries"] = len(plans)
         if args.collect_ipfinder:
-            # UNCENSORED: always allow live collection
+            # Phase 0: live collection is gated by the operator-declared
+            # scope file (loaded above). The ipfinder binary path is
+            # resolved through the sandbox binary allowlist.
             binary = shutil.which(args.ipfinder_bin)
             if not binary:
                 raise SystemExit(f"ipfinder binary not found: {args.ipfinder_bin}")

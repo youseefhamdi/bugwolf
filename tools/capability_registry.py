@@ -179,7 +179,7 @@ class Capability:
             self.discovered_at = datetime.now(timezone.utc).isoformat()
         if not self.cap_id:
             raw = f"{self.component}:{self.cap_type.value}:{self.parameter}:{self.discovered_at}"
-            self.cap_id = hashlib.sha256(raw.encode()).hexdigest()[:16]
+            self.cap_id = hashlib.sha256(raw.encode()).hexdigest()
         # Auto-set category from type
         for cat, types in CAPABILITY_CATEGORIES.items():
             if self.cap_type in types:
@@ -213,7 +213,7 @@ class CapabilityChain:
             self.discovered_at = datetime.now(timezone.utc).isoformat()
         if not self.chain_id:
             raw = "+".join(self.capabilities) + self.discovered_at
-            self.chain_id = hashlib.sha256(raw.encode()).hexdigest()[:16]
+            self.chain_id = hashlib.sha256(raw.encode()).hexdigest()
 
 
 # ---------------------------------------------------------------------------

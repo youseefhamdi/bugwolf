@@ -1,0 +1,73 @@
+# bugwolf-chain-h100-v1
+## Source: Auth0 research, H1 #860627 style precedents, multiple JWT alg confusion reports
+## License: bugwolf-MIT
+# Port: 2026-09-05
+# Severity: critical
+# Bounty band: $3K – $25K
+schema: bugwolf-chain-h100-v1
+id: 10_jwt_to_admin
+title: "JWT alg Confusion → Admin Role → Mass Data Exfiltration"
+bounty: "$15K H100"
+prerequisites:
+  - id: jwt_issued_by_app
+    description: "The target issues a JWT for the authenticated session"
+  - id: server_accepts_alg_none
+    description: "Server accepts the alg=none token OR uses the public key as the HMAC secret"
+  - id: weak_or_public_secret
+    description: "HMAC secret is brute-forceable or is the well-known public key"
+steps:
+  - order: 1
+    description: "Capture a valid JWT from an authenticated session"
+    protocol: http
+    technique: jwt_capture
+    evidence:
+      kind: token
+      location: "Authorization header"
+    destructive: false
+  - order: 2
+    description: "Decode the JWT and identify the signing algorithm and key ID"
+    protocol: http
+    technique: jwt_decode
+    evidence:
+      kind: token
+      fields: [alg, kid, iss, sub]
+    destructive: false
+  - order: 3
+    description: "Try alg=none with the same payload — confirm the server accepts it"
+    protocol: http
+    technique: alg_none_attack
+    evidence:
+      kind: token
+      header: '{"alg":"none","typ":"JWT"}'
+    destructive: false
+  - order: 4
+    description: "If alg=none rejected, fall back to HS256 with the public key as the HMAC secret"
+    protocol: http
+    technique: pubkey_as_hmac
+    evidence:
+      kind: token
+      description: "Forge a new JWT with role=admin using the JWKS public key as the HMAC secret"
+    destructive: false
+  - order: 5
+    description: "Submit the forged JWT to an admin-only endpoint"
+    protocol: http
+    technique: admin_endpoint_access
+    evidence:
+      kind: response
+      status: 200
+    destructive: false
+  - order: 6
+    description: "Enumerate all admin endpoints to confirm the blast radius"
+    protocol: http
+    technique: admin_endpoint_walk
+    preconditions:
+      - "scope_approval"
+    evidence:
+      kind: action
+      description: "GET /admin/users, /admin/billing, /admin/audit-log, /admin/exports"
+    destructive: false
+final_severity: critical
+references:
+  - "Auth0 — Critical vulnerabilities in JSON Web Token libraries"
+  - "HackerOne #860627 — JWT alg confusion style precedent"
+  - "PortSwigger Web Security Academy: JWT attacks"

@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: mobile_cert_pinning_bypass_v1
+bug_class: mobile
+category: mobile
+severity: high
+title: "Mobile Certificate Pinning Bypass"
+description: |
+  The mobile app relies on certificate pinning without an integrity check on the pinning implementation itself. The attacker uses Frida or a Magisk module to disable pinning at runtime, intercepting all TLS traffic to the API.
+detection:
+  signature: "TrustManager|HostnameVerifier|X509TrustManager"
+  method: POST
+  endpoint: "/"
+remediation: |
+  Combine certificate pinning with root/jailbreak detection, use the OS-provided network security configuration, and validate the pinning implementation against tampering.
+references:
+  - "https://owasp.org/mobile/"
+  - "https://portswigger.net/web-security/mobile"
+bounty_range: "$3K — $15K"
+h100_proven: true

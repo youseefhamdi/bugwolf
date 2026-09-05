@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: exposed_admin_endpoint_v1
+bug_class: recon
+category: recon
+severity: high
+title: "Exposed Admin Endpoint via Directory Brute-Force"
+description: |
+  An administrative endpoint is deployed to production but not linked from any user-facing page. The attacker brute-forces common paths and discovers the endpoint, leading to direct access to privileged functionality.
+detection:
+  signature: "/admin|/manage|/internal|/actuator"
+  method: GET
+  endpoint: "/admin"
+remediation: |
+  Restrict admin endpoints by IP allow-list or VPN, require MFA on administrative sessions, and audit exposed endpoints continuously with a content discovery scanner.
+references:
+  - "https://owasp.org/recon/"
+  - "https://portswigger.net/web-security/recon"
+bounty_range: "$2K — $10K"
+h100_proven: true

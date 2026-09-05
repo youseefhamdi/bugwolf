@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: graphql_introspection_v1
+bug_class: api
+category: api
+severity: high
+title: "GraphQL Introspection Enabled in Production"
+description: |
+  The GraphQL endpoint has introspection enabled in production. The attacker queries `__schema` to enumerate every type, field, query, mutation, and deprecated field, including internal-only operations.
+detection:
+  signature: "__schema|__type|query IntrospectionQuery"
+  method: POST
+  endpoint: "/graphql"
+remediation: |
+  Disable introspection in production via the schema configuration or a build-time transformation. Audit Apollo or Yoga configurations for `introspection: true`.
+references:
+  - "https://owasp.org/api/"
+  - "https://portswigger.net/web-security/api"
+bounty_range: "$500 — $3K"
+h100_proven: true

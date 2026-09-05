@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: python_pickle_rce_v1
+bug_class: deserialization
+category: deserialization
+severity: high
+title: "Python Pickle Deserialization RCE"
+description: |
+  The application loads user-supplied data via pickle.loads. The attacker crafts a malicious pickle payload that executes arbitrary Python code during deserialization, granting RCE on the application server.
+detection:
+  signature: "pickle\\.loads|yaml\\.load\\s*\\([^,]*\\)"
+  method: POST
+  endpoint: "/api/cache/set"
+remediation: |
+  Never deserialize untrusted data with pickle; use JSON or a typed schema validator. If pickle is unavoidable, use a restricted unpickler with strict allow-lists.
+references:
+  - "https://owasp.org/deserialization/"
+  - "https://portswigger.net/web-security/deserialization"
+bounty_range: "$10K — $50K"
+h100_proven: true

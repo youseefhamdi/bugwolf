@@ -1,0 +1,51 @@
+# bugwolf/benchmarks — adversarial test apps + scoring
+# SCHEMA: bugwolf-benchmarks-adversarial-grpc-proto-v1
+# ## Source: original work for Phase 4.3
+# ## License: BugWolf internal
+# ## Capability tier: C0 (passive) only — all benchmarks are local test apps
+// Synthlab — adversarial gRPC .proto stub.
+//
+// The planted bug: `option (google.api.auth_required) = false` on a
+// sensitive RPC. A scanner should flag any sensitive RPC that does NOT
+// require auth. This file is a TEST FIXTURE; it is not compiled.
+
+syntax = "proto3";
+
+package bugwolf.synthlab;
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+
+option go_package = "bugwolf/synthlab/v1;synthlabv1";
+
+service VaultService {
+  // BUG: sensitive RPC marked auth_required=false.
+  rpc ReadSecret (ReadSecretRequest) returns (ReadSecretResponse) {
+    option (google.api.auth_required) = false;
+    option (google.api.http) = {
+      get: "/v1/secrets/{name}"
+    };
+  }
+
+  // Fixed counterpart for comparison.
+  rpc RotateKey (RotateKeyRequest) returns (RotateKeyResponse) {
+    option (google.api.auth_required) = true;
+  }
+}
+
+message ReadSecretRequest {
+  string name = 1;
+}
+
+message ReadSecretResponse {
+  string name = 1;
+  bytes  value = 2;
+}
+
+message RotateKeyRequest {
+  string key_id = 1;
+}
+
+message RotateKeyResponse {
+  bool ok = 1;
+}

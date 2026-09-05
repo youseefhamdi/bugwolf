@@ -98,6 +98,11 @@ class TestE2EDeepDiveCampaign(unittest.TestCase):
     def setUp(self):
         if self.base is None:
             self.skipTest("stub target not present (tests/_stub_target.py)")
+        # Reset global scope state so the campaign orchestrator's scope
+        # gate sees a clean bind target.
+        from tools.runtime import scope as _scope_reset
+        _scope_reset.reset()
+        self.addCleanup(self._reset_scope)
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
@@ -107,6 +112,11 @@ class TestE2EDeepDiveCampaign(unittest.TestCase):
         campaign_mod.ROOT = self.root
         campaign_mod.CAMPAIGN_ROOT = self.root / "state" / "campaigns"
         self.addCleanup(self._restore_env_and_roots)
+
+    @staticmethod
+    def _reset_scope():
+        from tools.runtime import scope as _scope_reset
+        _scope_reset.reset()
 
     def _restore_env_and_roots(self):
         if self._env is None:

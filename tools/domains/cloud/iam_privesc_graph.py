@@ -557,3 +557,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# Phase 1.5: scanner export shim
+def export_cloud_scanner():
+    from bugwolf.scanners.cloud.iam_privesc import IAMPrivescScanner
+    return IAMPrivescScanner()

@@ -32,7 +32,9 @@ Workflow integration (restored 12-stage pipeline + 7-checkpoint research loop):
     and chaining: ``latest_ready == false`` returns a research-refresh unit
     instead of proceeding (never a silent skip).
 
-Execution remains UNCENSORED: no scope/authorization gates anywhere.
+Execution is default-governance-profile (tools.runtime.scope gate + scope
+contract). Lab-profile callers (PROFILE_LAB_UNCENSORED) may relax the
+governance; the orchestrator enforces the active profile on every unit.
 
 Usage:
   python3 tools/campaign_orchestrator.py --target company.com --init

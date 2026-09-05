@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +41,7 @@ except ImportError:  # direct script execution
 
 
 SCHEMA = "bugwolf-post-finding-trigger/v1"
+LOG = logging.getLogger(__name__)
 TRIGGER_LOG = "post-finding-triggers.jsonl"
 QUEUE_LOG = "post-finding-queue.jsonl"
 SUMMARY_FILE = "post-finding-latest.json"
@@ -393,8 +395,10 @@ def trigger_after_signal(target: str, signal: Dict[str, Any], *,
             "status": status,
             "queue_ids": receipt["queue_ids"],
         })
-    except Exception:
+    except Exception as exc:
         # The receipt/queue remain authoritative if journal integration fails.
+        LOG.warning("post_finding_trigger.journal_failed signal_id=%s: %s",
+                    signal_id, exc)
         pass
     return {**receipt, "queue": queue}
 

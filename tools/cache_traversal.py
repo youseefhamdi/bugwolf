@@ -46,6 +46,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+try:
+    from tools.core.medium_safety import path_open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def path_open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
+
 SCHEMA_VERSION = "bugwolf-cache-traversal-v1"
 MARKER_PREFIX = "bwtr"
 CONTROL_PREFIX = "bwtr-control"
@@ -436,7 +443,7 @@ def main() -> None:
                 "Replay requires --scope-file --confirm-active --base-url against a lab host.",
             ],
         }
-        with (out_dir / "cache-traversal-plan.jsonl").open("w") as stream:
+        with path_open_text(out_dir / "cache-traversal-plan.jsonl", "w") as stream:
             for probe in probes:
                 stream.write(json.dumps(probe.to_dict(), sort_keys=True) + "\n")
         (out_dir / "manifest.json").write_text(

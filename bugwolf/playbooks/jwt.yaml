@@ -1,0 +1,119 @@
+schema: bugwolf-playbook-v1
+name: jwt
+description: |
+  JWT cryptographic attack probes drawn from the PortSwigger JWT attacks
+  reference and the methodology playbook's confirmation-gated posture:
+  * alg none / alg confusion (RS256 -> HS256)
+  * kid traversal / kid SQLi
+  * jwk / jku injection
+  * weak HMAC secret
+  Only test tokens are minted; no production tokens are replayed.
+preconditions:
+  target_is_reachable: true
+  scope_allows_active: true
+  jwt_endpoint_identified: true
+  test_token_pair_available: true
+payload_catalog:
+  - id: alg_none
+    request:
+      method: GET
+      path: /api/me
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [jwt_alg_none]
+    requires_scope_verb: active
+  - id: alg_confusion_rs256_to_hs256
+    request:
+      method: GET
+      path: /api/admin
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [jwt_alg_confusion]
+    requires_scope_verb: active
+  - id: kid_path_traversal
+    request:
+      method: GET
+      path: /api/me
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [jwt_kid_traversal]
+    requires_scope_verb: active
+  - id: kid_sqli
+    request:
+      method: GET
+      path: /api/me
+    expected_status: 500
+    expected_body_match: "syntax"
+    sinks: [jwt_kid_sqli]
+    requires_scope_verb: active
+  - id: jwk_injection
+    request:
+      method: GET
+      path: /api/admin
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [jwt_jwk_injection]
+    requires_scope_verb: active
+  - id: jku_injection
+    request:
+      method: GET
+      path: /api/admin
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [jwt_jku_injection]
+    requires_scope_verb: active
+  - id: x5u_injection
+    request:
+      method: GET
+      path: /api/admin
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [jwt_x5u_injection]
+    requires_scope_verb: active
+  - id: weak_hmac_bruteforce
+    request:
+      method: GET
+      path: /api/me
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [jwt_weak_hmac]
+    requires_scope_verb: active
+  - id: expired_token_acceptance
+    request:
+      method: GET
+      path: /api/me
+    expected_status: 401
+    expected_body_match: ""
+    sinks: [jwt_expiry_bypass]
+    requires_scope_verb: passive
+  - id: missing_signature
+    request:
+      method: GET
+      path: /api/me
+    expected_status: 401
+    expected_body_match: ""
+    sinks: [jwt_sig_bypass]
+    requires_scope_verb: passive
+evidence_collection:
+  - type: response_capture
+    target: response
+  - type: header_diff
+    target: response.headers
+  - type: timing_measurement
+    target: round_trip
+    config:
+      metric: jwt_verify_latency
+post_conditions:
+  finding_emitted: true
+  evidence_block_recorded: true
+  test_tokens_redeemed: true
+budget:
+  max_requests: 60
+  max_wall_clock: 150
+  min_interval_ms: 75
+governance:
+  requires_approval: true
+  scope_class: active
+  require_reproducible_evidence: true
+  destructive_allowed: false
+  notes: "Only test tokens are minted; production tokens are never replayed."

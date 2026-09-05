@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: waf_path_normalization_v1
+bug_class: waf_bypass
+category: waf_bypass
+severity: high
+title: "Path Normalization Bypass via Encoded Slash"
+description: |
+  The WAF inspects the request path and blocks `/admin`, but the attacker submits `/%61dmin` or `/admin/./`. After path normalization by the application or upstream proxy, the request reaches `/admin`.
+detection:
+  signature: "%(25)?[0-9a-fA-F]{2}|/\\./"
+  method: GET
+  endpoint: "/%61dmin"
+remediation: |
+  Normalize the request path before WAF inspection and again at the application layer. Match on the canonical path.
+references:
+  - "https://owasp.org/waf_bypass/"
+  - "https://portswigger.net/web-security/waf_bypass"
+bounty_range: "$500 — $3K"
+h100_proven: true

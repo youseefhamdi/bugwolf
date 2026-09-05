@@ -83,6 +83,12 @@ Dispatcher = Callable[[RaceRequest], List[Tuple[int, str]]]
 NativeDispatcher = Callable[[RaceRequest], Tuple[List[Tuple[int, str]], int]]
 
 
+def _replace_count(req: "RaceRequest", count: int) -> "RaceRequest":
+    """Return a copy of ``req`` with ``count`` clamped to ``count``."""
+    import dataclasses
+    return dataclasses.replace(req, count=count)
+
+
 def _encode_body(body: Optional[Any]) -> bytes:
     if body is None:
         return b""
@@ -254,25 +260,51 @@ def last_byte_dispatcher(request: RaceRequest
 
 
 def run_race(request: RaceRequest, *,
-             dispatcher: Optional[Dispatcher] = None) -> RaceResult:
+             dispatcher: Optional[Dispatcher] = None,
+             transport: str = "auto") -> RaceResult:
     """Run ONE race window and account the results.
 
     ``dispatcher`` injects alternative transports (HTTP/2 single-packet,
-    test fakes).  Default: HTTP/1.1 last-byte sync.
+    test fakes).  ``transport`` selects the default dispatcher when
+    ``dispatcher`` is None:
+      - ``"http1"`` (default for http://) — last-byte sync
+      - ``"h2"`` or ``"h2-single-packet"`` — James Kettle H2 single-packet
+      - ``"auto"`` — pick h2 for https, http1 for http
     """
     count = max(1, min(int(request.count), RACE_MAX_WINDOW))
     if dispatcher is None:
-        try:
-            raw, window_ms = last_byte_dispatcher(request)  # type: ignore[misc]
-        except Exception as exc:  # noqa: BLE001 - engine failure is a result
-            return RaceResult(attempted=count,
-                              error=f"{type(exc).__name__}: {exc}")
+        if transport == "auto":
+            from urllib.parse import urlparse
+            transport = "h2" if urlparse(request.url).scheme == "https" else "http1"
+        if transport in ("h2", "h2-single-packet", "h2c"):
+            try:
+                from tools.validation.h2_race_dispatcher import (
+                    h2_single_packet_dispatcher, is_h2_available,
+                )
+                if is_h2_available():
+                    started = time.monotonic()
+                    raw = h2_single_packet_dispatcher(
+                        dataclasses.replace(request, count=count)
+                        if False else _replace_count(request, count)
+                    )
+                    window_ms = int((time.monotonic() - started) * 1000)
+                else:
+                    raise RuntimeError("H2 dispatcher not available")
+            except Exception as exc:  # noqa: BLE001
+                return RaceResult(attempted=count,
+                                  error=f"H2: {type(exc).__name__}: {exc}")
+        else:
+            try:
+                raw, window_ms = last_byte_dispatcher(request)  # type: ignore[misc]
+            except Exception as exc:  # noqa: BLE001
+                return RaceResult(attempted=count,
+                                  error=f"{type(exc).__name__}: {exc}")
     else:
         # The window ceiling is an ENGINE property (plan section 2.5): it
         # holds for every transport, so injected dispatchers also receive
         # a clamped request.
         import dataclasses
-        clamped = dataclasses.replace(request, count=count)
+        clamped = _replace_count(request, count)
         started = time.monotonic()
         try:
             raw = dispatcher(clamped)

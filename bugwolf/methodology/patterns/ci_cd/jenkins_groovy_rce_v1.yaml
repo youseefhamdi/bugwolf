@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: jenkins_groovy_rce_v1
+bug_class: ci_cd
+category: ci_cd
+severity: high
+title: "Jenkins Groovy Console RCE"
+description: |
+  Jenkins is configured with anonymous script-console access or the attacker has obtained credentials via a prior step. The attacker submits a Groovy script that spawns a reverse shell or exfiltrates secrets.
+detection:
+  signature: "/scriptText|/pipeline-model-converter"
+  method: POST
+  endpoint: "/scriptText"
+remediation: |
+  Restrict script-console access to a small admin group, require authentication on all console endpoints, and monitor for unusual Groovy submissions.
+references:
+  - "https://owasp.org/ci_cd/"
+  - "https://portswigger.net/web-security/ci_cd"
+bounty_range: "$10K — $50K"
+h100_proven: true

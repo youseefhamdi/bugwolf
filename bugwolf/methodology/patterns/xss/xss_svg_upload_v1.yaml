@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: xss_svg_upload_v1
+bug_class: xss
+category: xss
+severity: high
+title: "Stored XSS via SVG Upload"
+description: |
+  The application accepts SVG files as profile pictures or attachments. Because SVG can contain `<script>` and event handlers, the file is rendered by the browser when viewed, executing the attacker's payload in the victim's session context.
+detection:
+  signature: "<script[^>]*>|<svg[^>]*>|on(load|click)=|xlink:href"
+  method: POST
+  endpoint: "/api/avatar"
+remediation: |
+  Strip all script tags and event-handler attributes from uploaded SVGs, serve uploaded files from a sandboxed origin that disallows inline scripts, and rasterize SVGs to PNGs on the server.
+references:
+  - "https://owasp.org/xss/"
+  - "https://portswigger.net/web-security/xss"
+bounty_range: "$1K — $10K"
+h100_proven: true

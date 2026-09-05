@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: session_fixation_v1
+bug_class: auth_bypass
+category: auth
+severity: high
+title: "Session Fixation via Login"
+description: |
+  The application accepts a session ID supplied by the user via a cookie and does not rotate it on authentication. The attacker sets a known session ID on the victim's browser, waits for login, and uses the same ID to hijack the authenticated session.
+detection:
+  signature: "PHPSESSID|JSESSIONID|session="
+  method: GET
+  endpoint: "/login"
+remediation: |
+  Regenerate the session identifier on every privilege change, reject session IDs supplied by the user, and bind the session to client fingerprint metadata.
+references:
+  - "https://owasp.org/auth/"
+  - "https://portswigger.net/web-security/auth"
+bounty_range: "$2K — $10K"
+h100_proven: false

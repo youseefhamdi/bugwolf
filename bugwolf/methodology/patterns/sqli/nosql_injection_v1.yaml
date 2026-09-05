@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: nosql_injection_v1
+bug_class: sqli
+category: sqli
+severity: high
+title: "NoSQL Injection in MongoDB Query"
+description: |
+  The application builds a MongoDB query from user-supplied JSON. The attacker injects MongoDB query operators such as `$ne` or `$gt` in the username field to bypass authentication entirely.
+detection:
+  signature: "\\$\\s*(ne|gt|lt|eq|regex|in|nin|where)"
+  method: POST
+  endpoint: "/api/login"
+remediation: |
+  Validate that user fields are strings before constructing the query, sanitize operator characters, and use a dedicated authentication library that constructs queries safely.
+references:
+  - "https://owasp.org/sqli/"
+  - "https://portswigger.net/web-security/sqli"
+bounty_range: "$2K — $10K"
+h100_proven: true

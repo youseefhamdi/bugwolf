@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from dataclasses import asdict, dataclass, field
@@ -134,6 +135,85 @@ def _sha256(value: Any) -> str:
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:16]
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _evidence_refs(finding: Dict[str, Any]) -> List[Any]:
+    """Return explicit durable-evidence references, if the finding supplies them."""
+    refs: List[Any] = []
+    for key in ("artifact_refs", "evidence_artifacts", "evidence_refs"):
+        value = finding.get(key)
+        if isinstance(value, (list, tuple)):
+            refs.extend(value)
+        elif value:
+            refs.append(value)
+    return refs
+
+
+def validate_evidence_artifacts(finding: Dict[str, Any], *,
+                                project_root: Optional[str] = None) -> Dict[str, Any]:
+    """Verify explicit evidence references are durable and content-addressed.
+
+    Narrative fields are intentionally not treated as files.  Once a caller
+    supplies an explicit reference, however, every reference must resolve
+    inside the workspace (or an explicitly absolute path), be readable, and
+    match its declared SHA-256.  Missing symbolic IDs such as ``replay-L1``
+    therefore cannot satisfy a confirmation gate.
+    """
+    refs = _evidence_refs(finding)
+    if not refs:
+        return {"required": False, "valid": True, "checked": 0, "errors": []}
+    root = workspace_root(project_root)
+    checked = 0
+    errors: List[str] = []
+    for index, ref in enumerate(refs):
+        declared_hash = ""
+        raw_path: Any = ref
+        if isinstance(ref, dict):
+            raw_path = ref.get("path") or ref.get("artifact_path") or ""
+            declared_hash = str(ref.get("sha256") or "").lower()
+            if declared_hash and not re.fullmatch(r"[0-9a-f]{64}", declared_hash):
+                errors.append(f"evidence[{index}] has invalid sha256")
+                continue
+        path_text = str(raw_path or "").strip()
+        if not path_text:
+            errors.append(f"evidence[{index}] missing path")
+            continue
+        path = Path(path_text).expanduser()
+        if not path.is_absolute():
+            path = root / path
+        try:
+            resolved = path.resolve()
+            # Relative references must remain in the invoking workspace.  An
+            # absolute reference is accepted only when it is already inside
+            # that workspace; this avoids turning report generation into an
+            # arbitrary file reader.
+            resolved.relative_to(root.resolve())
+        except (OSError, ValueError):
+            errors.append(f"evidence[{index}] path escapes workspace: {path_text}")
+            continue
+        if not resolved.is_file():
+            errors.append(f"evidence[{index}] artifact not found: {path_text}")
+            continue
+        try:
+            actual = _file_sha256(resolved)
+        except OSError as exc:
+            errors.append(f"evidence[{index}] unreadable: {exc}")
+            continue
+        checked += 1
+        if not declared_hash:
+            errors.append(f"evidence[{index}] missing sha256: {path_text}")
+        elif actual != declared_hash:
+            errors.append(f"evidence[{index}] sha256 mismatch: {path_text}")
+    return {"required": True, "valid": not errors, "checked": checked,
+            "references": len(refs), "errors": errors}
+
+
 @dataclass
 class DisclosureRecord:
     finding_id: str = ""
@@ -159,6 +239,7 @@ class ReportRecord:
     review_decision: str = ""
     review_note: str = ""
     disclosure: DisclosureRecord = field(default_factory=DisclosureRecord)
+    evidence_integrity: Dict[str, Any] = field(default_factory=dict)
     created_at: str = ""
     updated_at: str = ""
 
@@ -191,10 +272,12 @@ class ReportRecord:
         """A report is only reportable with complete evidence + review."""
         if self.review_decision != "confirmed":
             return False
-        return all(
-            str(self.evidence_fields.get(field) or "").strip()
-            for field in REQUIRED_EVIDENCE_FIELDS
-        )
+        if not all(str(self.evidence_fields.get(field) or "").strip()
+                   for field in REQUIRED_EVIDENCE_FIELDS):
+            return False
+        if self.evidence_integrity.get("required") and not self.evidence_integrity.get("valid"):
+            return False
+        return True
 
     def refusal_reasons(self) -> List[str]:
         reasons: List[str] = []
@@ -204,6 +287,9 @@ class ReportRecord:
         for field in REQUIRED_EVIDENCE_FIELDS:
             if not str(self.evidence_fields.get(field) or "").strip():
                 reasons.append(f"missing required evidence field: {field}")
+        if self.evidence_integrity.get("required") and not self.evidence_integrity.get("valid"):
+            for error in self.evidence_integrity.get("errors") or []:
+                reasons.append(f"evidence integrity: {error}")
         return reasons
 
 
@@ -254,12 +340,15 @@ class ReportingGate:
                                      or finding.get("version") or ""),
             "remediation": str(finding.get("remediation") or ""),
         }
+        evidence_integrity = validate_evidence_artifacts(
+            finding, project_root=str(self.root.parent.parent.parent))
         record = ReportRecord(
             finding_id=finding_id,
             title=str(finding.get("title") or ""),
             target=self.target,
             severity=str(finding.get("severity") or "info"),
             evidence_fields=evidence_fields,
+            evidence_integrity=evidence_integrity,
             reviewer=str(finding.get("reviewer") or ""),
             review_decision=str(finding.get("review_decision") or ""),
         )
@@ -273,6 +362,7 @@ class ReportingGate:
             "refusal_reasons": record.refusal_reasons(),
             "noise": noise,                      # advisory (Phase B, v1.25)
             "noise_held": bool(noise) and not record.is_reportable(),
+            "evidence_integrity": evidence_integrity,
         }
 
     def review(self, finding_id: str, decision: str, *, reviewer: str = "operator",

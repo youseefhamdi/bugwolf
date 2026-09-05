@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: dotnet_viewstate_v1
+bug_class: deserialization
+category: deserialization
+severity: high
+title: "ASP.NET ViewState Deserialization"
+description: |
+  The ASP.NET application enables ViewState MAC validation but allows legacy algorithms. The attacker submits a forged ViewState payload with a known machine key, triggering gadget chain execution on the server.
+detection:
+  signature: "__VIEWSTATE|__VIEWSTATEGENERATOR"
+  method: POST
+  endpoint: "/page.aspx"
+remediation: |
+  Set enableViewStateMac=true with a strong machineKey, disable legacy algorithms, and avoid loading user-controlled ViewState from any source.
+references:
+  - "https://owasp.org/deserialization/"
+  - "https://portswigger.net/web-security/deserialization"
+bounty_range: "$5K — $25K"
+h100_proven: false

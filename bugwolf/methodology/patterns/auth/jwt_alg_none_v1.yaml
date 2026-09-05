@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: jwt_alg_none_v1
+bug_class: auth_bypass
+category: auth
+severity: high
+title: "JWT alg=none Verification Bypass"
+description: |
+  The JWT verification library accepts the `alg=none` value as a valid algorithm. The attacker strips the signature from a forged JWT and sets alg=none, allowing impersonation of any user including admin.
+detection:
+  signature: "\\\"alg\\\"\\s*:\\s*\\\"none\\\""
+  method: GET
+  endpoint: "/api/auth/me"
+remediation: |
+  Hard-code the list of acceptable algorithms on the server (e.g. RS256), reject any token whose header alg does not match the expected list, and reject tokens with empty signature segments.
+references:
+  - "https://owasp.org/auth/"
+  - "https://portswigger.net/web-security/auth"
+bounty_range: "$5K — $30K"
+h100_proven: true

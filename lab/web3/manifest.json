@@ -1,0 +1,61 @@
+{
+  "schema": "bugwolf/lab-fixture/v1",
+  "name": "vulnerable-vault",
+  "purpose": "Intentionally vulnerable ERC20-like Vault for BugWolf invariant testing. DO NOT DEPLOY.",
+  "isolation_flags": [
+    "lab-only",
+    "no-deploy",
+    "deterministic-fuzz",
+    "fixtures-no-network"
+  ],
+  "declared_intentional_findings": [
+    {
+      "id": "lab-vault-001",
+      "class": "reentrancy",
+      "severity": "critical",
+      "location": "Vault.withdraw()",
+      "rationale": "External call before state update; no nonReentrant modifier."
+    },
+    {
+      "id": "lab-vault-002",
+      "class": "access-control",
+      "severity": "high",
+      "location": "Vault.initialize()",
+      "rationale": "Unprotected initializer; anyone can re-init."
+    },
+    {
+      "id": "lab-vault-003",
+      "class": "oracle-manipulation",
+      "severity": "high",
+      "location": "Vault.setOracle(), setPrice()",
+      "rationale": "No access control + no staleness check; oracle/price mutable by anyone."
+    },
+    {
+      "id": "lab-vault-004",
+      "class": "arithmetic-rounding",
+      "severity": "low",
+      "location": "Vault.deposit(), withdraw()",
+      "rationale": "Rounding-down per-op accumulates dust for the next depositor."
+    }
+  ],
+  "tools_expected_to_detect": [
+    "slither",
+    "aderyn",
+    "foundry/invariant",
+    "echidna",
+    "medusa",
+    "mythril",
+    "halmos"
+  ],
+  "engagement_boundary": {
+    "network": "none",
+    "rpc": "none",
+    "broadcast": "false",
+    "max_iterations": 64
+  },
+  "required_test_invariance": [
+    "sumOfBalances <= totalDeposited",
+    "oracle != address(0)",
+    "price > 0"
+  ]
+}

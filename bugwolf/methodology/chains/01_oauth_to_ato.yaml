@@ -1,0 +1,26 @@
+schema: bugwolf-methodology-chain-v1
+id: 01_oauth_to_ato
+title: "OAuth → Account Takeover"
+bounty: "$25K H100"
+prerequisites:
+  - id: open_redirect
+  - id: oauth_misconfig
+  - id: subdomain_takeover
+steps:
+  - order: 1
+    description: "Identify OAuth provider accepting wildcard redirect_uri"
+  - order: 2
+    description: "Register matching subdomain via open redirect or dangling DNS"
+  - order: 3
+    description: "Craft authorization URL pointing attacker's redirect_uri"
+  - order: 4
+    description: "Deliver link to victim via XSS, phishing or in-app messaging"
+  - order: 5
+    description: "Victim authorizes → auth code sent to attacker-controlled host"
+  - order: 6
+    description: "Exchange code for access/refresh token → full ATO"
+final_severity: critical
+references:
+  - "Shopify HackerOne #791775"
+  - "HackerOne Report #115669"
+  - "PortSwigger OAuth tutorial — implicit flow abuse"

@@ -492,6 +492,9 @@ class HeaderTrustRunner:
 
     def __init__(self, validator: Optional[OracleValidator] = None):
         self.validator = validator or OracleValidator()
+        # Phase 0 H-7: probes whose forged value is a trusted/internal host
+        # or IP are skipped unless explicitly allowed via --scope-internal-host.
+        self.allow_internal_hosts: bool = False
 
     def run(self, probes: List[HeaderProbe],
             transport: Transport,
@@ -499,6 +502,11 @@ class HeaderTrustRunner:
             ) -> List[HeaderTrustResult]:
         results: List[HeaderTrustResult] = []
         for probe in probes:
+            # Phase 0 H-7: gated by allow_internal_hosts (default False).
+            if not self.allow_internal_hosts and probe.value in _INTERNAL_HOSTS:
+                continue
+            if not self.allow_internal_hosts and probe.value in _TRUSTED_IPS:
+                continue
             baseline = transport(probe.method, probe.url, {})
             candidate = transport(probe.method, probe.url,
                                   {probe.name: probe.value})
@@ -584,6 +592,9 @@ def main() -> None:
     parser.add_argument("--scope-file", default="")
     parser.add_argument("--confirm-active", action="store_true",
                         help="Authorize live baseline-vs-forged replay")
+    parser.add_argument("--scope-internal-host", action="store_true",
+                        help="Phase 0 H-7: allow probes whose forged value is "
+                             "a trusted/internal host or IP (off by default)")
     parser.add_argument("--max-probes", type=int, default=4000)
     parser.add_argument("--output", help="Write the plan (or live results) JSON to this file")
     parser.add_argument("--json", action="store_true")
@@ -622,8 +633,10 @@ def main() -> None:
                 print(f"    {p.name}: {p.value!r}  ->  {p.method} {p.url}")
         return
 
-    # UNCENSORED: live replay needs no scope file — the planner/runner is
-    # uncensored; --confirm-active is only the explicit trigger for replay.
+    # Phase 0 H7: scope-file is required for live replay; internal-host
+    # probes (Host: localhost / 127.0.0.1 / admin, X-Forwarded-For with
+    # loopback IPs) require --scope-internal-host. The policy below caps
+    # allowed_actions to PASSIVE/READ and bounds the request budget.
 
     try:
         import tools.hunt as hunt
@@ -648,6 +661,7 @@ def main() -> None:
                                            extra_headers=headers)
 
     runner = HeaderTrustRunner()
+    runner.allow_internal_hosts = bool(args.scope_internal_host)
     results = runner.run(probes, transport, target=args.target)
 
     payload = {

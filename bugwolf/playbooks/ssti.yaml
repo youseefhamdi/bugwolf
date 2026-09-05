@@ -1,0 +1,113 @@
+schema: bugwolf-playbook-v1
+name: ssti
+description: |
+  Server-side template injection detection probes. Uses polynomial
+  arithmetic and short benign markers as oracle inputs; never executes
+  system shells, never exfiltrates secrets. Matches the methodology
+  playbook pattern: render-side impact must be bounded to test accounts.
+preconditions:
+  target_is_reachable: true
+  scope_allows_active: true
+  render_endpoint_identified: true
+payload_catalog:
+  - id: jinja_poly
+    request:
+      method: GET
+      path: /render?name={{7*7}}
+    expected_status: 200
+    expected_body_match: "49"
+    sinks: [ssti_jinja]
+    requires_scope_verb: active
+  - id: jinja_arith
+    request:
+      method: GET
+      path: /render?name={{4*4+1}}
+    expected_status: 200
+    expected_body_match: "17"
+    sinks: [ssti_jinja]
+    requires_scope_verb: active
+  - id: twig_poly
+    request:
+      method: GET
+      path: /preview?title={{7*7}}
+    expected_status: 200
+    expected_body_match: "49"
+    sinks: [ssti_twig]
+    requires_scope_verb: active
+  - id: freemarker_poly
+    request:
+      method: GET
+      path: /view?msg=${7*7}
+    expected_status: 200
+    expected_body_match: "49"
+    sinks: [ssti_freemarker]
+    requires_scope_verb: active
+  - id: velocity_poly
+    request:
+      method: GET
+      path: /page?t=#set($x=7*7)$x
+    expected_status: 200
+    expected_body_match: "49"
+    sinks: [ssti_velocity]
+    requires_scope_verb: active
+  - id: smarty_poly
+    request:
+      method: GET
+      path: /page?msg={math equation="7*7"}
+    expected_status: 200
+    expected_body_match: "49"
+    sinks: [ssti_smarty]
+    requires_scope_verb: active
+  - id: erb_poly
+    request:
+      method: GET
+      path: /page?msg=<%= 7*7 %>
+    expected_status: 200
+    expected_body_match: "49"
+    sinks: [ssti_erb]
+    requires_scope_verb: active
+  - id: expression_lang_poly
+    request:
+      method: GET
+      path: /page?msg=${"a".getClass().forName("java.lang.Math")}
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [ssti_el]
+    requires_scope_verb: active
+  - id: error_marker_probe
+    request:
+      method: GET
+      path: /render?name={{[1]+1}}
+    expected_status: 500
+    expected_body_match: ""
+    sinks: [ssti_error_oracle]
+    requires_scope_verb: active
+  - id: blind_timing_probe
+    request:
+      method: GET
+      path: /render?name={{range(1).__iter__()}}
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [ssti_blind_timing]
+    requires_scope_verb: active
+evidence_collection:
+  - type: response_capture
+    target: response
+  - type: body_diff
+    target: response.body
+    config:
+      baseline_key: clean_render
+post_conditions:
+  finding_emitted: true
+  evidence_block_recorded: true
+  template_engine_classified: true
+budget:
+  max_requests: 40
+  max_wall_clock: 90
+  min_interval_ms: 75
+governance:
+  requires_approval: true
+  scope_class: active
+  require_reproducible_evidence: true
+  destructive_allowed: false
+  notes: "Arithmetic-marker oracles only. No command execution payloads."

@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: coupon_replay_v1
+bug_class: business_logic
+category: business_logic
+severity: high
+title: "Coupon Code Replay Abuse"
+description: |
+  The discount coupon endpoint applies a coupon code without enforcing single-use or per-user constraints. The attacker replays the same coupon on multiple orders, accumulating unbounded discounts.
+detection:
+  signature: "/api/coupons/(apply|redeem)"
+  method: POST
+  endpoint: "/api/coupons/apply"
+remediation: |
+  Enforce per-user, per-order, and total-redemption limits on coupons. Use database-level unique constraints with optimistic locking.
+references:
+  - "https://owasp.org/business_logic/"
+  - "https://portswigger.net/web-security/business_logic"
+bounty_range: "$1K — $10K"
+h100_proven: true

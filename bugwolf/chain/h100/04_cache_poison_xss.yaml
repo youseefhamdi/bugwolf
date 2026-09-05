@@ -1,0 +1,76 @@
+# bugwolf-chain-h100-v1
+## Source: PayPal #488147 ($2,900) + #510152 ($20,000)
+## License: bugwolf-MIT
+# Port: 2026-09-05
+# Severity: critical
+# Bounty band: $5K – $20K
+schema: bugwolf-chain-h100-v1
+id: 04_cache_poison_xss
+title: "Cache Poisoning → Stored XSS → Session Hijack"
+bounty: "$15K H100"
+prerequisites:
+  - id: unkeyed_header
+    description: "An unkeyed request header (X-Forwarded-Host, X-Original-URL, X-Host) is reflected into the response"
+  - id: cacheable_endpoint
+    description: "The affected URL is cacheable (Vary header does not include the unkeyed header)"
+  - id: reflected_in_html
+    description: "The reflected value is rendered in HTML without proper output encoding"
+steps:
+  - order: 1
+    description: "Identify an unkeyed header reflected into the response body"
+    protocol: http
+    technique: unkeyed_header_discovery
+    evidence:
+      kind: request
+      headers:
+        X-Forwarded-Host: "attacker.example"
+    destructive: false
+  - order: 2
+    description: "Verify the response is cacheable (look for Age, X-Cache, Cache-Control)"
+    protocol: http
+    technique: cache_check
+    evidence:
+      kind: response_header
+      fields: [X-Cache, Age, Cache-Control]
+    destructive: false
+  - order: 3
+    description: "Inject a benign XSS payload via the unkeyed header to confirm reflection"
+    protocol: http
+    technique: xss_confirm
+    evidence:
+      kind: request
+      headers:
+        X-Forwarded-Host: "<svg/onload=alert(1)>"
+    destructive: false
+  - order: 4
+    description: "Send a single poisoned request and wait for the cache to absorb the response"
+    protocol: http
+    technique: cache_poison
+    evidence:
+      kind: action
+      description: "Issue one request; the cache key matches the URL but the body contains the payload"
+    destructive: false
+  - order: 5
+    description: "Verify the payload is now served to a fresh, unauthenticated visitor"
+    protocol: http
+    technique: cache_hit_verify
+    evidence:
+      kind: response
+      description: "Subsequent request from a clean session returns the XSS payload"
+    destructive: false
+  - order: 6
+    description: "Replace the payload with a session-cookie-stealing variant (stricter scope required)"
+    protocol: http
+    technique: session_stealer
+    preconditions:
+      - "scope_approval"
+      - "httponly_flag_absent"
+    evidence:
+      kind: request
+      description: "Replace payload with a document.cookie exfiltration to attacker host"
+    destructive: true
+final_severity: critical
+references:
+  - "PayPal #488147 — Cache deception + reflected XSS ($2,900)"
+  - "PayPal #510152 — Web cache poisoning ($20,000)"
+  - "PortSwigger: Web cache poisoning research"

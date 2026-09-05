@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: time_sqli_cookie_v1
+bug_class: sqli
+category: sqli
+severity: high
+title: "Time-Based Blind SQL Injection via Cookie"
+description: |
+  A user-tracking cookie is stored verbatim in a SQL query. The attacker appends a SLEEP or pg_sleep payload and observes response timing to confirm the injection and extract data one bit at a time.
+detection:
+  signature: "SLEEP\\s*\\(|WAITFOR\\s+DELAY|BENCHMARK\\s*\\("
+  method: GET
+  endpoint: "/"
+remediation: |
+  Parse cookies as structured data only — never concatenate them into SQL — and use parameterized queries throughout. Add query timeouts and audit slow-query logs.
+references:
+  - "https://owasp.org/sqli/"
+  - "https://portswigger.net/web-security/sqli"
+bounty_range: "$1K — $5K"
+h100_proven: false

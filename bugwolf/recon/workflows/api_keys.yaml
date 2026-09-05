@@ -1,0 +1,35 @@
+schema: bugwolf-recon-workflow-v1
+name: api_keys
+description: |
+  API key discovery — find exposed 3rd-party API keys (Stripe,
+  Twilio, AWS, GCP, Slack, GitHub PATs, etc.) in JS bundles, GitHub
+  repos, and S3 buckets.
+phases:
+  - order: 1
+    name: js_bundle_harvest
+    tools: [katana, httpx]
+    budget:
+      max_requests: 500
+      max_seconds: 1800
+    scope_verb: active
+  - order: 2
+    name: github_secret_scan
+    tools: [trufflehog, github_search]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: passive
+  - order: 3
+    name: s3_leak_check
+    tools: [s3scanner]
+    budget:
+      max_requests: 100
+      max_seconds: 1200
+    scope_verb: passive
+  - order: 4
+    name: wayback_key_match
+    tools: [wayback]
+    budget:
+      max_requests: 100
+      max_seconds: 600
+    scope_verb: passive

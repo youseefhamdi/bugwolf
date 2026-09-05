@@ -450,3 +450,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# Phase 1.5: scanner export shim
+def export_graphql_scanner():
+    from bugwolf.scanners.api.graphql import GraphqlScanner
+    return GraphqlScanner()

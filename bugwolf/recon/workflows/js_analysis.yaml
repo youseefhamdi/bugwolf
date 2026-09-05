@@ -1,0 +1,41 @@
+schema: bugwolf-recon-workflow-v1
+name: js_analysis
+description: |
+  JavaScript bundle analysis — pull ``.js`` files, extract endpoints,
+  look for hardcoded secrets, surface sourcemaps.
+phases:
+  - order: 1
+    name: discover_js_bundles
+    tools: [katana, gospider]
+    budget:
+      max_requests: 500
+      max_seconds: 1800
+    scope_verb: active
+  - order: 2
+    name: download_js_bundles
+    tools: [httpx]
+    budget:
+      max_requests: 200
+      max_seconds: 1200
+    scope_verb: active
+  - order: 3
+    name: endpoint_extraction
+    tools: [paramspider, katana]
+    budget:
+      max_requests: 200
+      max_seconds: 1200
+    scope_verb: active
+  - order: 4
+    name: secret_extraction
+    tools: [trufflehog]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: active
+  - order: 5
+    name: sourcemap_discovery
+    tools: [httpx, nuclei]
+    budget:
+      max_requests: 100
+      max_seconds: 1200
+    scope_verb: active

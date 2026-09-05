@@ -50,6 +50,13 @@ try:
 except ImportError:  # direct script execution
     from runtime_paths import CODE_ROOT, target_slug, workspace_root
 
+try:
+    from tools.core.medium_safety import open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
+
 ROOT = workspace_root()
 sys.path.insert(0, str(CODE_ROOT))
 
@@ -344,7 +351,7 @@ def enqueue_jobs(jobs: List[RetestJob]):
     """Enqueue retest jobs."""
     queue_file = RETEST_DIR / "queue.jsonl"
     RETEST_DIR.mkdir(parents=True, exist_ok=True)
-    with open(queue_file, "a") as f:
+    with open_text(queue_file, "a") as f:
         for job in jobs:
             f.write(json.dumps(asdict(job)) + "\n")
 
@@ -421,7 +428,7 @@ def run_pending_jobs(scope_file: Optional[str] = None) -> int:
 
         # Re-enqueue with updated status
         RETEST_DIR.mkdir(parents=True, exist_ok=True)
-        with open(RETEST_DIR / "completed.jsonl", "a") as f:
+        with open_text(RETEST_DIR / "completed.jsonl", "a") as f:
             f.write(json.dumps(asdict(job)) + "\n")
 
         executed += 1

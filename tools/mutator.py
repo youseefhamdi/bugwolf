@@ -26,6 +26,13 @@ try:
 except ImportError:  # direct script execution
     from surface_model import Parameter, SurfaceModel
 
+try:
+    from tools.core.medium_safety import open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
+
 SCHEMA_VERSION = "bugwolf-mutation-v1"
 
 
@@ -101,6 +108,15 @@ _PAGINATION_PARAMS = {"offset", "page", "limit", "sort", "order", "filter"}
 # grammar-diverse is what gives the ART4SQLi token-space selector something
 # to spread over (the paper's payload collection is built the same way, from
 # fuzzdb-style payloads plus tamper mutations, deduplicated).
+#
+# Phase 0 M-6: destructive stacked-query payloads (DROP/INSERT) are held in
+# a separate constant and only merged into the SQLi pool when the operator
+# explicitly opts in via ``Mutator(..., include_destructive=True)``. Default
+# is destructive-free.
+DESTRUCTIVE_SQLI_PAYLOADS = (
+    "1;DROP TABLE IF EXISTS x--",
+    "1';INSERT INTO log VALUES('x')--",
+)
 INJECTION_VALUES = {
     "sqli": [
         "'",
@@ -119,9 +135,8 @@ INJECTION_VALUES = {
         "1 AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT version())))#",
         "1' AND (SELECT 1 FROM(SELECT COUNT(*),CONCAT(version(),FLOOR(RAND(0)*2))x "
         "FROM information_schema.tables GROUP BY x)a)#",
-        # stacked queries
-        "1;DROP TABLE IF EXISTS x--",
-        "1';INSERT INTO log VALUES('x')--",
+        # stacked queries (non-destructive default — DESTRUCTIVE_SQLI_PAYLOADS
+        # are gated by Mutator.include_destructive, see above)
     ],
     # Time-based blind detection *plans* (DB-agnostic). These are never fired
     # by the mutator; execution still requires the gated controller.
@@ -197,13 +212,28 @@ def _risk_for(method: str) -> RiskClass:
 
 
 class Mutator:
-    """Generate bounded structure-aware mutation plans from a SurfaceModel."""
+    """Generate bounded structure-aware mutation plans from a SurfaceModel.
+
+    Phase 0 M-6: ``include_destructive`` defaults to False. When False, the
+    destructive SQLi payloads (``DROP TABLE``, ``INSERT INTO log``) are NOT
+    merged into the plan pool; operators must opt in explicitly.
+    """
 
     def __init__(self, *, max_per_param: int = 8, max_per_op: int = 160,
-                 max_total: int = 4000):
+                 max_total: int = 4000, include_destructive: bool = False):
         self.max_per_param = max(1, max_per_param)
         self.max_per_op = max(1, max_per_op)
         self.max_total = max(1, max_total)
+        # Phase 0 M-6: gate destructive stacked-query payloads.
+        self.include_destructive = bool(include_destructive)
+        # Materialize the SQLi pool with the policy applied. Each Mutator
+        # instance gets its own list so toggling at construction time is
+        # deterministic and side-effect free.
+        self._injection_values = {
+            bug_class: list(values) for bug_class, values in INJECTION_VALUES.items()
+        }
+        if self.include_destructive:
+            self._injection_values["sqli"].extend(DESTRUCTIVE_SQLI_PAYLOADS)
 
     def _add(self, out: List[Mutation], operation_id: str, method: str, path: str,
              kind: str, variable: str, original: Any, mutated: Any,
@@ -212,7 +242,7 @@ class Mutator:
         if len(out) >= self.max_total:
             return False
         raw = "|".join([operation_id, kind, variable, repr(mutated), sibling_id])
-        mutation_id = hashlib.sha256(raw.encode()).hexdigest()[:16]
+        mutation_id = hashlib.sha256(raw.encode()).hexdigest()
         out.append(Mutation(
             mutation_id=mutation_id, operation_id=operation_id, method=method,
             path=path, kind=kind, variable=variable, original=original,
@@ -268,7 +298,7 @@ class Mutator:
         # Pagination/sorting parameters are a classic time-based blind-SQLi
         # surface; plan the DB-agnostic sleep probes regardless of scalar type.
         if name in _PAGINATION_PARAMS:
-            for value in INJECTION_VALUES["blind_sqli"]:
+            for value in self._injection_values["blind_sqli"]:
                 self._add(out, op.operation_id, op.method, op.path, "blind_sqli",
                           param.name, None, value, "sql_injection", risk,
                           f"time-based blind SQLi detection plan on {param.name}")
@@ -290,7 +320,7 @@ class Mutator:
             # Bounded per class so classic sink params stay within the per-op
             # budget; the full pool still feeds the ART4SQLi token space across
             # all sink parameters of the surface.
-            for value in INJECTION_VALUES[cls][:8]:
+            for value in self._injection_values[cls][:8]:
                 self._add(out, op.operation_id, op.method, op.path, "injection",
                           param.name, None, value,
                           {"sqli": "sql_injection", "xss": "xss",
@@ -446,7 +476,7 @@ def main() -> None:
 
     mutations = Mutator().mutations(model)
     if args.output:
-        with open(args.output, "w") as stream:
+        with open_text(args.output, "w") as stream:
             for m in mutations:
                 stream.write(json.dumps(m.to_dict(), default=str) + "\n")
 

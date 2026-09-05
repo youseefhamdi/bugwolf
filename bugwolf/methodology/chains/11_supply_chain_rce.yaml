@@ -1,0 +1,24 @@
+schema: bugwolf-methodology-chain-v1
+id: 11_supply_chain_rce
+title: "NPM/PyPI Dependency Confusion / Typosquat → RCE on CI"
+bounty: "$60K H100"
+prerequisites:
+  - id: internal_package_name_leak
+  - id: public_index_priority
+  - id: postinstall_hook_exec
+steps:
+  - order: 1
+    description: "Enumerate internal package names from lockfiles, repos, registries"
+  - order: 2
+    description: "Check whether public index serves same-name package"
+  - order: 3
+    description: "Publish higher-version malicious package with postinstall script"
+  - order: 4
+    description: "Wait for next CI run to resolve dependency — installer pulls attacker version"
+  - order: 5
+    description: "postinstall runs in CI sandbox → exfiltrate secrets / pivot"
+final_severity: critical
+references:
+  - "Alex Birsan — Dependency Confusion (2021)"
+  - "HackerOne Report #1349926 — internal package takeover"
+  - "npm registry policy on package namespace"

@@ -1,5 +1,121 @@
 # Changelog
 
+## v1.24.1 — Audit-resolution release (closes the v1.24.0 audit findings)
+
+The v1.24.0 deep audit identified 30 architecture/workflow/capability issues
+across BugWolf. v1.24.1 closes every one of them. Test count: 1801 → **1920**
+(119 new tests, 0 failures, exit 0). All new modules ship with documented
+schemas, hermetic tests, and fail-closed safety contracts.
+
+### P0 (audit blockers)
+
+- **P0-1: Wired 12 orphan domain modules** — `tools/runtime/domain_adapter.py`
+  exposes a uniform `_probe_<family>(base, paths)` interface for all 12
+  previously-orphan domain modules (jwt_forgery, oauth_flow, ato_chain,
+  bopla, graphql_batch, rag_poisoning, deep_link, mobile_policy,
+  llm_contract_triage, price_manipulation, http_smuggling, parser_differential).
+  Wired into `mission_runner.DOMAIN_LANES` at runtime. **2/14 → 14/14 wired.**
+- **P0-2: Real chain execution** — `KillChainBuilder.execute_chain()` actually
+  fires the chain tests through the governed replay engine (scope + sandbox
+  honored). `auto_test_chain()` kept as planner with an honest note pointing
+  callers to `execute_chain()`. CLI `--auto-execute` now wired.
+- **P0-3: `lab/web3/` Foundry fixture** — `lab/web3/{src/Vault.sol,
+  test/Invariants.t.sol, foundry.toml, manifest.json, FIXTURES.md}`.
+  Intentionally vulnerable ERC-20-like Vault (reentrancy, oracle manipulation,
+  unprotected initializer, rounding). Foundry config pins seed + run count
+  for deterministic local reproduction.
+- **P0-4: Scope-gate bypass hardening** — `tools/runtime/scope.py` now
+  normalizes decimal-IP (`2130706433` → 127.0.0.1), octal-IP
+  (`0177.0.0.1`), hex-IP (`0x7f000001`), mixed-encoding, and IDN/punycode
+  hostnames. 20 new tests.
+- **P0-5: Doc drift fixed** — `SKILL.md:2715` "25 specialized agents" →
+  39 (matches `agents/bugwolf/` count). `docs/zero_day_implementation_status.md`
+  "1030 tests" → 1920 (matches `unittest.discover`).
+
+### P1 (capability gaps)
+
+- **P1-6: H2 single-packet race in mission_runner** — `tools/validation/
+  h2_race_dispatcher.py` implements James Kettle's single-packet attack
+  (RFC 7540 framing, all HEADERS frames in one TCP packet). `run_race()` now
+  takes a `transport` arg (auto | http1 | h2); `mission_runner` FIN matrix
+  auto-selects H2 for HTTPS, HTTP/1.1 for cleartext.
+- **P1-7: 9 orphan top-level modules wired** — `tools/runtime/orphan_orchestrator.py`
+  provides a single `dispatch_phase(phase, target, mission_id)` entry point
+  that calls kill_chain, trust_map, capability_registry, adversary_emulation,
+  patch_gap, threat_intel, program_fit, formal_verify, replay_cli. Hooked
+  into `mission_runner.run()` after the dispatch drain. Each phase
+  persists to `state/sessions/<target>/orchestrator/<mission>-<phase>.jsonl`.
+- **P1-8: `tools/fuzz_engine.py`** — Coverage-guided fuzzing harness generator
+  for 9 engines: libFuzzer (C/Rust), AFL++, Honggfuzz, Atheris (Python),
+  Boofuzz, Schemathesis, Foundry, Echidna, Medusa. Emits source, build.sh,
+  run.sh, corpus/ + crashes/ + manifest.json. Stdlib-only.
+- **P1-9: `tools/variant_hunt.py`** — HUNT-style variant generator. Given
+  one finding, enumerates sibling endpoints (method-swap), sibling
+  parameters (family-bucketed: id/amount/url/...), sister files (leading-token
+  match), and 5 encoding variants. Clusters by root cause (copy_paste,
+  framework_misuse, missing_input_validation, authz_omission, crypto_choice,
+  race_window, deserialization_sink, ssrf_consumer).
+- **P1-10: Hook fail-CLOSED on extraction error** — `hooks/bugwolf_pretool_scope_hook.py`
+  when a scope contract exists, an `evaluate()` exception now DENIES the
+  call (exit 2 + journal) instead of silently passing. Still INERT when
+  no contract is bound (no mission → no enforcement — unchanged behavior).
+
+### P2 (new capabilities)
+
+- **P2-11: `tools/symexec_adapter.py`** — Unified interface to angr, KLEE,
+  Manticore, Mythril, Halmos, Certora. Spec generators + output parsers +
+  availability checks. Stdlib-only; operator runs the actual engine.
+- **P2-12: `tools/binary_re_adapter.py`** — Ghidra / Binary Ninja / radare2 /
+  rizin / Frida / objdump / nm / strings adapters. PostScript + Frida hook
+  templates + output parsers.
+- **P2-13: `tools/onchain_executor.py`** — Anvil fork with transaction
+  simulation. Spawns a local Anvil fork, replays exploit transactions,
+  records before/after balance + delta. Safety contract: read-only by
+  default, `--confirm-destructive` required for state-changing.
+- **P2-14: `tools/burp_bridge.py`** — Burp Suite REST API driver. Sends to
+  Repeater / Intruder, fetches Scanner issues / sitemap, registers BugWolf
+  findings into Burp's site map, triggers active scans. Inert when
+  `BUGWOLF_BURP_URL` is unset.
+- **P2-15: `tools/account_creator.py`** — Bounded account creation with
+  legal guardrails. Refuses financial / government / healthcare / identity /
+  education targets. Refuses without `--confirm-account-creation`. Detects
+  CAPTCHA and reports `needs-captcha` instead of bypassing. Uses Guerrilla
+  Mail burner service. Per-attempt JSONL evidence.
+- **P2-16: `tools/dns_oast.py`** — DNS-OAST listener (RFC 1035, pure stdlib).
+  Per-lead canary subdomains, JSONL log, minimal A-record responder.
+  Bind to 127.0.0.1:5354 by default (avoids conflict with system resolver).
+- **P2-17: `tools/regression_runner.py`** — Re-verifies past findings on the
+  current target state. Replays the recorded reproduction request through
+  the governed replay engine; classifies as `present`/`fixed`/`inconclusive`/
+  `unreachable`. Schema `bugwolf-regression/v1`.
+- **P2-18: "Uncensored" terminology standardized** — `execution_controller.py`,
+  `execution_semantics.py`, `safety.py` now say "uncensored within
+  operator-declared scope" instead of the bare "uncensored". Authorization
+  is documented as the operator's responsibility via the scope gate.
+
+### New tests (119 added, 0 failures)
+
+| File | New tests | Coverage |
+|---|---|---|
+| `tests/test_domain_adapter.py` | 17 | All 12 wired probes + mission_runner integration |
+| `tests/test_kill_chain_execute.py` | 3 | execute_chain + planner behavior + refusal |
+| `tests/test_orphan_orchestrator.py` | 8 | 5 phases + coverage + persistence |
+| `tests/test_fuzz_engine.py` | 17 | 9 engines + manifest + disk write |
+| `tests/test_variant_hunt.py` | 16 | root-cause, cluster, sibling enumeration, hunt driver |
+| `tests/test_scope_bypass_hardening.py` | 20 | decimal/octal/hex IP, IDN, userinfo |
+| `tests/test_v1241_capabilities.py` | 38 | symexec/binary_re/onchain/burp/account/dns/regression adapters |
+
+**Test total: 1920 (was 1801). Pass rate: 100% (exit 0).**
+
+### Backwards compatibility
+
+All 12 P0/P1/P2 changes are backwards-compatible. Existing CLI invocations
+work unchanged. The new `--auto-execute` flag on `kill_chain.py` is opt-in.
+The new `domain_adapter.py` is import-failure-safe (each module wrapped in
+safe-import). Hook behavior changes only when a scope contract exists.
+
+---
+
 ## v1.24.0 — Cross-pollination release: the learning loop closes (INTEGRATION_PLAN Phases A–F)
 
 Implements the full ECC/Agent-Reach integration plan (`docs/INTEGRATION_PLAN.md`):
@@ -1727,3 +1843,58 @@ BugWolf's first public release: an all-round bug bounty hunting engine covering 
 
 ### Reporting
 - `tools/hunt.py` finding engine, `tools/agent_isolation.py` boundary checks, `tools/adversary_emulation.py` MITRE/OWASP coverage, `tools/exploit_gen.py` PoC generation, and platform-specific report formatting.
+
+
+## Phase 5 — Integration & Polish (5.1 CLI, 5.2 reporting, 5.3 unified state, 5.4 docs, 5.5 second-brain)
+
+### 5.1 — Unified CLI
+
+- `bugwolf/cli/main.py` — single entry point. Every command goes through `tools/harness_guard.py` first.
+- `bugwolf/cli/dispatch.py` — command routing.
+- `bugwolf/cli/commands/` — subcommands (mission, hunt, report, scope, bench, replay).
+- Refuses to start if the capability digest has drifted from `scripts/capability_digest.txt`.
+
+### 5.2 — Reporting
+
+- `bugwolf/reporting/` — JSON, Markdown, HTML, SARIF, HackerOne, Bugcrowd, Intigriti, Immunefi report generators.
+- Every report is signed by the hash-chained evidence ledger; tampering breaks the chain and the report is refused.
+- 7-Question Gate is enforced before any finding is written.
+
+### 5.3 — Unified state
+
+- `bugwolf/unified_state/` — single source of truth for every mission.
+- `state.py` — JSONL journal, append-only, hash-chained.
+- `machine.py` — execution state machine (INIT → SCOPED → EVIDENCED → DISPATCHED → RUNNING → VALIDATED → REPORTED → ARCHIVED).
+- `merge.py` — merges per-scanner journals into the unified journal.
+- `migrate.py` — reversible migrations.
+- `chain.py` — per-mission chain (parent → children).
+- `facade.py` — single import path for all callers.
+- `types.py` — typed schemas.
+
+### 5.4 — Documentation (this release)
+
+- `docs/ARCHITECTURE.md` — seven-layer architecture (Layers 0–6), with cross-layer guarantees.
+- `docs/GOVERNANCE.md` — module-by-module reference for every governance module.
+- `docs/METHODOLOGY.md` — 70 patterns × 10 templates × 12 chains, three public APIs (search, citation, vector_index).
+- `docs/BENCHMARKS.md` — synthlab (6 planted bugs), adversarial (15 apps), regression (3 suites), scoring (F0.5, chain validity, coverage).
+- `docs/OPERATIONS.md` — operator runbook (install, test, troubleshoot, disaster recovery).
+- `docs/SECURITY.md` — threat model, 5 CRITICAL + 18 HIGH + 36 MEDIUM findings, defense-in-depth.
+- `SKILL.md` @-References section at the top.
+- `README.md` Company Model section.
+
+### 5.5 — Second-brain convention adoption
+
+- `MEMORY.md` — long-term core info, auto-loaded by Claude Code.
+- `LEARNINGS.md` — lessons learned (5 CRITICAL + 18 HIGH + 36 MEDIUM findings + 26 anti-patterns + 78 skills + 14 OSINT refs + 12 H100 chains).
+- `decisions.md` — architectural decision log.
+- `docs/COMPANY.md` — 11+ lanes × 19 agents × 21+ directions × tier table.
+- `tools/second_brain_validator.py` — validator with `validate_all() -> dict` and 4+ tests.
+- `scripts/ci_anti_patterns.sh` — AP-XP-9 (no auto-install of community skills) + AP-XP-10 (second-brain files present).
+- `tests/test_phase5_documentation.py` — 20+ integration tests covering every new doc, every cross-reference, every convention.
+
+### Verification
+
+All three gates pass:
+- `pytest tests/test_phase5_documentation.py -v` — 20+ tests, 0 failures.
+- `python3 tools/second_brain_validator.py` — `ok: true`.
+- `bash scripts/ci_anti_patterns.sh` — `all gates passed`.

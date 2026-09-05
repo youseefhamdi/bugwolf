@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: mobile_webview_js_bridge_v1
+bug_class: mobile
+category: mobile
+severity: high
+title: "WebView JavaScript Bridge RCE"
+description: |
+  The Android WebView exposes a `@JavascriptInterface` method to all loaded pages. The attacker loads a controlled HTML page that invokes the bridge to invoke arbitrary Java methods exposed via reflection.
+detection:
+  signature: "addJavascriptInterface|@JavascriptInterface"
+  method: POST
+  endpoint: "/"
+remediation: |
+  Avoid addJavascriptInterface on API levels below 17, restrict exposed methods to a small allow-list, and validate the origin of every call.
+references:
+  - "https://owasp.org/mobile/"
+  - "https://portswigger.net/web-security/mobile"
+bounty_range: "$3K — $20K"
+h100_proven: false

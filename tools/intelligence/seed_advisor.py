@@ -33,8 +33,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import re
 import sys
+
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +64,7 @@ except ImportError:  # direct script execution
     from tools.core.signal_bus import SignalBus, publish_or_warn
 
 SCHEMA = "bugwolf/seed-advisor/v1"
+LOG = logging.getLogger(__name__)
 
 # Deterministic proposal families per research mode.  Each entry:
 #   (approach, surface, priority_hint, rationale)
@@ -296,6 +299,7 @@ def main() -> int:
         raw = json.loads(Path(args.units).read_text())
     except (OSError, json.JSONDecodeError) as exc:
         print(json.dumps({"error": f"cannot read units: {exc}"}))
+        LOG.error("seed_advisor.read_units_failed: %s", exc)
         return 2
     units = raw.get("units") if isinstance(raw, dict) else raw
     if not isinstance(units, list):
@@ -326,9 +330,13 @@ def main() -> int:
 
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        LOG.info("seed_advisor.report target=%s proposals=%d",
+                 args.target, len(report.proposals))
     else:
         print(f"[+] {args.target}: {len(report.proposals)} proposals for "
               f"{len(units)} unit(s) -> {out}")
+        LOG.info("seed_advisor.summary target=%s proposals=%d units=%d out=%s",
+                 args.target, len(report.proposals), len(units), out)
     return 0
 
 

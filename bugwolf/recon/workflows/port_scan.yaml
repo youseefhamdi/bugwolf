@@ -1,0 +1,33 @@
+schema: bugwolf-recon-workflow-v1
+name: port_scan
+description: |
+  Port scanning — fast TCP probe + full Nmap follow-up.  Active.
+phases:
+  - order: 1
+    name: fast_tcp_probe
+    tools: [naabu, masscan, rustscan]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: active
+  - order: 2
+    name: service_version_detection
+    tools: [nmap]
+    budget:
+      max_requests: 100
+      max_seconds: 1800
+    scope_verb: active
+  - order: 3
+    name: udp_top_ports
+    tools: [nmap]
+    budget:
+      max_requests: 50
+      max_seconds: 1800
+    scope_verb: active
+  - order: 4
+    name: http_probe
+    tools: [httpx]
+    budget:
+      max_requests: 200
+      max_seconds: 1200
+    scope_verb: active

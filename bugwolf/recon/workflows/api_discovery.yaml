@@ -1,0 +1,41 @@
+schema: bugwolf-recon-workflow-v1
+name: api_discovery
+description: |
+  API surface discovery — REST + GraphQL + WebSocket endpoints via
+  crawl, JS analysis, and direct probes.
+phases:
+  - order: 1
+    name: passive_endpoint_harvest
+    tools: [wayback, github_search]
+    budget:
+      max_requests: 100
+      max_seconds: 600
+    scope_verb: passive
+  - order: 2
+    name: active_endpoint_crawl
+    tools: [katana, gospider]
+    budget:
+      max_requests: 500
+      max_seconds: 1800
+    scope_verb: active
+  - order: 3
+    name: openapi_swagger_probe
+    tools: [httpx]
+    budget:
+      max_requests: 100
+      max_seconds: 600
+    scope_verb: active
+  - order: 4
+    name: graphql_introspect
+    tools: [graphql-introspector]
+    budget:
+      max_requests: 25
+      max_seconds: 300
+    scope_verb: active
+  - order: 5
+    name: endpoint_parameter_mining
+    tools: [paramspider, arjun]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: active

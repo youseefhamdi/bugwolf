@@ -1,0 +1,26 @@
+schema: bugwolf-methodology-chain-v1
+id: 02_ssrf_to_rce
+title: "SSRF → IMDS → Cloud Credential Theft → RCE"
+bounty: "$50K H100"
+prerequisites:
+  - id: ssrf_any
+  - id: imds_v1_enabled
+  - id: iam_role_with_cli
+steps:
+  - order: 1
+    description: "Find SSRF sink accepting http(s) URLs (proxy, fetch, image-renderer)"
+  - order: 2
+    description: "Probe IMDSv1 endpoint at 169.254.169.254 — confirm egress to link-local"
+  - order: 3
+    description: "Read /latest/meta-data/iam/security-credentials/ for role name"
+  - order: 4
+    description: "Retrieve temporary AccessKeyId/SecretAccessKey/Token"
+  - order: 5
+    description: "Use creds to call ec2 describe-instances / s3 list / lambda invoke"
+  - order: 6
+    description: "Pivot via Lambda runtime or SSM session → host RCE"
+final_severity: critical
+references:
+  - "Capital One breach post-mortem (2019)"
+  - "HackerOne Report #341876 — SSRF to AWS IMDS"
+  - "AWS IMDSv2 docs"

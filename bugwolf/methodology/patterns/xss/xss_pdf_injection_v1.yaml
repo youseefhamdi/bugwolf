@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: xss_pdf_injection_v1
+bug_class: xss
+category: xss
+severity: high
+title: "XSS in PDF Generator via Title Field"
+description: |
+  The application's PDF report generator concatenates user input into HTML before rendering. The injected payload survives into the PDF preview, which is then rendered in the same origin when an admin opens the report. The XSS executes in the admin's session.
+detection:
+  signature: "<script[^>]*>|onerror\\s*=|javascript:"
+  method: POST
+  endpoint: "/api/reports/preview"
+remediation: |
+  HTML-escape all dynamic values, render PDFs through a sandboxed iframe, and require a strict Content-Security-Policy on the report viewer.
+references:
+  - "https://owasp.org/xss/"
+  - "https://portswigger.net/web-security/xss"
+bounty_range: "$2K — $8K"
+h100_proven: false

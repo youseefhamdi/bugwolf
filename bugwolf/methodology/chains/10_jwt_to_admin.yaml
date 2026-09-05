@@ -1,0 +1,24 @@
+schema: bugwolf-methodology-chain-v1
+id: 10_jwt_to_admin
+title: "JWT Algorithm Confusion → Admin Forgery"
+bounty: "$30K H100"
+prerequisites:
+  - id: jwt_alg_none_accept
+  - id: weak_hmac_secret
+  - id: public_key_disclosure
+steps:
+  - order: 1
+    description: "Capture issued JWT and decode header / payload"
+  - order: 2
+    description: "Test alg=none / alg=NoNe — many libs accept unsigned tokens"
+  - order: 3
+    description: "If RS256, swap to HS256 and sign with the public key as HMAC secret"
+  - order: 4
+    description: "Promote role claim to 'admin' or mutate scope to internal group"
+  - order: 5
+    description: "Replay forged token against admin endpoints — verify access"
+final_severity: critical
+references:
+  - "Auth0 JWT algorithm confusion research"
+  - "HackerOne Report #125JrF — auth0-jwt"
+  - "PortSwigger JWT cheatsheet"

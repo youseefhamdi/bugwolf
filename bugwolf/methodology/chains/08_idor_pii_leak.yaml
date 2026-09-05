@@ -1,0 +1,24 @@
+schema: bugwolf-methodology-chain-v1
+id: 08_idor_pii_leak
+title: "IDOR → Mass PII Exfiltration"
+bounty: "$20K H100"
+prerequisites:
+  - id: predictable_idor
+  - id: missing_rate_limits
+  - id: pii_in_response
+steps:
+  - order: 1
+    description: "Find endpoints returning object IDs in URL or body"
+  - order: 2
+    description: "Swap ID with parallel account — confirm cross-tenant access"
+  - order: 3
+    description: "Enumerate sequential / UUIDv1 range to find neighbours"
+  - order: 4
+    description: "Loop through range with rate-limit-aware throttling"
+  - order: 5
+    description: "Aggregate PII (email, phone, address, token) into local DB"
+final_severity: high
+references:
+  - "OWASP IDOR cheatsheet"
+  - "HackerOne Report #661344 — Facebook IDOR"
+  - "HackerOne Report #840476"

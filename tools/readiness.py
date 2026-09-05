@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
@@ -21,6 +22,7 @@ except ImportError:  # direct script execution
     from runtime_paths import CODE_ROOT, workspace_root
 
 SCHEMA = "bugwolf-readiness/v1"
+LOG = logging.getLogger(__name__)
 VALID_STATUSES = {"supported", "partial", "planned", "unsupported"}
 VALID_LEVELS = {
     "L0-experimental-planner",
@@ -452,14 +454,20 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         }
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
+        LOG.debug("readiness.json keys=%s",
+                  sorted(report.keys()))
     else:
         state = "VALID" if report["valid"] else "INVALID"
         print(f"BugWolf readiness manifest: {state}")
+        LOG.info("readiness.state=%s level=%s",
+                 state, report.get("readiness_level", "unknown"))
         print(f"  level: {report.get('readiness_level', 'unknown')}")
         for error in report.get("errors", []):
             print(f"  ERROR: {error}")
+            LOG.warning("readiness.error: %s", error)
         for warning in report.get("warnings", []):
             print(f"  WARNING: {warning}")
+            LOG.warning("readiness.warning: %s", warning)
     return 0 if report["valid"] else 2
 
 

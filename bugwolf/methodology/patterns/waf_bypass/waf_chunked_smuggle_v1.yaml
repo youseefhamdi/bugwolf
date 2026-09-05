@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: waf_chunked_smuggle_v1
+bug_class: waf_bypass
+category: waf_bypass
+severity: high
+title: "WAF Bypass via Transfer-Encoding Chunked"
+description: |
+  The WAF terminates the request at the Content-Length boundary but the upstream server honors Transfer-Encoding. The attacker smuggles a second request inside the chunked body, bypassing WAF inspection.
+detection:
+  signature: "Transfer-Encoding:\\s*chunked|0\\r\\n\\r\\n"
+  method: POST
+  endpoint: "/"
+remediation: |
+  Reject requests that contain both Content-Length and Transfer-Encoding. Normalize and re-sign requests at the ingress proxy.
+references:
+  - "https://owasp.org/waf_bypass/"
+  - "https://portswigger.net/web-security/waf_bypass"
+bounty_range: "$2K — $10K"
+h100_proven: true

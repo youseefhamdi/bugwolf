@@ -788,11 +788,19 @@ def classify_response(body: str, probe_label: str, bug_class: str,
                     break
             if classified_bug:
                 break
-        # Status-code based detection: 500 after SQLi probe = strong signal
+        # Phase 0 M-4: 5xx alone is not enough — require a SQL error signature
+        # in the response body (the SQLI_ERROR_SIGNATURES loop above already
+        # checked them; this is a defense-in-depth second pass).
         if not classified_bug and status >= 500 and baseline_status < 400:
-            classified_bug = "sqli"
-            classified_sev = "high"
-            evidence = f"status {baseline_status}→{status} on SQLi injection"
+            for db, sigs in SQLI_ERROR_SIGNATURES.items():
+                for sig in sigs:
+                    if sig in body_lower:
+                        classified_bug = "sqli"
+                        classified_sev = "high" if db != "generic" else "medium"
+                        evidence = f"{db}: {sig} (with status delta)"
+                        break
+                if classified_bug:
+                    break
 
     elif bug_class == "xss-reflected":
         for indicator in XSS_REFLECTION_INDICATORS:
@@ -803,17 +811,14 @@ def classify_response(body: str, probe_label: str, bug_class: str,
                 break
 
     elif bug_class == "ssti":
+        # Phase 0 M-4: SSTI requires a body-side template-evaluation signature;
+        # status-only fallback removed (would yield false positives on any 5xx).
         for engine, (payload, expected) in SSTI_PATTERNS.items():
             if expected in body:
                 classified_bug = "ssti"
                 classified_sev = "critical" if engine != "generic" else "high"
                 evidence = f"{engine}: {payload} → {expected}"
                 break
-        # Status-code based: 500 after SSTI probe = strong signal
-        if not classified_bug and status >= 500 and baseline_status < 400:
-            classified_bug = "ssti"
-            classified_sev = "high"
-            evidence = f"status {baseline_status}→{status} on SSTI injection"
 
     elif bug_class == "path-traversal":
         for indicator in PATH_TRAVERSAL_INDICATORS:
@@ -824,17 +829,14 @@ def classify_response(body: str, probe_label: str, bug_class: str,
                 break
 
     elif bug_class == "rce":
+        # Phase 0 M-4: RCE requires a body-side command-output signature;
+        # status-only fallback removed (would yield false positives on any 5xx).
         for indicator in COMMAND_INJECTION_INDICATORS:
             if indicator.lower() in body_lower:
                 classified_bug = "rce"
                 classified_sev = "critical"
                 evidence = f"Command output: {indicator}"
                 break
-        # Status-code based: 500 after cmd injection probe
-        if not classified_bug and status >= 500 and baseline_status < 400:
-            classified_bug = "rce"
-            classified_sev = "medium"
-            evidence = f"status {baseline_status}→{status} on cmd injection"
 
     elif bug_class == "open-redirect":
         if "evil.com" in body or "Location: https://evil.com" in body:
@@ -905,7 +907,8 @@ def run_active_injection(target_host: str, session: HuntSession,
     silently dropped — they produce a deterministic follow-up experiment, and
     unresolved ones are surfaced as `[unknown]` leads with full provenance.
     """
-    # UNCENSORED: always allow active injection
+    # Phase 0 C-2: scope-filtered candidates below; controller still gates
+    # active/destructive verbs at execution time.
     results = []
     base = target_host.rstrip("/")
     urls = load_recon_urls(base.replace("https://", "").replace("http://", "").split("/")[0])
@@ -913,15 +916,49 @@ def run_active_injection(target_host: str, session: HuntSession,
     if not urls:
         return results
 
-    # UNCENSORED: all URLs accepted for injection, no scope filtering
+    # Phase 0 C-2: scope-filtered candidate set.
+    # Build in-scope host set from the operator-supplied scope dict (if any).
+    in_scope_hosts = set()
+    if isinstance(scope, dict):
+        for key in ("in_scope_domains", "in_scope_wildcards"):
+            for host in (scope.get(key) or []):
+                if isinstance(host, str) and host:
+                    in_scope_hosts.add(host.lower().rstrip("."))
+        # Also honour the bound target on the scope contract, if present.
+        target_host_name = (scope.get("target") or "").lower().rstrip(".")
+        if target_host_name:
+            in_scope_hosts.add(target_host_name)
+    # Phase 0 C-2: fail-closed when the scope dict does not name any hosts.
+    if not in_scope_hosts:
+        return results
+
     candidates = []
+    dropped = 0
     for url in urls:
+        # Phase 0 C-2: refuse to probe any URL whose hostname is not declared
+        # in the operator scope. This blocks accidental injection against
+        # third-party hosts discovered during recon.
+        try:
+            parsed_host = urllib.parse.urlparse(url).hostname or ""
+        except Exception:
+            parsed_host = ""
+        parsed_host = parsed_host.lower().rstrip(".")
+        if in_scope_hosts and parsed_host and parsed_host not in in_scope_hosts:
+            dropped += 1
+            continue
         if "?" in url:
             candidates.append(url)
         elif any(f"/{p}/" in url or url.endswith(f"/{p}") for p in INJECTABLE_PARAMS):
             # Endpoints like /users/123 or /product/abc — inject test values
             candidates.append(f"{url}?id=test")
     candidates = candidates[:max_urls]
+    if dropped:
+        results.append(HuntResult(
+            endpoint=target_host, method="GET", status_a=0,
+            notes=f"[info] scope-filtered: dropped {dropped} URLs out of scope"))
+    # Phase 0 C-2: no in-scope candidates ⇒ no probes (fail-closed).
+    if not candidates:
+        return results
 
     for url in candidates:
         for bug_class, probe_tpl, method, label in INJECTION_PROBES:
@@ -1104,27 +1141,41 @@ def main():
         print("[!] No target specified. Use --target or --auth-file.")
         sys.exit(1)
 
-    # UNCENSORED: no auth file target matching required
-    if session_a.target and session_b and session_b.target:
-        pass  # dual session mode, both targets allowed
+    # Phase 0 C-1: fail-closed default. Require an explicit --scope-file with
+    # at least one entry; otherwise refuse to start the hunt.
+    scope_entries: List[str] = []
+    if args.scope_file:
+        try:
+            from tools.runtime.scope import load_scope_file as _load_scope
+            scope_entries = _load_scope(args.scope_file) or []
+        except Exception:
+            scope_entries = []
+    if not args.scope_file or not scope_entries:
+        print("[!] scope file required: --scope-file", file=sys.stderr)
+        sys.exit(2)
+    scope = {"authorized": True, "in_scope_domains": list(scope_entries),
+             "target": target}
 
-    # UNCENSORED: always-authorized scope
-    scope = {"authorized": True, "in_scope_domains": ["*"]}
-
-    # UNCENSORED: no workflow stage requirement — hunt anytime
+    # Phase 0 C-1: destructive verbs require an explicit scope entry whose
+    # verb list allows it AND --confirm-destructive on the CLI.  Otherwise
+    # the controller defaults to read-only (PASSIVE, READ) probes.
+    confirm_destructive = bool(args.confirm_destructive)
+    allowed_actions = {ActionClass.PASSIVE, ActionClass.READ}
+    if confirm_destructive:
+        allowed_actions.update({ActionClass.ACTIVE, ActionClass.STATE_CHANGE,
+                                ActionClass.DESTRUCTIVE})
 
     global ACTIVE_CONTROLLER
     ACTIVE_CONTROLLER = ActiveExecutionController(ExecutionPolicy(
         target=target,
-        scope_file=args.scope_file or "",
-        allow_active=True,
+        scope_file=args.scope_file,
+        allow_active=confirm_destructive,
         confirm_active=True,
         confirm_state_change=True,
-        confirm_destructive=True,
-        allowed_actions={ActionClass.PASSIVE, ActionClass.READ, ActionClass.ACTIVE,
-                         ActionClass.STATE_CHANGE, ActionClass.DESTRUCTIVE},
-        max_requests=999999,
-        min_interval_seconds=0.0,
+        confirm_destructive=confirm_destructive,
+        allowed_actions=allowed_actions,
+        max_requests=args.max_requests,
+        min_interval_seconds=args.min_interval,
     ))
 
     print(f"[*] BugWolf Hunt Engine v1.0.0")
@@ -1163,7 +1214,9 @@ def main():
         if not host.startswith("http"):
             host = f"https://{host}" if ":443" in host else f"http://{host}"
 
-        # UNCENSORED: all hosts in scope, always
+        # Phase 0 C-2: hosts are now gated through the scope contract (see
+        # check_url() below). The default scope file is required; out-of-scope
+        # hosts are refused by the execution controller.
 
         if not args.idor_only:
             qc = run_quick_checks(host, session_a, rotator=rotator)
@@ -1496,3 +1549,29 @@ def _map_class_to_chains(bug_class: str) -> List[str]:
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.4 governance shim — 7-Question Gate applied to a list.
+# ---------------------------------------------------------------------------
+
+def apply_question_gate(findings, *, gate=None):
+    """Phase 1.4 shim — apply the 7-Question Gate to every finding.
+
+    Returns a list of :class:`GateEvaluation` results, one per input.
+    Dataclass findings are converted via :func:`dataclasses.asdict`.
+    The gate NEVER raises; failures yield REJECTED verdicts.
+    """
+    from bugwolf.governance.question_gate import QuestionGate
+    from dataclasses import asdict
+    g = gate or QuestionGate()
+    out = []
+    for f in findings or []:
+        if hasattr(f, "__dataclass_fields__"):
+            payload = asdict(f)
+        elif isinstance(f, dict):
+            payload = f
+        else:
+            payload = {"_raw": f}
+        out.append(g.evaluate(payload))
+    return out

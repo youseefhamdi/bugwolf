@@ -33,6 +33,12 @@ from tools.runtime.lead_protocol import (
 from tools.runtime.scheduler import (
     Scheduler, TASK_PENDING, TASK_ACTIVE, TASK_DONE, TASK_BLOCKED,
 )
+try:
+    from tools.core.medium_safety import path_open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def path_open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
 
 # Mode names (plan section 6).
 MODE_RESEARCH = "research"
@@ -123,7 +129,7 @@ class ModeEngine:
     def _log(self, action: str, payload: Dict[str, Any]) -> None:
         line = {"ts": _now_iso(), "mode": self.active_mode,
                 "action": action, **payload}
-        with self.journal_path.open("a") as fh:
+        with path_open_text(self.journal_path, "a") as fh:
             fh.write(json.dumps(line, default=str) + "\n")
         self._events.append(line)
 

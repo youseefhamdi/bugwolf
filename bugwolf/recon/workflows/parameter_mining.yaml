@@ -1,0 +1,34 @@
+schema: bugwolf-recon-workflow-v1
+name: parameter_mining
+description: |
+  Parameter mining — find hidden / unused query / body parameters via
+  wordlists and crawl diffing.
+phases:
+  - order: 1
+    name: crawl_with_params
+    tools: [katana, paramspider]
+    budget:
+      max_requests: 500
+      max_seconds: 1800
+    scope_verb: active
+  - order: 2
+    name: paramspider
+    tools: [paramspider]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: active
+  - order: 3
+    name: arjun_discovery
+    tools: [arjun]
+    budget:
+      max_requests: 100
+      max_seconds: 1800
+    scope_verb: active
+  - order: 4
+    name: reflect_xss_diff
+    tools: [nuclei]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: active

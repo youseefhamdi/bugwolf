@@ -1,7 +1,7 @@
 {
   "name": "bugwolf",
   "displayName": "BugWolf Agent Orchestrator",
-  "version": "1.24.0",
+  "version": "1.24.1",
   "description": "Understanding-driven offensive-security agent teams: 39 specialized subagents, durable task-graph orchestration, deny-by-default scope gate, subprocess sandbox, OAST attribution, F0.5 evidence-gated reporting.",
   "author": {
     "name": "Yousef Hamdi",

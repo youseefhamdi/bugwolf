@@ -1,0 +1,126 @@
+schema: bugwolf-playbook-v1
+name: deserialize
+description: |
+  Insecure deserialization probes for Python (pickle), Java (snakeyaml /
+  XStream / ysoserial patterns), Node (node-serialize), PHP (phar / PHP
+  object injection), and Ruby (YAML.load). Every payload uses bounded
+  oracles (sleep markers, marker strings) and never executes arbitrary
+  command payloads; sinks report the gadget class so the operator can
+  decide whether to escalate.
+preconditions:
+  target_is_reachable: true
+  scope_allows_active: true
+  serialization_endpoint_identified: true
+  deserialization_oracle_defined: true
+payload_catalog:
+  - id: python_pickle_marker
+    request:
+      method: POST
+      path: /api/session
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [python_pickle]
+    requires_scope_verb: active
+  - id: java_xstream_marker
+    request:
+      method: POST
+      path: /api/xmlrpc
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [java_xstream]
+    requires_scope_verb: active
+  - id: java_snakeyaml_load
+    request:
+      method: POST
+      path: /api/yaml
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [java_snakeyaml]
+    requires_scope_verb: active
+  - id: node_serialize_marker
+    request:
+      method: POST
+      path: /api/state
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [node_serialize]
+    requires_scope_verb: active
+  - id: php_phar_metadata
+    request:
+      method: POST
+      path: /api/upload
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [php_phar]
+    requires_scope_verb: active
+  - id: php_object_injection_chain
+    request:
+      method: POST
+      path: /api/cookie
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [php_object_injection]
+    requires_scope_verb: active
+  - id: ruby_yaml_load
+    request:
+      method: POST
+      path: /api/parse
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [ruby_yaml_load]
+    requires_scope_verb: active
+  - id: net_javaobject
+    request:
+      method: POST
+      path: /api/soap
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [java_soap_deserialize]
+    requires_scope_verb: active
+  - id: dotnet_binaryformatter_marker
+    request:
+      method: POST
+      path: /api/binary
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [dotnet_binaryformatter]
+    requires_scope_verb: active
+  - id: dotnet_json_net_typebinding
+    request:
+      method: POST
+      path: /api/json
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [dotnet_jsonnet_typebinding]
+    requires_scope_verb: active
+  - id: bounded_oracle_timing
+    request:
+      method: POST
+      path: /api/sleep
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [deserialization_timing_oracle]
+    requires_scope_verb: active
+evidence_collection:
+  - type: response_capture
+    target: response
+  - type: timing_measurement
+    target: round_trip
+    config:
+      marker: bugwolf_sleep_oracle
+  - type: log_artifact
+    target: server_log
+post_conditions:
+  finding_emitted: true
+  evidence_block_recorded: true
+  gadget_class_reported: true
+budget:
+  max_requests: 40
+  max_wall_clock: 180
+  min_interval_ms: 100
+governance:
+  requires_approval: true
+  scope_class: active
+  require_reproducible_evidence: true
+  destructive_allowed: false
+  notes: "Bounded oracles only; report gadget class, do not escalate."

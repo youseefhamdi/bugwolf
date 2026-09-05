@@ -53,6 +53,13 @@ except ImportError:  # direct script execution
     from runtime_paths import workspace_root
     from evidence import redact
 
+try:
+    from tools.core.medium_safety import open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
+
 ROOT = workspace_root()
 
 SCHEMA_VERSION = "observation-oracle-v1"
@@ -784,7 +791,7 @@ def _url_injected(loc: str, url: str) -> bool:
 
 def atomic_append(path: Path, line: str):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a") as f:
+    with open_text(path, "a") as f:
         if fcntl:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         f.write(line.rstrip("\n") + "\n")

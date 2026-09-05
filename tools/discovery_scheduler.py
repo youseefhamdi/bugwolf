@@ -36,6 +36,13 @@ except ImportError:  # direct script execution
     from surface_model import SurfaceModel, load_surface
 
 try:
+    from tools.core.medium_safety import open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
+
+try:
     from tools.leads import create_lead
 except ImportError:
     create_lead = None
@@ -362,7 +369,7 @@ def main() -> None:
 
     (out_dir / "surface-model.json").write_text(model.to_json() + "\n")
     (out_dir / "coverage.json").write_text(json.dumps(coverage.to_dict(), indent=2) + "\n")
-    with open(out_dir / "plan.jsonl", "w") as stream:
+    with open_text(out_dir / "plan.jsonl", "w") as stream:
         for m in allocation:
             stream.write(json.dumps(m.to_dict(), default=str) + "\n")
 
@@ -372,7 +379,7 @@ def main() -> None:
                     and m.kind in ("injection", "blind_sqli")]
         space = PayloadSpace.fit(payloads) if payloads else None
         diversity = nearest_neighbor_score(allocation, space=space)
-        with open(out_dir / "art-report.json", "w") as stream:
+        with open_text(out_dir / "art-report.json", "w") as stream:
             json.dump({
                 "schema": "bugwolf-art-report-v2",
                 "budget": args.budget,

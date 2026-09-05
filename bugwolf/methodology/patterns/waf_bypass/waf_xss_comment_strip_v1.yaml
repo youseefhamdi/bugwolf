@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: waf_xss_comment_strip_v1
+bug_class: waf_bypass
+category: waf_bypass
+severity: high
+title: "WAF Bypass via HTML Comment Insertion"
+description: |
+  The WAF strips the literal string `script` from input but the attacker inserts HTML comments between the characters. After comment removal, the result forms a valid `<script>` tag that the browser executes.
+detection:
+  signature: "<!--.*-->|s<!--[^>]*-->cript"
+  method: GET
+  endpoint: "/search?q="
+remediation: |
+  Parse and normalize the input on the server before any HTML encoding. Apply WAF rules that recognize obfuscation patterns, not just literal keywords.
+references:
+  - "https://owasp.org/waf_bypass/"
+  - "https://portswigger.net/web-security/waf_bypass"
+bounty_range: "$1K — $5K"
+h100_proven: true

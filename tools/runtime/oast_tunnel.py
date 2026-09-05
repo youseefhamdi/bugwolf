@@ -33,6 +33,12 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 
+try:
+    from tools.core.medium_safety import justified_sleep
+except Exception:  # pragma: no cover - tools.* not always importable
+    def justified_sleep(seconds, reason):  # type: ignore[no-redef]
+        time.sleep(seconds)
+
 SCHEMA = "bugwolf-oast-tunnel/v1"
 
 DEFAULT_TUNNEL_HOST = "serveo.net"
@@ -94,7 +100,7 @@ class OastTunnel:
         os.close(slave)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            time.sleep(0.3)
+            justified_sleep(0.3, "poll ssh tunnel startup banner")
             if self._proc.poll() is not None:
                 return False, (f"tunnel ssh exited rc={self._proc.returncode}: "
                                f"{self._stderr_tail[:200]}")
@@ -206,7 +212,7 @@ def selftest(public_check_timeout: float = 25.0) -> tuple:
             except Exception as exc:  # noqa: BLE001 - HTTP error is still a hit
                 if "HTTP" not in type(exc).__name__:
                     return False, f"public fetch failed: {exc}"
-            time.sleep(1.0)
+            justified_sleep(1.0, "wait for oast callback after selftest fetch")
             hits = registry.interactions(lead_id="selftest-lead")
             if not hits:
                 return False, "public fetch did not attribute to the lead"

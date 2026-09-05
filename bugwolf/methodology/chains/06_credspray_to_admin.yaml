@@ -1,0 +1,24 @@
+schema: bugwolf-methodology-chain-v1
+id: 06_credspray_to_admin
+title: "Credential Spraying → Admin Console Compromise"
+bounty: "$35K H100"
+prerequisites:
+  - id: mfa_not_enforced
+  - id: weak_password_policy
+  - id: admin_console_exposed
+steps:
+  - order: 1
+    description: "Enumerate corporate email format and SSO portal"
+  - order: 2
+    description: "Build candidate list (org chart + LinkedIn + breach corpus)"
+  - order: 3
+    description: "Spray 1 password per account across thousands of users (rate-aware)"
+  - order: 4
+    description: "Capture successful auth → harvest SSO session cookie"
+  - order: 5
+    description: "Replay session in admin console → escalate / extract data"
+final_severity: critical
+references:
+  - "MITRE ATT&CK T1110.003"
+  - "HackerOne Report #814878 — Citrix password spray"
+  - "Microsoft 'Password Spray' primer"

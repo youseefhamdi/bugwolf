@@ -1,0 +1,25 @@
+schema: bugwolf-methodology-chain-v1
+id: 04_cache_poison_xss
+title: "Web Cache Poisoning → Stored XSS"
+bounty: "$20K H100"
+prerequisites:
+  - id: cache_key_normalization_gap
+  - id: reflected_xss
+steps:
+  - order: 1
+    description: "Identify CDN/proxy with key that omits a request header (X-Forwarded-Host, X-Original-URL)"
+  - order: 2
+    description: "Find endpoint whose response reflects unkeyed header into HTML"
+  - order: 3
+    description: "Send one request with attacker header + benign path — confirm 200"
+  - order: 4
+    description: "Send poisoned request containing XSS payload in the unkeyed header"
+  - order: 5
+    description: "Send normal follow-up request — confirm poisoned cache returned"
+  - order: 6
+    description: "Send victim to cached URL → stored XSS fires for all users"
+final_severity: high
+references:
+  - "PortSwigger Web Cache Poisoning research — James Kettle"
+  - "HackerOne Report #573101"
+  - "HackerOne Report #1100205"

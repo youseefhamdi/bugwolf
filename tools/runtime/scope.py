@@ -54,6 +54,10 @@ class ScopeViolation(PermissionError):
             f"(target-only + operator scope file); url={url!r}")
 
 
+class ScopeContractError(Exception):
+    """Raised when a scope-contract operation targets the wrong mission."""
+
+
 @dataclass
 class ScopeGate:
     """Deny-by-default outbound authorization for one mission process."""
@@ -257,8 +261,25 @@ def write_scope_contract(mission_id: str, *, root=None) -> dict:
     Called by the mission runner right after ``bind_target``: from this
     moment the PreToolUse hook denies out-of-scope/excluded hosts for
     every Bash/WebFetch — even ones the model improvises outside BugWolf's
-    tools.  Returns the contract that was written (audit-friendly).
+    tools.  A workspace may have only one active mission contract: replacing
+    another mission's contract would create a time-of-check/time-of-use
+    scope split between the engine and the hook.
     """
+    mission_id = str(mission_id or "").strip()
+    if not mission_id:
+        raise ValueError("scope contract requires a mission_id")
+    path = _contract_path(root)
+    if path.is_file():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("refusing to replace unreadable scope contract") from exc
+        if (isinstance(existing, dict)
+                and existing.get("schema") == _CONTRACT_SCHEMA
+                and str(existing.get("mission_id") or "") not in ("", mission_id)):
+            raise RuntimeError(
+                "scope contract already belongs to another active mission: "
+                + str(existing.get("mission_id")))
     contract = {
         "schema": _CONTRACT_SCHEMA,
         "mission_id": mission_id,
@@ -269,18 +290,72 @@ def write_scope_contract(mission_id: str, *, root=None) -> dict:
         "written_at": __import__("datetime").datetime.now(
             __import__("datetime").timezone.utc).isoformat(),
     }
-    path = _contract_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(contract, indent=2), encoding="utf-8")
+    with tmp.open("w", encoding="utf-8") as stream:
+        stream.write(json.dumps(contract, indent=2))
+        stream.flush()
+        os.fsync(stream.fileno())
     tmp.replace(path)
     return contract
 
 
-def clear_scope_contract(*, root=None) -> bool:
-    """Remove the harness contract (mission closed) — the hook goes inert."""
+def clear_scope_contract(*, root=None, mission_id: str = "") -> bool:
+    """Remove the harness contract (mission closed) — the hook goes inert.
+
+    When ``mission_id`` is supplied, do not let one mission tear down a
+    different mission's active contract.  The no-argument form remains an
+    explicit operator/test escape hatch for backwards compatibility.
+    """
     try:
-        _contract_path(root).unlink(missing_ok=True)
+        path = _contract_path(root)
+        if mission_id and path.is_file():
+            current = json.loads(path.read_text(encoding="utf-8"))
+            if (isinstance(current, dict)
+                    and str(current.get("mission_id") or "") not in
+                    ("", str(mission_id))):
+                return False
+        path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def clear_scope_contract_strict(mission_id: str, *, root=None) -> bool:
+    """Strict mission-aware clear (Phase 0 H-3): raises on mission mismatch.
+
+    The active contract's ``mission_id`` MUST equal ``mission_id`` — otherwise
+    one mission cannot tear down a different mission's hook authority.
+    Callers without an active contract (file absent) clear it successfully.
+    Production callers should prefer this over :func:`clear_scope_contract`.
+    """
+    if not mission_id:
+        raise ValueError("mission_id is required to clear the scope contract")
+    try:
+        path = _contract_path(root)
+        if path.is_file():
+            current = json.loads(path.read_text(encoding="utf-8"))
+            if (isinstance(current, dict)
+                    and str(current.get("mission_id") or "") != str(mission_id)):
+                raise ScopeContractError(
+                    f"scope contract belongs to mission "
+                    f"{current.get('mission_id')!r}; refusing to clear with "
+                    f"mission_id={mission_id!r}")
+        path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def force_clear_scope_contract(*, root=None) -> bool:
+    """Operator escape hatch: clear the contract regardless of mission.
+
+    The non-strict variant preserved for emergency teardown and lab-profile
+    operations. Production callers should use ``clear_scope_contract_strict``.
+    """
+    try:
+        path = _contract_path(root)
+        path.unlink(missing_ok=True)
         return True
     except OSError:
         return False
@@ -308,7 +383,18 @@ def load_scope_file(path: str) -> list:
 
 
 def _host_of(url: str) -> str:
-    """Extract the lowercase hostname from a URL or bare host string."""
+    """Extract the lowercase hostname from a URL or bare host string.
+
+    v1.24.1+: defends against:
+      - decimal-IP (``http://2130706433/`` = 127.0.0.1)
+      - octal-IP   (``http://0177.0.0.1/``)
+      - hex-IP     (``http://0x7f000001/``)
+      - mixed-encoding
+      - IDN/Unicode hostnames (``http://xn--...`` or raw Unicode)
+      - URL-embedded userinfo (``http://attacker@target/``)
+    All such encodings are normalized to their canonical form before
+    any scope comparison, so the gate cannot be bypassed by encoding tricks.
+    """
     value = str(url).strip()
     if "://" not in value:
         value = "//" + value
@@ -316,18 +402,107 @@ def _host_of(url: str) -> str:
         host = (urlparse(value).hostname or "").lower().rstrip(".")
     except ValueError:
         return ""
-    # Defend the IDN/decimal-IP confusion surface: keep the literal host,
-    # but resolve bare IPs to their canonical form.
     return _canonical(host)
 
 
+def _decode_alt_ip(host: str) -> Optional[str]:
+    """Decode decimal / octal / hex / mixed-encoding IP literals to IPv4.
+
+    Python's ``ipaddress.ip_address`` accepts dotted-quad only, so a payload
+    like ``http://2130706433/`` (= 127.0.0.1) passes through unchanged. This
+    helper handles the legacy inet_aton encoding.
+
+    Returns the canonical dotted-quad, or None if the host is not a numeric IP.
+    """
+    import re as _re
+    # Strip IPv6 brackets already handled by urlparse.  Quick reject for
+    # anything that contains a letter (other than hex 0-9a-f).
+    if not _re.fullmatch(r"[0-9a-fA-Fx.]+", host):
+        return None
+    parts = host.split(".")
+    if len(parts) > 4:
+        return None
+    try:
+        if len(parts) == 1:
+            # Single 32-bit number (decimal, octal with 0o, or hex with 0x).
+            raw = parts[0]
+            if raw.startswith("0x") or raw.startswith("0X"):
+                n = int(raw, 16)
+            elif raw.startswith("0o") or raw.startswith("0O"):
+                n = int(raw, 8)
+            elif raw.startswith("0") and len(raw) > 1 and raw[1:].isdigit():
+                n = int(raw, 8)  # legacy octal
+            else:
+                n = int(raw, 10)
+            if not 0 <= n <= 0xFFFFFFFF:
+                return None
+            return str(ipaddress.IPv4Address(n))
+        # Multi-part: each part can be decimal, hex (0x), or octal (0).
+        octets = []
+        for p in parts:
+            if not p:
+                return None
+            if p.startswith("0x") or p.startswith("0X"):
+                v = int(p, 16)
+            elif p.startswith("0") and len(p) > 1 and p[1:].isdigit():
+                v = int(p, 8)
+            else:
+                v = int(p, 10)
+            if not 0 <= v <= 0xFF:
+                return None
+            octets.append(v)
+        if len(octets) < 4:
+            # Last part can be 8/16/24 bits in legacy inet_aton
+            last = octets.pop()
+            for _ in range(4 - len(octets) - 1):
+                octets.append(last & 0xFF)
+                last >>= 8
+            octets.append(last)
+        return ".".join(str(o) for o in octets[:4])
+    except (ValueError, IndexError):
+        return None
+
+
 def _canonical(host: str) -> str:
+    # 1. Numeric IP encodings (decimal / octal / hex / mixed)
+    decoded = _decode_alt_ip(host)
+    if decoded is not None:
+        try:
+            return str(ipaddress.ip_address(decoded))
+        except ValueError:
+            pass
+    # 2. Standard IPv4 / IPv6
     try:
         return str(ipaddress.ip_address(host))
     except ValueError:
-        # Not an IP literal.  Bracketed IPv6 was already stripped by
-        # urlparse's hostname.  Drop a trailing dot fully.
-        return host
+        pass
+    # 3. IDN/punycode normalization.  Bare Unicode hosts (e.g. ``\u0440\u044b\u0431\u0430.com``)
+    #    are converted to their ASCII (xn--) form so the gate can compare
+    #    against operator-declared scope entries.  Already-encoded hosts pass
+    #    through unchanged.
+    if host and ("xn--" not in host):
+        try:
+            labels = host.split(".")
+            normalized = []
+            for label in labels:
+                if not label:
+                    continue
+                if label.startswith("xn--"):
+                    normalized.append(label)
+                else:
+                    try:
+                        # Will raise on all-ASCII labels — that's fine.
+                        normalized.append(label.encode("idna").decode("ascii"))
+                    except (UnicodeError, UnicodeDecodeError):
+                        normalized.append(label)
+            cand = ".".join(normalized)
+            if cand and cand != host:
+                return cand
+        except Exception:  # noqa: BLE001
+            pass
+    # 4. Not an IP literal. Bracketed IPv6 was already stripped by
+    #    urlparse's hostname.  Drop a trailing dot fully.
+    return host
 
 
 def _is_loopback(host: str) -> bool:
@@ -356,3 +531,19 @@ def resolves_inside_scope(host: str) -> bool:
         if not (ip.is_loopback or ip.is_private):
             return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.4 governance binding shim (additive; no existing logic changed)
+# ---------------------------------------------------------------------------
+
+def bind_governance(*, root=None):
+    """Phase 1.4 shim — re-export the new governance scope binding.
+
+    Returns the :class:`bugwolf.governance.scope.GovernanceHandle` wired
+    to the current process scope gate.  Existing callers that import
+    ``tools.runtime.scope.bind_governance`` continue to work; the
+    underlying implementation lives in :mod:`bugwolf.governance.scope`.
+    """
+    from bugwolf.governance.scope import bind_governance as _bind
+    return _bind(root=root)

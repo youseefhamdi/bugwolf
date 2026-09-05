@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: azure_blob_anonymous_v1
+bug_class: cloud
+category: cloud
+severity: high
+title: "Azure Blob Container Anonymous Access"
+description: |
+  An Azure storage container is configured with anonymous blob access enabled. The attacker lists blobs and downloads customer uploads, including documents, images, and PII, without any credential.
+detection:
+  signature: "blob\\.core\\.windows\\.net"
+  method: GET
+  endpoint: "/"
+remediation: |
+  Disable anonymous blob access at the storage account level, audit containers with anonymous access, and require SAS tokens for read operations.
+references:
+  - "https://owasp.org/cloud/"
+  - "https://portswigger.net/web-security/cloud"
+bounty_range: "$3K — $25K"
+h100_proven: true

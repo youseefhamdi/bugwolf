@@ -1,0 +1,108 @@
+schema: bugwolf-playbook-v1
+name: race
+description: |
+  Race condition / TOCTOU detection probes. Same-origin concurrent
+  duplicate-submission, optimistic-locking bypass, and bounded idempotency
+  re-checks. Designed to be run from two cooperating test accounts; never
+  against a third party's records.
+preconditions:
+  target_is_reachable: true
+  scope_allows_active: true
+  two_test_accounts_provisioned: true
+  idempotency_key_strategy_documented: true
+payload_catalog:
+  - id: concurrent_coupon_redeem
+    request:
+      method: POST
+      path: /api/coupons/redeem
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [race_condition, balance_doubling]
+    requires_scope_verb: active
+  - id: concurrent_withdraw
+    request:
+      method: POST
+      path: /api/wallet/withdraw
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [race_condition, balance_drain]
+    requires_scope_verb: active
+  - id: concurrent_role_grant
+    request:
+      method: POST
+      path: /api/admin/users/grant
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [race_condition, privilege_escalation]
+    requires_scope_verb: active
+  - id: concurrent_checkout_replay
+    request:
+      method: POST
+      path: /api/checkout
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [race_condition, duplicate_order]
+    requires_scope_verb: active
+  - id: idempotency_key_omission
+    request:
+      method: POST
+      path: /api/payments
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [idempotency_bypass]
+    requires_scope_verb: active
+  - id: last_writer_wins
+    request:
+      method: PUT
+      path: /api/profile
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [optimistic_locking_bypass]
+    requires_scope_verb: active
+  - id: toctou_on_object_lookup
+    request:
+      method: POST
+      path: /api/transfer
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [toctou_authorization]
+    requires_scope_verb: active
+  - id: bounded_burst_register
+    request:
+      method: POST
+      path: /api/register
+    expected_status: 201
+    expected_body_match: ""
+    sinks: [rate_limit_bypass]
+    requires_scope_verb: active
+  - id: sequential_double_spend
+    request:
+      method: POST
+      path: /api/gift/claim
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [race_condition, sequential_replay]
+    requires_scope_verb: active
+evidence_collection:
+  - type: response_capture
+    target: response
+  - type: timing_measurement
+    target: round_trip
+    config:
+      parallel_probes: 5
+  - type: log_artifact
+    target: server_log
+post_conditions:
+  finding_emitted: true
+  evidence_block_recorded: true
+  replay_window_documented: true
+budget:
+  max_requests: 60
+  max_wall_clock: 180
+  min_interval_ms: 10
+governance:
+  requires_approval: true
+  scope_class: active
+  require_reproducible_evidence: true
+  destructive_allowed: false
+  notes: "Two cooperating test accounts only. No third-party records touched."

@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import re
 import sys
 from collections import deque
@@ -64,6 +65,7 @@ except ImportError:  # pragma: no cover
     from tools.deep_chain import EDGES, TERMINAL
 
 SCHEMA = "bugwolf/chain-graph-ai/v1"
+LOG = logging.getLogger(__name__)
 
 MAX_HOPS = 4
 
@@ -294,6 +296,7 @@ def main() -> int:
         raw = json.loads(Path(args.pool).read_text())
     except (OSError, json.JSONDecodeError) as exc:
         print(json.dumps({"error": f"cannot read pool: {exc}"}))
+        LOG.error("chain_graph_ai.read_pool_failed: %s", exc)
         return 2
     pool = raw.get("pool") if isinstance(raw, dict) else raw
     if not isinstance(pool, list):
@@ -327,8 +330,12 @@ def main() -> int:
 
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        LOG.info("chain_graph_ai.report target=%s proposals=%d",
+                 args.target, len(report.proposals))
     else:
         print(f"[+] {args.target}: {len(report.proposals)} chain proposals -> {out}")
+        LOG.info("chain_graph_ai.summary target=%s proposals=%d out=%s",
+                 args.target, len(report.proposals), out)
     return 0
 
 

@@ -686,12 +686,12 @@ class AgentRegistry:
     def prompt_digest(self, role: str) -> str:
         spec = self.get(role)
         return hashlib.sha256(
-            self.playbook_path(role).read_bytes()).hexdigest()[:16]
+            self.playbook_path(role).read_bytes()).hexdigest()
 
     def verify_prompt(self, role: str, text: str) -> None:
         expected = hashlib.sha256(
-            self.playbook_path(role).read_bytes()).hexdigest()[:16]
-        actual = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+            self.playbook_path(role).read_bytes()).hexdigest()
+        actual = hashlib.sha256(text.encode("utf-8")).hexdigest()
         if actual != expected:
             raise AgentRegistryError(
                 f"playbook digest mismatch for {role!r}: file changed "
@@ -742,7 +742,7 @@ class AgentRegistry:
             "agents": [self.get(r).to_dict() for r in roster],
             "harness_roles": [self.get(r).harness_role for r in roster],
             "digest": hashlib.sha256(
-                json.dumps(roster, sort_keys=True).encode()).hexdigest()[:16],
+                json.dumps(roster, sort_keys=True).encode()).hexdigest(),
         }
 
     def inventory(self) -> Dict[str, Any]:

@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: skip_workflow_step_v1
+bug_class: business_logic
+category: business_logic
+severity: high
+title: "Workflow Step Skipping via Direct API Call"
+description: |
+  The multi-step onboarding wizard exposes endpoints for each step. The attacker skips intermediate verification steps (KYC, payment, approval) by calling the final endpoint directly, bypassing required checks.
+detection:
+  signature: "/api/onboarding/(step\\d|finalize)"
+  method: POST
+  endpoint: "/api/onboarding/finalize"
+remediation: |
+  Enforce a state machine on the server: each step requires the previous step's completion token. Validate the workflow state on every endpoint, not just at the UI layer.
+references:
+  - "https://owasp.org/business_logic/"
+  - "https://portswigger.net/web-security/business_logic"
+bounty_range: "$2K — $10K"
+h100_proven: false

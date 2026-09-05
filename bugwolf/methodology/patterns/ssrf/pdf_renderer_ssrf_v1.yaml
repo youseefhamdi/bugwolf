@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: pdf_renderer_ssrf_v1
+bug_class: ssrf
+category: ssrf
+severity: high
+title: "PDF Renderer SSRF via HTML Injection"
+description: |
+  The application's PDF generator parses attacker-controlled HTML and resolves embedded image, link, or iframe URLs. The renderer fetches resources from the internal network or the cloud metadata service, returning the response body inline in the rendered PDF.
+detection:
+  signature: "<iframe[^>]+src=|src=['\\\"]https?://"
+  method: POST
+  endpoint: "/api/reports/export"
+remediation: |
+  Use a hardened HTML-to-PDF renderer (e.g. weasyprint with strict URL filtering), sanitize all src and href attributes, and run the renderer inside a network namespace that cannot reach metadata services.
+references:
+  - "https://owasp.org/ssrf/"
+  - "https://portswigger.net/web-security/ssrf"
+bounty_range: "$5K — $25K"
+h100_proven: false

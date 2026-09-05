@@ -1,0 +1,24 @@
+schema: bugwolf-methodology-chain-v1
+id: 03_graphql_to_mass_leak
+title: "GraphQL Introspection + Aliases → Mass Data Leak"
+bounty: "$30K H100"
+prerequisites:
+  - id: graphql_introspection_enabled
+  - id: alias_amplification
+  - id: authz_missing_on_nodes
+steps:
+  - order: 1
+    description: "POST introspection query to /graphql — confirm schema dump"
+  - order: 2
+    description: "Enumerate high-cardinality nodes (User, Account, Order, Token)"
+  - order: 3
+    description: "Confirm IDOR-style authz missing on internal fields"
+  - order: 4
+    description: "Use aliases to send N parallel field requests in single query"
+  - order: 5
+    description: "Iterate cursor pagination to dump whole table — mass PII"
+final_severity: high
+references:
+  - "HackerOne Report #473999 — GitLab GraphQL"
+  - "Facebook GraphQL batch exploit — 2018"
+  - "PortSwigger GraphQL security cheatsheet"

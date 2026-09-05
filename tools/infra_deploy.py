@@ -55,6 +55,13 @@ try:
 except ImportError:  # direct script execution
     from runtime_paths import CODE_ROOT, workspace_root
 
+try:
+    from tools.core.medium_safety import open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
+
 ROOT = workspace_root()
 sys.path.insert(0, str(CODE_ROOT))
 
@@ -107,7 +114,7 @@ class CallbackHandler(BaseHTTPRequestHandler):
         }
         CallbackHandler.captured_requests.append(entry)
 
-        with open(INFRA_DIR / "callback-log.jsonl", "a") as f:
+        with open_text(INFRA_DIR / "callback-log.jsonl", "a") as f:
             f.write(json.dumps(entry) + "\n")
 
     def do_GET(self):

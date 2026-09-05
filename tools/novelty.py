@@ -33,6 +33,13 @@ except ImportError:
     from runtime_paths import target_slug
 
 try:
+    from tools.core.medium_safety import open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
+
+try:
     from tools.art_selector import payload_tokens
 except ImportError:  # pragma: no cover - direct script execution
     from art_selector import payload_tokens  # type: ignore
@@ -106,7 +113,7 @@ class CandidateIndex:
     def add(self, candidate: ResearchCandidate) -> None:
         record = candidate.to_dict()
         record["fingerprint"] = candidate_fingerprint(candidate)
-        with open(self.path, "a") as stream:
+        with open_text(self.path, "a") as stream:
             stream.write(json.dumps(record, sort_keys=True) + "\n")
 
     def all(self) -> List[ResearchCandidate]:

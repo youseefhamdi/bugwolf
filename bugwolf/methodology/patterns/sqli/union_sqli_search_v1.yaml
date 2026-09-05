@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: union_sqli_search_v1
+bug_class: sqli
+category: sqli
+severity: high
+title: "UNION-Based SQL Injection in Search Endpoint"
+description: |
+  The search endpoint appends the user's query into a SELECT statement. The attacker appends a UNION clause to a controlled number of columns and harvests the entire users or admins table in a single response.
+detection:
+  signature: "UNION\\s+(ALL\\s+)?SELECT"
+  method: GET
+  endpoint: "/api/search?q="
+remediation: |
+  Replace string concatenation with prepared statements, validate that column counts match expectations, and restrict the application's database user to read-only on required tables.
+references:
+  - "https://owasp.org/sqli/"
+  - "https://portswigger.net/web-security/sqli"
+bounty_range: "$3K — $20K"
+h100_proven: true

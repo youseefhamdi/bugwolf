@@ -466,4 +466,49 @@ if passed != total or total == 0:
     sys.exit(1)
 PYEOF
 
+echo "==> 4. Phase 0 UNCENSORED-marker gate"
+python3 - <<'PYEOF'
+import os, re, sys
+ROOT = "tools"
+bad_patterns = [
+    (re.compile(r'in_scope_domains\s*[:=]\s*\[\s*["\']\*'), "wildcard in_scope_domains"),
+    (re.compile(r'UNCENSORED\s*:.*(DESTRUCTIVE|STATE_CHANGE)'), "UNCENSORED destructive marker"),
+]
+hits = []
+for dirpath, _, filenames in os.walk(ROOT):
+    for fn in filenames:
+        if not fn.endswith(".py"):
+            continue
+        path = os.path.join(dirpath, fn)
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        for pat, label in bad_patterns:
+            for m in pat.finditer(text):
+                # Allow the lab-profile escape hatch (PROFILE_LAB_UNCENSORED
+                # constant + matching docstring text). Skip if the line is
+                # purely documentary (e.g., a comment in a docstring under
+                # "lab-uncensored" or "PROFILE_LAB_UNCENSORED").
+                start = text.rfind("\n", 0, m.start()) + 1
+                end = text.find("\n", m.end())
+                if end == -1:
+                    end = len(text)
+                line = text[start:end]
+                if "lab-uncensored" in line or "PROFILE_LAB_UNCENSORED" in line:
+                    continue
+                hits.append(f"{path}: {label}: {line.strip()[:120]}")
+if hits:
+    print("[!] Phase 0 UNCENSORED-marker gate FAILED:")
+    for h in hits:
+        print("    -", h)
+    sys.exit(1)
+print("    no wildcard in_scope_domains and no destructive UNCENSORED markers in default paths")
+PYEOF
+
+echo "==> 5. Phase 1.5 anti-pattern gate"
+bash "$ROOT/scripts/ci_anti_patterns.sh" || exit 1
+echo "==> 6. Cross-project citation check"
+python3 "$ROOT/scripts/cross_project_citation_check.py" || exit 1
+echo "==> 7. Capability digest drift check"
+bash "$ROOT/scripts/capability_digest.sh" || exit 1
+
 echo "==> CI bundle check PASSED (v${VERSION})"

@@ -144,8 +144,13 @@ rule noPrivilegeEscalation(method f) {{
     // Try to call any function
     f(e, args);
 
-    // Admin-only state should not change
-    assert target.owner() == e.msg.sender || target.owner() != e.msg.sender
+    // Phase 0 H-10: require an actual admin-state change was attempted.
+    // The previous assertion target.owner() == e.msg.sender || target.owner()
+    // != e.msg.sender was a tautology (always true) and was being persisted
+    // as a verification artifact. Now we assert that the post-call owner
+    // equals the caller (which would be the escalation) AND that the caller
+    // is non-owner pre-condition.
+    assert e.msg.sender != target.owner() => target.owner() == e.msg.sender
         , "Non-owner changed admin state";
 }}
 

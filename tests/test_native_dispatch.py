@@ -183,11 +183,12 @@ class NativeResultParsingTests(unittest.TestCase):
         self.assertEqual(res["status"], "FAILED")
         self.assertIn("no output", res["summary"])
 
-    def test_plain_text_is_done_with_summary(self):
+    def test_plain_text_is_failed_with_contract_error(self):
         res = self._worker()._parse_result(
             self._proc(0, out=b"recon finished, 12 hosts"))
-        self.assertEqual(res["status"], "DONE")
+        self.assertEqual(res["status"], "FAILED")
         self.assertIn("12 hosts", res["summary"])
+        self.assertEqual(res["contract_error"], "invalid_json")
 
     def test_json_error_is_failed(self):
         res = self._worker()._parse_result(

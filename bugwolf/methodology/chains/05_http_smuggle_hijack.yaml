@@ -1,0 +1,23 @@
+schema: bugwolf-methodology-chain-v1
+id: 05_http_smuggle_hijack
+title: "HTTP Request Smuggling → Session Hijack"
+bounty: "$40K H100"
+prerequisites:
+  - id: cl_te_or_te_cl_desync
+  - id: front_back_end_pair
+steps:
+  - order: 1
+    description: "Detect front/back parser disagreement (CL.TE or TE.CL)"
+  - order: 2
+    description: "Smuggle prefix request capturing next user's body"
+  - order: 3
+    description: "Trigger redirect that re-emits captured Authorization header"
+  - order: 4
+    description: "Subsequent victim request poisons response with attacker HTML"
+  - order: 5
+    description: "Victim's session cookie reflected in attacker-controlled page"
+final_severity: critical
+references:
+  - "PortSwigger HTTP Desync research — James Kettle"
+  - "HackerOne Report #1040870 — GitHub Enterprise"
+  - "HackerOne Report #1236969"

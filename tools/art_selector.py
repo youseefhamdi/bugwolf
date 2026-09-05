@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import math
 import re
 import sys
@@ -61,6 +62,8 @@ except ImportError:  # direct script execution
     from mutator import Mutation
 
 SCHEMA_VERSION = "bugwolf-art-selector-v2"
+
+LOG = logging.getLogger(__name__)
 
 # Kinds whose ``mutated`` value is an SQLi payload string. Only these take
 # part in the ART4SQLi token space; everything else falls back to the
@@ -611,10 +614,14 @@ def main() -> None:
                                fixed_size=fixed_size, seed=args.seed)
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, default=str))
+        LOG.info("art_selector.report keys=%s budget=%d",
+                 sorted(report.to_dict().keys()), args.budget)
         return
 
     print(f"[*] ART4SQLi selection: budget={args.budget} "
           f"candidates={len(mutations)} fixed_size={fixed_size or 'all'}")
+    LOG.info("art_selector.summary budget=%d candidates=%d diversity=%.3f",
+             args.budget, len(mutations), report.diversity_score)
     print(f"    diversity: {report.diversity_score:.3f}  "
           f"coverage: {report.coverage:.3f}  "
           f"payload vocab: {report.payload_vocab_size}  "
@@ -622,6 +629,8 @@ def main() -> None:
     for m in report.selection:
         print(f"    [{m.risk.value}] {m.kind} {m.method} {m.path} "
               f"{m.variable or ''}")
+        LOG.debug("art_selector.pick %s %s %s risk=%s",
+                  m.kind, m.method, m.path, m.risk.value)
     if not mutations:
         sys.exit(2)
 

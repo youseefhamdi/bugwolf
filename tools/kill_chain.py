@@ -374,8 +374,8 @@ class ChainCandidate:
     match_score: float  # 0-1
     combined_severity: str
     trigger_sequence: List[str]  # Step-by-step exploitation path
-    estimated_bounty: str
-    auto_testable: bool
+    estimated_bounty: str = ""
+    auto_testable: bool = False
 
 
 class KillChainBuilder:
@@ -474,10 +474,11 @@ class KillChainBuilder:
             steps.append("Step 6: XSS executes → steal session/cookies")
 
         elif pattern.chain_id == "CHAIN-008":  # Race condition
-            steps.append("Step 1: Identify endpoint with balance/credit check")
-            steps.append("Step 2: Send 10+ concurrent requests with same token")
-            steps.append("Step 3: Check if any requests succeeded beyond limit")
-            steps.append("Step 4: If yes → race condition confirmed → double spend")
+            # Phase 0 C-5: non-destructive analysis-only race-condition plan.
+            steps.append("Step 1: Identify endpoint with balance/credit check (read-only)")
+            steps.append("Step 2: Identify rate-limit window (no live concurrent requests)")
+            steps.append("Step 3: Observe atomicity with TEST tokens only (do not exercise)")
+            steps.append("Step 4: Document theoretical race window; do NOT demonstrate double-spend")
 
         elif pattern.chain_id == "CHAIN-009":  # GraphQL → PII
             steps.append("Step 1: Run introspection query")
@@ -612,9 +613,11 @@ class KillChainBuilder:
         return candidates
 
     def auto_test_chain(self, candidate: ChainCandidate) -> Dict:
-        """Auto-test a chain candidate against the live target.
+        """Plan a chain candidate (legacy) — returns a test plan dict.
 
-        Only works for auto_testable chains.
+        For real execution, use ``execute_chain`` (v1.24.1+) which actually
+        fires the requests through the governed replay engine. This method
+        remains a planner so existing callers (CLI, tests) do not break.
         """
         if not candidate.auto_testable:
             return {"success": False, "reason": "Chain not auto-testable"}
@@ -628,16 +631,19 @@ class KillChainBuilder:
         }
 
         if candidate.pattern.chain_id == "CHAIN-001":
-            # Test IDOR chain: read → write → delete on same endpoint
+            # Phase 0 C-4.1/C-4.2: safe-by-default IDOR plan.
+            # Read-only IDOR check (no destructive verbs). Operators opt in
+            # to destructive verbs explicitly via --allow-destructive-chains
+            # at execute_chain() time (handled in execute_chain, below).
             for f in candidate.matched_findings:
                 endpoint = f.get("endpoint", "")
-                base = endpoint.rstrip("0123456789").rstrip("/")
-
+                # C-4.2: regex-style placeholder substitution; do NOT append
+                # literal "/1" — substitute any trailing numeric segment.
+                import re as _re_c4
+                base = _re_c4.sub(r"/\d+(?=$|/|\\?)", "", endpoint).rstrip("/")
                 test_plan["tests"].extend([
-                    {"method": "GET", "endpoint": f"{base}/1", "purpose": "Read user 1"},
-                    {"method": "GET", "endpoint": f"{base}/2", "purpose": "Read user 2 (IDOR check)"},
-                    {"method": "PUT", "endpoint": f"{base}/1", "purpose": "Write user 1 (escalation)"},
-                    {"method": "DELETE", "endpoint": f"{base}/1", "purpose": "Delete user 1 (full takeover)"},
+                    {"method": "GET", "endpoint": f"{base}/:id_a", "purpose": "Read IDOR candidate A"},
+                    {"method": "GET", "endpoint": f"{base}/:id_b", "purpose": "Read IDOR candidate B (cross-user)"},
                 ])
 
         elif candidate.pattern.chain_id == "CHAIN-003":
@@ -661,11 +667,134 @@ class KillChainBuilder:
 
         test_plan["results"].append({
             "status": "PLAN_GENERATED",
-            "note": "Tests ready for execution. Run with --auto-execute to perform live tests.",
+            "note": "Use execute_chain() for live execution. The legacy auto_test_chain() is a planner only.",
             "test_count": len(test_plan["tests"]),
         })
 
         return test_plan
+
+    def execute_chain(self, candidate: ChainCandidate, *,
+                      auth: Optional[Any] = None,
+                      allow_destructive: bool = False,
+                      timeout: float = 15.0) -> Dict[str, Any]:
+        """Live-execute a chain candidate through the governed replay engine.
+
+        v1.24.1+: this replaces the legacy ``auto_test_chain`` for callers
+        that want REAL network execution, not a plan. It honors the scope
+        gate, scope contract, and replay governor.
+
+        Args:
+            candidate: ChainCandidate from score_chain / build_all_chains.
+            auth: optional auth context (None = anonymous). Operators can
+                pass an AccountMatrix or session context.
+            allow_destructive: when False (the safe default), any test whose
+                HTTP method is in {PUT, POST, PATCH, DELETE} is REFUSED
+                with a status record and never sent. Operators opt in to
+                destructive verbs explicitly.
+            timeout: per-request timeout in seconds.
+
+        Returns:
+            Dict with ``status`` ("EXECUTED"|"REFUSED"|"ERROR"), per-test
+            request/response records, and a chain-level summary.
+        """
+        plan = self.auto_test_chain(candidate)
+        if not plan.get("tests"):
+            return {
+                "status": "REFUSED",
+                "chain_id": candidate.pattern.chain_id,
+                "reason": "no auto_testable plan",
+            }
+
+        # Phase 0 C-4.1: gate destructive verbs at the plan layer so they
+        # never reach the replay engine unless explicitly opted in.
+        _DESTRUCTIVE = {"PUT", "POST", "PATCH", "DELETE"}
+        if not allow_destructive:
+            gated = []
+            for t in plan["tests"]:
+                if str(t.get("method", "GET")).upper() in _DESTRUCTIVE:
+                    gated.append({
+                        "purpose": t.get("purpose", ""),
+                        "endpoint": t.get("endpoint", ""),
+                        "method": t.get("method", "GET"),
+                        "status": "REFUSED",
+                        "reason": "destructive verb requires --allow-destructive-chains",
+                    })
+                else:
+                    gated.append(t)
+            plan["tests"] = gated
+
+        # Lazy imports so kill_chain.py remains importable in pure offline mode
+        try:
+            from tools.runtime.replay.engine import replay_request
+            from tools.runtime.scope import check_url, ScopeViolation
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "ERROR",
+                "chain_id": candidate.pattern.chain_id,
+                "error": f"replay/scope import failed: {exc}",
+            }
+
+        results: List[Dict[str, Any]] = []
+        for test in plan["tests"]:
+            endpoint = test.get("endpoint", "")
+            method = test.get("method", "GET")
+            # Phase 0 C-4.1: pre-gated destructive verbs surface as a REFUSED
+            # record in ``results`` and never reach the replay engine.
+            if test.get("status") == "REFUSED":
+                results.append(dict(test))
+                continue
+            if not endpoint:
+                continue
+            try:
+                check_url(endpoint)
+            except ScopeViolation as exc:
+                results.append({
+                    "purpose": test.get("purpose", ""),
+                    "status": "REFUSED",
+                    "reason": f"scope: {exc}",
+                })
+                continue
+            except Exception as exc:  # noqa: BLE001
+                results.append({
+                    "purpose": test.get("purpose", ""),
+                    "status": "ERROR",
+                    "reason": f"check: {exc}",
+                })
+                continue
+
+            try:
+                response = replay_request(
+                    method=method,
+                    url=endpoint,
+                    headers={"User-Agent": "bugwolf-kill-chain/1.24"},
+                    body=b"",
+                    timeout=timeout,
+                )
+                results.append({
+                    "purpose": test.get("purpose", ""),
+                    "status": "EXECUTED",
+                    "method": method,
+                    "endpoint": endpoint,
+                    "response_status": getattr(response, "status", None),
+                })
+            except Exception as exc:  # noqa: BLE001
+                results.append({
+                    "purpose": test.get("purpose", ""),
+                    "status": "ERROR",
+                    "method": method,
+                    "endpoint": endpoint,
+                    "reason": f"replay: {exc}",
+                })
+
+        confirmed = [r for r in results if r.get("status") == "EXECUTED"]
+        return {
+            "status": "EXECUTED" if confirmed else "REFUSED",
+            "chain_id": candidate.pattern.chain_id,
+            "target": self.target,
+            "test_count": len(plan["tests"]),
+            "executed_count": len(confirmed),
+            "results": results,
+        }
 
     def generate_chain_report(self, candidates: List[ChainCandidate]) -> str:
         """Generate a human-readable chain report."""
@@ -877,11 +1006,21 @@ def main():
 
     # Auto-test if requested
     if args.auto_test:
-        print("[*] Auto-testing viable chains...")
+        print("[*] Auto-testing viable chains (PLANNING only)...")
         for c in candidates:
             if c.auto_testable:
                 result = builder.auto_test_chain(c)
                 print(f"    {c.pattern.chain_id}: {result.get('success', result.get('status', '?'))}")
+
+    # Auto-execute if requested (v1.24.1+: actually fires the requests)
+    if args.auto_execute:
+        print("[*] Auto-executing viable chains (LIVE via governed replay)...")
+        for c in candidates:
+            if c.auto_testable:
+                result = builder.execute_chain(c)
+                status = result.get("status", "?")
+                executed = result.get("executed_count", 0)
+                print(f"    {c.pattern.chain_id}: {status} ({executed} requests sent)")
 
     # Persist
     builder.save_chains(candidates)
@@ -905,3 +1044,39 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.4 governance shim — destructive chain execution approval check.
+# ---------------------------------------------------------------------------
+
+def approve_destructive(candidate, *, governance=None):
+    """Phase 1.4 shim — check whether ``candidate`` has an active approval.
+
+    ``candidate`` is a mapping with at minimum ``target`` and ``action``.
+    Returns True iff the approval store has a non-expired GRANTED record
+    for the candidate.  See :class:`bugwolf.governance.approval.Approval`.
+    """
+    from bugwolf.governance.approval import Approval
+    a = governance or Approval()
+    return a.is_approved(candidate or {})
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.5: thin shim — re-export the new CrossProtocolChainBuilder.
+# ---------------------------------------------------------------------------
+
+def kill_chain_bridge():
+    """Phase 3.5 shim — return the new :class:`CrossProtocolChainBuilder`.
+
+    Kept dependency-free at module-load time: imports happen inside the
+    function so the legacy ``tools.kill_chain`` import path remains
+    usable even when :mod:`bugwolf.chain` is unavailable in a stripped
+    down environment. Never raises; returns ``None`` if the new chain
+    package cannot be located.
+    """
+    try:
+        from bugwolf.chain.builder import CrossProtocolChainBuilder
+        return CrossProtocolChainBuilder
+    except Exception:  # noqa: BLE001
+        return None

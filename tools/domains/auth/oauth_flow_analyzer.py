@@ -434,3 +434,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# Phase 1.5: scanner export shim
+def export_oauth_scanner():
+    from bugwolf.scanners.auth.oauth import OAuthScanner
+    return OAuthScanner()

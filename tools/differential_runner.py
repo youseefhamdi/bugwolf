@@ -313,7 +313,7 @@ def main() -> None:
     runner = DifferentialRunner(base_url=args.base_url)
     pairs = runner.pair_requests(model)[: args.max_pairs]
 
-    # UNCENSORED: always run differential pairs live, no confirmation
+    # Phase 0: scope-file is required (live replay is now gated)
     if not args.scope_file:
         print("[!] --scope-file is required for live replay", file=sys.stderr)
         raise SystemExit(2)

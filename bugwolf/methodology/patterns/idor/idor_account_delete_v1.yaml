@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: idor_account_delete_v1
+bug_class: idor
+category: idor
+severity: high
+title: "IDOR on Account Deletion"
+description: |
+  The account-deletion endpoint accepts a user ID without verifying ownership. An attacker can issue a delete request against any other user's account, causing permanent data loss.
+detection:
+  signature: "/api/users/(\\d+)/delete"
+  method: DELETE
+  endpoint: "/api/users/1/delete"
+remediation: |
+  Verify the resource owner matches the session principal, require re-authentication for destructive actions, and log all destructive operations.
+references:
+  - "https://owasp.org/idor/"
+  - "https://portswigger.net/web-security/idor"
+bounty_range: "$5K — $30K"
+h100_proven: true

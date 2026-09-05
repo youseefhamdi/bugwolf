@@ -1,0 +1,34 @@
+schema: bugwolf-recon-workflow-v1
+name: takeover
+description: |
+  Subdomain takeover — check dangling DNS records against known
+  third-party services (S3, CloudFront, Azure, Heroku, etc.).
+phases:
+  - order: 1
+    name: enumerate_subdomains
+    tools: [crt_sh, dns_brute, subdomain_alts]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: passive
+  - order: 2
+    name: resolve_cnames
+    tools: [dnsx]
+    budget:
+      max_requests: 200
+      max_seconds: 1200
+    scope_verb: passive
+  - order: 3
+    name: takeover_signature_match
+    tools: [subjack, nuclei-takeover, takeover]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: active
+  - order: 4
+    name: confirm_via_probe
+    tools: [httpx]
+    budget:
+      max_requests: 100
+      max_seconds: 1200
+    scope_verb: active

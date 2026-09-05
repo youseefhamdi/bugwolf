@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: race_condition_double_spend_v1
+bug_class: business_logic
+category: business_logic
+severity: high
+title: "Race Condition in Credit Redemption"
+description: |
+  The credit redemption endpoint reads the user's balance, deducts the amount, and writes the new balance without atomic locking. The attacker sends N concurrent requests to redeem the same credit N times, doubling or tripling their balance.
+detection:
+  signature: "/api/credits/redeem"
+  method: POST
+  endpoint: "/api/credits/redeem"
+remediation: |
+  Use database-level locks or compare-and-swap semantics on balance updates. Idempotency keys on every state-changing endpoint.
+references:
+  - "https://owasp.org/business_logic/"
+  - "https://portswigger.net/web-security/business_logic"
+bounty_range: "$3K — $25K"
+h100_proven: true

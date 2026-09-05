@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: jwt_alg_confusion_v1
+bug_class: auth_bypass
+category: auth
+severity: high
+title: "JWT Algorithm Confusion (HS256 with RSA pubkey)"
+description: |
+  The application expects RS256 but a library bug allows HS256 tokens to be verified using the RSA public key as the HMAC secret. The attacker fetches the public key (often from a JWKS endpoint) and signs a forged HS256 token.
+detection:
+  signature: "\\\"alg\\\"\\s*:\\s*\\\"HS256\\\""
+  method: POST
+  endpoint: "/api/auth/verify"
+remediation: |
+  Use a verification library that explicitly maps the alg header to the appropriate key type, never derive the verification key from a JWKS payload without first validating the alg claim.
+references:
+  - "https://owasp.org/auth/"
+  - "https://portswigger.net/web-security/auth"
+bounty_range: "$10K — $40K"
+h100_proven: true

@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: ios_keychain_bypass_v1
+bug_class: mobile
+category: mobile
+severity: high
+title: "iOS Keychain Accessibility Misconfiguration"
+description: |
+  Sensitive tokens are stored in the iOS keychain with kSecAttrAccessibleAlways or kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly is missing. The attacker with physical access or via a backup extraction reads the keychain entries.
+detection:
+  signature: "kSecAttrAccessible|SecItemAdd"
+  method: GET
+  endpoint: "/"
+remediation: |
+  Use kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly or stricter, scope keychain items with kSecAttrAccessGroup, and never store high-value secrets in NSUserDefaults.
+references:
+  - "https://owasp.org/mobile/"
+  - "https://portswigger.net/web-security/mobile"
+bounty_range: "$3K — $20K"
+h100_proven: true

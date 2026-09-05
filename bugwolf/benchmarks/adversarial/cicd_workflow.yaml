@@ -1,0 +1,40 @@
+# bugwolf/benchmarks — adversarial test apps + scoring
+# SCHEMA: bugwolf-benchmarks-adversarial-cicd-workflow-v1
+# ## Source: original work for Phase 4.3
+# ## License: BugWolf internal
+# ## Capability tier: C0 (passive) only — all benchmarks are local test apps
+# Adversarial GitHub Actions workflow — classic pwn-request pattern.
+#
+# Vulnerability pattern (intentional — this is a TEST FIXTURE):
+#   * `pull_request_target` runs in the BASE REPO context with write
+#     secrets, but checks out PR HEAD code.
+#   * `actions/checkout@v3` (unpinned) lets an attacker reference a
+#     compromised tag/branch.
+#   * `run: ... | sh` executes attacker-controlled PR diff contents.
+#
+# A scanner should flag: pull_request_target + checkout of PR head +
+# unpinned third-party action + shell-out to PR-controlled text.
+
+name: CI
+
+on:
+  pull_request_target:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head (BUG: in pull_request_target context)
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Run untrusted script (BUG: pipe-to-shell from PR contents)
+        run: |
+          cat changes.diff | sh
+
+      - name: Publish artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-output
+          path: dist/

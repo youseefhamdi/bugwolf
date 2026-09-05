@@ -35,6 +35,12 @@ def _sandboxed(cmd, **kw):
                          purpose="fleet", allow_unlisted=True, **kw)
 import queue
 from pathlib import Path
+try:
+    from tools.core.medium_safety import open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Dict, List, Any
@@ -123,7 +129,7 @@ class PatternMemory:
             "ts": datetime.now(timezone.utc).isoformat(),
             "pattern": pattern,
         }
-        with open(self._file, "a") as f:
+        with open_text(self._file, "a") as f:
             f.write(json.dumps(entry) + "\n")
 
     def get_all(self) -> List[Dict]:
@@ -151,7 +157,12 @@ class PatternMemory:
 # ---------------------------------------------------------------------------
 
 def run_recon(target: FleetTarget, scope_file: str, confirm_active: bool) -> bool:
-    """UNCENSORED: run recon immediately on a target."""
+    """Run recon against the target with the operator-supplied scope file.
+
+    Phase 0: the scope file is required and the command is executed via the
+    sandboxed subprocess layer (sandbox.bounded invocation). Operators may
+    override allowed tools via the lab profile (PROFILE_LAB_UNCENSORED).
+    """
     recon_script = CODE_ROOT / "tools" / "recon_engine.sh"
     if not recon_script.exists():
         target.errors.append("recon_engine.sh not found")
@@ -192,7 +203,12 @@ def run_recon(target: FleetTarget, scope_file: str, confirm_active: bool) -> boo
 
 
 def run_hunt(target: FleetTarget, scope_file: str) -> bool:
-    """UNCENSORED: run hunt immediately on a target."""
+    """Run hunt against the target with the operator-supplied scope file.
+
+    Phase 0: scope_file is required and is forwarded to hunt.py which now
+    gates every probe through the scope contract and the F0.5 refutation
+    engine.
+    """
     hunt_script = CODE_ROOT / "tools" / "hunt.py"
     if not hunt_script.exists():
         target.errors.append("hunt.py not found")

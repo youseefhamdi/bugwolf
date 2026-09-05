@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: mobile_insecure_storage_v1
+bug_class: mobile
+category: mobile
+severity: high
+title: "Insecure Local Storage of Credentials"
+description: |
+  The mobile app stores OAuth tokens or session identifiers in plaintext SharedPreferences (Android) or NSUserDefaults (iOS). The attacker with root access or via a forensic backup extracts the credentials and replays them against the API.
+detection:
+  signature: "SharedPreferences|NSUserDefaults|getSharedPreferences"
+  method: POST
+  endpoint: "/"
+remediation: |
+  Use EncryptedSharedPreferences (Android) or Keychain (iOS) for sensitive values, require biometric unlock to access secrets, and rotate tokens on suspicious device signals.
+references:
+  - "https://owasp.org/mobile/"
+  - "https://portswigger.net/web-security/mobile"
+bounty_range: "$2K — $10K"
+h100_proven: true

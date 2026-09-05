@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: idor_user_profile_v1
+bug_class: idor
+category: idor
+severity: high
+title: "IDOR on User Profile Endpoint"
+description: |
+  The user profile endpoint accepts a numeric user_id in the URL path. By incrementing or decrementing the value, an attacker can read or modify any other user's profile, including sensitive fields like email, phone number, and address.
+detection:
+  signature: "/api/users/(\\d+)|/profile/(\\d+)"
+  method: GET
+  endpoint: "/api/users/1"
+remediation: |
+  Enforce ownership checks server-side using the authenticated session, derive resource identifiers from the session token, and use unguessable IDs (UUIDv4) for sensitive resources.
+references:
+  - "https://owasp.org/idor/"
+  - "https://portswigger.net/web-security/idor"
+bounty_range: "$1K — $10K"
+h100_proven: true

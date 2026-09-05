@@ -1,0 +1,35 @@
+schema: bugwolf-recon-workflow-v1
+name: quick_triage
+description: |
+  Quick triage — fast passive-only smoke test.  Designed for the
+  first 15 minutes of an engagement when the operator wants signal
+  before committing to a full scan.
+phases:
+  - order: 1
+    name: ct_lookup
+    tools: [crt_sh]
+    budget:
+      max_requests: 10
+      max_seconds: 120
+    scope_verb: passive
+  - order: 2
+    name: shodan_passive
+    tools: [shodan]
+    budget:
+      max_requests: 10
+      max_seconds: 120
+    scope_verb: passive
+  - order: 3
+    name: wayback_top_urls
+    tools: [wayback]
+    budget:
+      max_requests: 50
+      max_seconds: 300
+    scope_verb: passive
+  - order: 4
+    name: dork_templates
+    tools: [google_dorks]
+    budget:
+      max_requests: 10
+      max_seconds: 60
+    scope_verb: passive

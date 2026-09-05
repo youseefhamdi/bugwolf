@@ -20,11 +20,12 @@ on a fresh server-side parser.
 
 from __future__ import annotations
 
+import ipaddress
 import socket
 import ssl
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from urllib.parse import urlsplit
 
 from tools.runtime.replay.governor import DEFAULTS as GOV_DEFAULTS, Governor
@@ -86,6 +87,43 @@ def split_host_port(host: str, default_port: int) -> Tuple[str, int, bool]:
         hostname, _, port_part = host.partition(":")
     port = int(port_part) if port_part else (443 if tls else default_port)
     return hostname, port, tls
+
+
+def _resolve_in_scope(hostname: str, port: int) -> List[str]:
+    """Resolve hostname to IPs, returning only those permitted by the scope gate.
+
+    Phase 0 H-5: defends against DNS rebinding by pinning the connection
+    to the IP we resolved first, and by rejecting any resolution that
+    straddles a loopback/private boundary the gate forbids.
+    """
+    from tools.runtime.scope import gate_state, _is_loopback
+    state = gate_state()
+    target = str(state.get("target") or "")
+    target_is_loopback = _is_loopback(target)
+    try:
+        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except OSError:
+        return []
+    ips: List[str] = []
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        # Strip IPv6 scope-id suffix if present
+        if ip.is_loopback and not target_is_loopback:
+            continue
+        if not target_is_loopback and (ip.is_private or ip.is_loopback or ip.is_link_local):
+            continue
+        ips.append(str(ip))
+    # Preserve order; de-dup.
+    seen, out = set(), []
+    for ip in ips:
+        if ip not in seen:
+            seen.add(ip)
+            out.append(ip)
+    return out
 
 
 def _read_response(sock: socket.socket, *,
@@ -156,6 +194,14 @@ def send_raw(host: str, raw_bytes: bytes, *,
             raise BackendRefused(gov.blocked_reason or "governor refused")
         gov.budget.record()
 
+    # Phase 0 H-5: DNS-pin. Resolve the hostname against the deterministic
+    # gate state and connect by IP so DNS rebinding between check_url and
+    # create_connection cannot redirect us to an out-of-scope host.
+    addrs = _resolve_in_scope(hostname, port)
+    if not addrs:
+        result.error = "dns-pin: no in-scope resolution for host"
+        return result
+
     result = SendResult()
     last_error: Optional[str] = None
     attempts_allowed = 1 + max(0, retries)
@@ -165,9 +211,21 @@ def send_raw(host: str, raw_bytes: bytes, *,
         started = time.monotonic()
         sock: Optional[socket.socket] = None
         try:
+            # Phase 0 H-5: try each in-scope IP until one connects.
             connect_started = time.monotonic()
-            sock = socket.create_connection((hostname, port),
-                                            timeout=connect_timeout_s)
+            last_err: Optional[str] = None
+            sock = None
+            for ip in addrs:
+                try:
+                    sock = socket.create_connection((ip, port),
+                                                    timeout=connect_timeout_s)
+                    break
+                except OSError as exc:
+                    last_err = f"{ip}: {exc}"
+                    sock = None
+                    continue
+            if sock is None:
+                raise OSError(f"dns-pin: all resolutions failed ({last_err})")
             result.connect_ms = (time.monotonic() - connect_started) * 1000.0
             if tls:
                 context = ssl.create_default_context()

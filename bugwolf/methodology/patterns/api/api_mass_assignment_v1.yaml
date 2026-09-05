@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: api_mass_assignment_v1
+bug_class: api
+category: api
+severity: high
+title: "Mass Assignment on User Update"
+description: |
+  The user-update endpoint binds the request body to the user model without filtering sensitive fields. The attacker submits `is_admin: true` and is elevated to admin.
+detection:
+  signature: "is_admin|role\\s*:\\s*\\\"admin\\\"|permissions\\s*:"
+  method: PUT
+  endpoint: "/api/users/me"
+remediation: |
+  Use an explicit allow-list of fields per endpoint, never bind the entire request body. Validate role and permission changes against authorization policies.
+references:
+  - "https://owasp.org/api/"
+  - "https://portswigger.net/web-security/api"
+bounty_range: "$3K — $20K"
+h100_proven: true

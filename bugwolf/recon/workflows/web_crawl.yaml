@@ -1,0 +1,40 @@
+schema: bugwolf-recon-workflow-v1
+name: web_crawl
+description: |
+  Generic web crawling — katana + gospider + wayback + gau.  Active.
+phases:
+  - order: 1
+    name: seed_url_harvest
+    tools: [wayback, gau]
+    budget:
+      max_requests: 100
+      max_seconds: 600
+    scope_verb: passive
+  - order: 2
+    name: headless_crawl
+    tools: [katana]
+    budget:
+      max_requests: 500
+      max_seconds: 1800
+    scope_verb: active
+  - order: 3
+    name: html_crawl
+    tools: [gospider]
+    budget:
+      max_requests: 500
+      max_seconds: 1800
+    scope_verb: active
+  - order: 4
+    name: form_extraction
+    tools: [paramspider]
+    budget:
+      max_requests: 200
+      max_seconds: 1200
+    scope_verb: active
+  - order: 5
+    name: deduplicate_endpoints
+    tools: [httpx]
+    budget:
+      max_requests: 200
+      max_seconds: 600
+    scope_verb: active

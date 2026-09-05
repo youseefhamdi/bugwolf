@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: api_excessive_data_exposure_v1
+bug_class: api
+category: api
+severity: high
+title: "Excessive Data Exposure in REST Response"
+description: |
+  The user-list endpoint returns the full user object including password hashes, security questions, and TOTP seeds. The attacker who calls the endpoint legitimately harvests sensitive data for offline cracking.
+detection:
+  signature: "password_hash|totp_seed|security_question"
+  method: GET
+  endpoint: "/api/users"
+remediation: |
+  Define explicit response DTOs that exclude sensitive fields, audit every endpoint with the principle of least privilege on field visibility.
+references:
+  - "https://owasp.org/api/"
+  - "https://portswigger.net/web-security/api"
+bounty_range: "$2K — $10K"
+h100_proven: false

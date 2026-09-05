@@ -1,0 +1,74 @@
+# bugwolf-chain-h100-v1
+## Source: Slack #737140, Zomato #771666, New Relic #498052
+## License: bugwolf-MIT
+# Port: 2026-09-05
+# Severity: critical
+# Bounty band: $3K – $15K
+schema: bugwolf-chain-h100-v1
+id: 05_http_smuggle_hijack
+title: "HTTP Request Smuggling → Session Hijack"
+bounty: "$12K H100"
+prerequisites:
+  - id: cl_te_or_te_cl
+    description: "Frontend and backend disagree on Content-Length vs Transfer-Encoding parsing"
+  - id: persistent_session
+    description: "Target issues persistent session cookies on the desync-able endpoint"
+  - id: collaborator_or_oast
+    description: "An out-of-band channel to receive the hijacked session"
+steps:
+  - order: 1
+    description: "Map the proxy/backend chain by sending a known-bad request and observing delays"
+    protocol: http
+    technique: chain_fingerprint
+    evidence:
+      kind: request
+      description: "Send a request with both CL and TE headers"
+    destructive: false
+  - order: 2
+    description: "Differential confirm CL.TE or TE.CL using a canary body prefix"
+    protocol: http
+    technique: desync_confirm
+    evidence:
+      kind: request
+      description: "Observe canary in the response that the frontend prefixed"
+    destructive: false
+  - order: 3
+    description: "Smuggle a partial second request that lands on the next victim's socket"
+    protocol: http
+    technique: smuggle_prefix
+    evidence:
+      kind: payload
+      description: "G prefix that turns the next request into a method of our choice"
+    destructive: false
+  - order: 4
+    description: "Inject a redirect to an attacker-controlled endpoint (or a known collaborator URL)"
+    protocol: http
+    technique: redirect_inject
+    evidence:
+      kind: response
+      status: 302
+    destructive: false
+  - order: 5
+    description: "Capture the session cookie in the smuggled redirect"
+    protocol: http
+    technique: cookie_capture
+    evidence:
+      kind: server_log
+      fields: [Cookie, Authorization]
+    destructive: false
+  - order: 6
+    description: "Replay the captured cookie against a protected endpoint to confirm hijack"
+    protocol: http
+    technique: session_replay
+    preconditions:
+      - "scope_approval"
+      - "victim_account_for_replay"
+    evidence:
+      kind: request
+      description: "GET /api/me with the captured cookie"
+    destructive: true
+final_severity: critical
+references:
+  - "Slack #737140 — HTTP smuggling chain"
+  - "Zomato #771666 — HTTP request smuggling"
+  - "New Relic #498052 — Smuggling to mass ATO"

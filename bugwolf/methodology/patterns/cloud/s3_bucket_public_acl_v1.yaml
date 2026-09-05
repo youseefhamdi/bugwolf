@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: s3_bucket_public_acl_v1
+bug_class: cloud
+category: cloud
+severity: high
+title: "S3 Bucket Public ACL Misconfiguration"
+description: |
+  An S3 bucket is configured with a public ACL or a permissive bucket policy that allows `s3:GetObject` from any principal. The attacker enumerates the bucket name and lists every object, exposing customer data, backups, and configuration files.
+detection:
+  signature: "s3\\.amazonaws\\.com|\\.s3\\."
+  method: GET
+  endpoint: "/"
+remediation: |
+  Enable Block Public Access at the account level, audit bucket policies for `Principal: *`, and use IAM Access Analyzer to detect unintended public exposure.
+references:
+  - "https://owasp.org/cloud/"
+  - "https://portswigger.net/web-security/cloud"
+bounty_range: "$2K — $20K"
+h100_proven: true

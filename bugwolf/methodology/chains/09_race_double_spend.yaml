@@ -1,0 +1,23 @@
+schema: bugwolf-methodology-chain-v1
+id: 09_race_double_spend
+title: "Race Condition → Coupon / Balance Double-Spend"
+bounty: "$45K H100"
+prerequisites:
+  - id: async_endpoint
+  - id: missing_atomicity
+steps:
+  - order: 1
+    description: "Find value-moving endpoint (transfer, redeem, withdraw)"
+  - order: 2
+    description: "Confirm two parallel requests both succeed against one balance"
+  - order: 3
+    description: "Build 20-50 concurrent requests via HTTP/2 multiplex or asyncio"
+  - order: 4
+    description: "Drain balance > N times its true value (double / triple spend)"
+  - order: 5
+    description: "Capture both response bodies as evidence of inconsistency"
+final_severity: critical
+references:
+  - "PortSwigger Race Conditions — James Kettle (Black Hat 2023)"
+  - "HackerOne Report #1468487 — Shopify balance race"
+  - "HackerOne Report #2168050 — Robinhood crypto redeem"

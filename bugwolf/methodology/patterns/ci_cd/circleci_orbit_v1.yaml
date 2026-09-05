@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: circleci_orbit_v1
+bug_class: ci_cd
+category: ci_cd
+severity: high
+title: "CircleCI Untrusted ORB Execution"
+description: |
+  The workflow references a third-party ORB by tag (e.g. `@volatile`) rather than a pinned version. The ORB maintainer can release a malicious update that the workflow consumes on the next run, executing attacker code in CI.
+detection:
+  signature: "circleci/orbit/|orbs:\\s*\\n"
+  method: POST
+  endpoint: "/"
+remediation: |
+  Pin ORBs to immutable SHA digests, audit ORB changes, and avoid community ORBs that are not widely reviewed.
+references:
+  - "https://owasp.org/ci_cd/"
+  - "https://portswigger.net/web-security/ci_cd"
+bounty_range: "$3K — $20K"
+h100_proven: true

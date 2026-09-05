@@ -1,0 +1,115 @@
+schema: bugwolf-playbook-v1
+name: graphql
+description: |
+  GraphQL introspection, batching, and field-level authorization probes.
+  Mirrors the methodology playbook pattern: introspection is a discovery
+  step, every batching payload is bounded, and depth-limited to prevent
+  amplification against the upstream service.
+preconditions:
+  target_is_reachable: true
+  scope_allows_active: true
+  graphql_endpoint_identified: true
+payload_catalog:
+  - id: introspection_query
+    request:
+      method: POST
+      path: /graphql
+    expected_status: 200
+    expected_body_match: "__schema"
+    sinks: [schema_disclosure]
+    requires_scope_verb: passive
+  - id: introspection_disabled_query
+    request:
+      method: POST
+      path: /graphql
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [schema_disclosure]
+    requires_scope_verb: passive
+  - id: field_suggestions
+    request:
+      method: POST
+      path: /graphql
+    expected_status: 200
+    expected_body_match: "Did you mean"
+    sinks: [field_enumeration]
+    requires_scope_verb: passive
+  - id: batched_queries
+    request:
+      method: POST
+      path: /graphql
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [batched_query_abuse]
+    requires_scope_verb: active
+  - id: aliases_for_rate_limit
+    request:
+      method: POST
+      path: /graphql
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [alias_rate_limit_bypass]
+    requires_scope_verb: active
+  - id: deep_recursion
+    request:
+      method: POST
+      path: /graphql
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [nested_query_depth]
+    requires_scope_verb: active
+  - id: field_authz_probe
+    request:
+      method: POST
+      path: /graphql
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [field_authorization]
+    requires_scope_verb: active
+  - id: idor_via_global_id
+    request:
+      method: POST
+      path: /graphql
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [graphql_idor]
+    requires_scope_verb: active
+  - id: csrf_on_get_endpoint
+    request:
+      method: GET
+      path: /graphql?query={__typename}
+    expected_status: 400
+    expected_body_match: ""
+    sinks: [graphql_csrf]
+    requires_scope_verb: passive
+  - id: subscription_probe
+    request:
+      method: POST
+      path: /graphql
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [subscription_authorization]
+    requires_scope_verb: active
+evidence_collection:
+  - type: response_capture
+    target: response
+  - type: body_diff
+    target: response.body
+    config:
+      baseline_key: introspection_off
+  - type: timing_measurement
+    target: round_trip
+post_conditions:
+  finding_emitted: true
+  evidence_block_recorded: true
+  schema_snapshot_saved: true
+budget:
+  max_requests: 40
+  max_wall_clock: 120
+  min_interval_ms: 100
+governance:
+  requires_approval: false
+  scope_class: active
+  require_reproducible_evidence: true
+  destructive_allowed: false
+  notes: "Depth and alias counts are bounded; introspection is recorded as evidence, not exploitation."

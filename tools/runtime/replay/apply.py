@@ -252,7 +252,20 @@ def _op_set_method(request: Request, mutation: Mutation) -> None:
 
 
 def _op_set_target(request: Request, mutation: Mutation) -> None:
-    request.target = _encoded_value(mutation)
+    """Apply a set-target mutation.
+
+    Phase 0 H-6: rejects absolute-form URLs (https://host/path) so a mutation
+    cannot smuggle a cross-host redirect through the replay engine. Only
+    origin-form (path?query or /path) and authority-form (host:port) are
+    accepted; absolute-form is refused with ApplyError.
+    """
+    value = _encoded_value(mutation)
+    # rfc3986: absolute-form starts with a scheme followed by ':'
+    if "://" in value:
+        raise ApplyError(
+            f"set-target mutation rejected: absolute-form URL {value!r} "
+            "(must be origin-form or authority-form)")
+    request.target = value
 
 
 def _op_set_path_param(request: Request, mutation: Mutation) -> None:

@@ -39,6 +39,12 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass, asdict
 
+try:
+    from tools.core.medium_safety import redact_for_print as _redact_for_print
+except Exception:  # pragma: no cover - direct script execution
+    def _redact_for_print(value):  # type: ignore[no-redef]
+        return str(value)
+
 
 def _sandboxed(cmd, **kw):
     """Spawn through the subprocess sandbox (kill switch + allowlist + env
@@ -492,8 +498,8 @@ def main():
 
     if args.generate_key:
         priv, pub = vault.generate_age_keypair()
-        print(f"Private key:\n{priv}")
-        print(f"Public key:  {pub.strip()}")
+        print(_redact_for_print(f"Private key:\n{priv}"))
+        print(_redact_for_print(f"Public key:  {pub.strip()}"))
         print("\n[!] Store the private key securely. It cannot be recovered.")
 
     elif args.list:
@@ -511,7 +517,7 @@ def main():
         findings = json.loads(Path(args.store_findings).read_text())
         meta = vault.store_report(args.target, findings)
         print(f"[+] Report vaulted: {meta['artifact_id']}")
-        print(f"[!] Key (KEEP SAFE): {meta['key_hex']}")
+        print(_redact_for_print(f"[!] Key (KEEP SAFE): {meta['key_hex']}"))
         print(f"    Hash: {meta['hash']}")
 
     elif args.encrypt and args.output:
@@ -525,7 +531,7 @@ def main():
         })
         Path(args.output).write_text(bundle)
         print(f"[+] Encrypted: {args.encrypt} → {args.output}")
-        print(f"[!] Key (KEEP SAFE): {key.hex()}")
+        print(_redact_for_print(f"[!] Key (KEEP SAFE): {key.hex()}"))
 
     elif args.decrypt and args.output and args.key:
         bundle = json.loads(Path(args.decrypt).read_text())

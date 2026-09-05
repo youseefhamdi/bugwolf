@@ -538,3 +538,16 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.2: thin shim that re-exports the new YAML-driven playbook system
+# alongside the existing dataclass-based methodology plans. This is the ONLY
+# addition to this module; nothing above is modified.
+# ---------------------------------------------------------------------------
+def load_yaml_playbook(name: str, *, playbook_dir=None):
+    """Load a Phase 1.2 typed YAML playbook by name."""
+    from bugwolf.playbooks import PlaybookComposer
+    from pathlib import Path
+    base = Path(playbook_dir) if playbook_dir else Path(__file__).resolve().parent.parent / "bugwolf" / "playbooks"
+    return PlaybookComposer(base).load(name)

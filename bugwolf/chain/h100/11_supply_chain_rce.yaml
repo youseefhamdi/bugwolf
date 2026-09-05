@@ -1,0 +1,82 @@
+# bugwolf-chain-h100-v1
+## Source: H1 #1087489 (Shopify $50,000), event-stream incident, dependency confusion
+## License: bugwolf-MIT
+# Port: 2026-09-05
+# Severity: critical
+# Bounty band: $10K – $50K
+schema: bugwolf-chain-h100-v1
+id: 11_supply_chain_rce
+title: "Supply Chain Compromise → RCE on Build Host"
+bounty: "$30K H100"
+prerequisites:
+  - id: typo_squatted_package
+    description: "An internal build script pulls a public package by a typo-squattable name"
+  - id: install_hook_present
+    description: "The package's install script runs on the build host (npm postinstall, pip setup.py)"
+  - id: build_artifact_signing
+    description: "Build artifacts are signed by a CI-issued key available to the compromised host"
+steps:
+  - order: 1
+    description: "Enumerate package imports in the build manifest (package.json, requirements.txt, go.mod)"
+    protocol: osint
+    technique: manifest_inspect
+    evidence:
+      kind: list
+      sources: [package.json, requirements.txt, go.mod]
+    destructive: false
+  - order: 2
+    description: "Probe each public package for typo-squat availability on the relevant registry"
+    protocol: osint
+    technique: typo_probe
+    evidence:
+      kind: action
+      description: "Check the missing name on npm / PyPI / crates.io / Maven Central"
+    destructive: false
+  - order: 3
+    description: "Stage a public package with an install-time payload (scoped to the build host)"
+    protocol: registry
+    technique: stage_payload
+    preconditions:
+      - "scope_approval"
+      - "isolated_test_env"
+    evidence:
+      kind: action
+      description: "Publish a benign package; do NOT execute on production build hosts"
+    destructive: false
+  - order: 4
+    description: "If the build resolves the typo-squatted name, the install script runs on the build host"
+    protocol: ci
+    technique: install_trigger
+    preconditions:
+      - "isolated_test_env"
+      - "scope_approval"
+    evidence:
+      kind: log
+      fields: [install_hook, exit_code, stdout]
+    destructive: true
+  - order: 5
+    description: "Use the build-host token to sign a poisoned artifact"
+    protocol: ci
+    technique: artifact_sign
+    preconditions:
+      - "destructive_flag_approved"
+    evidence:
+      kind: action
+      description: "Sign a release artifact with the captured signing key"
+    destructive: true
+  - order: 6
+    description: "Downstream consumers pull the poisoned artifact; RCE on every consumer host"
+    protocol: internal
+    technique: downstream_rce
+    preconditions:
+      - "scope_approval"
+      - "isolated_consumer_env"
+    evidence:
+      kind: action
+      description: "Trigger RCE in an isolated consumer env; do not push to production"
+    destructive: true
+final_severity: critical
+references:
+  - "HackerOne #1087489 — Shopify $50,000 supply chain incident"
+  - "Alex Birsan — Dependency confusion research"
+  - "npm/PyPI security advisories on install-script abuse"

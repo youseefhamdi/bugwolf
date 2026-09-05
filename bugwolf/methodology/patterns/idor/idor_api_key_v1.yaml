@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: idor_api_key_v1
+bug_class: idor
+category: idor
+severity: high
+title: "IDOR on API Key Listing"
+description: |
+  The API key listing endpoint enumerates all keys for any given workspace ID. The attacker swaps the workspace ID to enumerate keys across other tenants and exfiltrate active credentials.
+detection:
+  signature: "/api/workspaces/(\\w+)/keys"
+  method: GET
+  endpoint: "/api/workspaces/abc/keys"
+remediation: |
+  Authorize each request against the requesting tenant, scope queries to the caller's tenant ID, and add rate limits that flag cross-tenant enumeration attempts.
+references:
+  - "https://owasp.org/idor/"
+  - "https://portswigger.net/web-security/idor"
+bounty_range: "$5K — $25K"
+h100_proven: false

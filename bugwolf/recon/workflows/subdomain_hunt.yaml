@@ -1,0 +1,41 @@
+schema: bugwolf-recon-workflow-v1
+name: subdomain_hunt
+description: |
+  Focused subdomain enumeration.  Combines CT logs, brute-force DNS,
+  and permutation generation.
+phases:
+  - order: 1
+    name: ct_log_query
+    tools: [crt_sh]
+    budget:
+      max_requests: 25
+      max_seconds: 300
+    scope_verb: passive
+  - order: 2
+    name: dns_brute
+    tools: [dns_brute]
+    budget:
+      max_requests: 200
+      max_seconds: 600
+    scope_verb: passive
+  - order: 3
+    name: subdomain_permutations
+    tools: [subdomain_alts]
+    budget:
+      max_requests: 100
+      max_seconds: 300
+    scope_verb: passive
+  - order: 4
+    name: shodan_subdomain
+    tools: [shodan]
+    budget:
+      max_requests: 25
+      max_seconds: 300
+    scope_verb: passive
+  - order: 5
+    name: subdomain_takeover_check
+    tools: [subjack, takeover]
+    budget:
+      max_requests: 200
+      max_seconds: 1800
+    scope_verb: active

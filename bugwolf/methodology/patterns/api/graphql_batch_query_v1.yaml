@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: graphql_batch_query_v1
+bug_class: api
+category: api
+severity: high
+title: "GraphQL Batch Query DoS"
+description: |
+  The GraphQL endpoint accepts arrays of queries via batching or aliasing. The attacker submits a single request with hundreds of aliased queries, each performing an expensive database join, exhausting the database connection pool.
+detection:
+  signature: "query.*\\{.*\\}|\\baliases\\s*:"
+  method: POST
+  endpoint: "/graphql"
+remediation: |
+  Apply query cost analysis (e.g. graphql-cost-analysis), limit query depth and complexity, and set per-request timeouts and resource limits.
+references:
+  - "https://owasp.org/api/"
+  - "https://portswigger.net/web-security/api"
+bounty_range: "$1K — $5K"
+h100_proven: true

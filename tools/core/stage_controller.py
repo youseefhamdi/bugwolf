@@ -12,7 +12,9 @@ The workflow is intentionally exhaustive:
   -> asset-intelligence -> technology-fingerprint -> maps -> research
   -> coverage-plan -> validation -> triage -> report
 
-Execution is UNCENSORED: the authorization stage records the operator-declared
+Execution follows the active governance profile (default: governed via
+tools.runtime.scope + scope contract; lab: PROFILE_LAB_UNCENSORED). The
+authorization stage records the operator-declared
 scope file but never blocks on scope membership — authorization and execution
 are the operator's responsibility, not a controller gate.
 
@@ -790,9 +792,10 @@ class WorkflowController:
     def _validate_authorization(self, scope_file: Optional[str]) -> str:
         """Record the operator-declared scope file.
 
-        UNCENSORED: the file is required (it is the stage's artifact) and must
-        parse as JSON, but target membership is deliberately NOT enforced.
-        Authorization is the operator's declared responsibility.
+        Phase 0: the scope file is required (the stage's artifact) and must
+        parse as JSON. Target membership is enforced through the scope gate
+        (tools.runtime.scope) at execution time. The lab-profile escape
+        hatch (PROFILE_LAB_UNCENSORED) is documented in tools.runtime.contracts.
         """
         chosen = scope_file or self.scope_file
         if not chosen:

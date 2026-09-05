@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: waf_sqli_double_url_v1
+bug_class: waf_bypass
+category: waf_bypass
+severity: high
+title: "SQL Injection via Double URL Encoding"
+description: |
+  The WAF decodes URL-encoded input once but the application decodes a second time. The attacker submits `%2527` which becomes `%27` after the WAF and `'` after the application, evading the WAF and triggering SQL injection.
+detection:
+  signature: "%25[0-9a-fA-F]{2}"
+  method: GET
+  endpoint: "/api/items?id="
+remediation: |
+  Use a single, consistent decoding strategy end-to-end. Prefer parameterized queries over input validation, so WAF bypass does not become injection.
+references:
+  - "https://owasp.org/waf_bypass/"
+  - "https://portswigger.net/web-security/waf_bypass"
+bounty_range: "$1K — $10K"
+h100_proven: true

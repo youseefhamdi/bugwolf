@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: negative_quantity_v1
+bug_class: business_logic
+category: business_logic
+severity: high
+title: "Negative Quantity Price Manipulation"
+description: |
+  The cart endpoint accepts negative quantities without validation. The attacker adds a product with a negative quantity at a higher price to drive the cart total negative, then checks out for credit.
+detection:
+  signature: "\\\"quantity\\\"\\s*:\\s*-"
+  method: POST
+  endpoint: "/api/cart/items"
+remediation: |
+  Reject negative or zero quantities at the schema layer, validate cart totals server-side, and never trust client-computed prices.
+references:
+  - "https://owasp.org/business_logic/"
+  - "https://portswigger.net/web-security/business_logic"
+bounty_range: "$2K — $15K"
+h100_proven: true

@@ -35,6 +35,13 @@ except ImportError:  # direct script execution
     from discovery_scheduler import CoverageTracker
     from impact_focus import CriticalityRouter, infer_verb
 
+try:
+    from tools.core.medium_safety import open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
+
 SCHEMA_VERSION = "bugwolf-contract-discovery-v1"
 
 
@@ -557,7 +564,7 @@ def main() -> None:
 
     (out_dir / "contract-model.json").write_text(model.to_json() + "\n")
     (out_dir / "coverage.json").write_text(json.dumps(coverage.to_dict(), indent=2) + "\n")
-    with open(out_dir / "plan.jsonl", "w") as stream:
+    with open_text(out_dir / "plan.jsonl", "w") as stream:
         for m in allocation:
             stream.write(json.dumps(m.to_dict(), default=str) + "\n")
 

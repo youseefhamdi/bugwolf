@@ -955,11 +955,12 @@ class TeamEngine:
 
     @staticmethod
     def _terminal_status(result: Dict[str, Any]) -> str:
+        """Map only explicit worker terminals; unknown output fails closed."""
         for key in ("status", "lead_status", "outcome"):
             val = str(result.get(key) or "").strip().upper()
             if val in MEMBER_TERMINAL:
                 return val
-        return MEMBER_DONE
+        return MEMBER_FAILED
     def _spec_for(self, role: str) -> Any:
         try:
             return self.registry.get(role)
@@ -996,18 +997,25 @@ class TeamEngine:
                 "member_id": m.member_id, "role": m.role,
                 "status": m.status, "tier": m.tier,
                 "attempt": m.attempt, "model_preference": m.model_preference})
+        totals = self._totals()
+        failure_statuses = {MEMBER_FAILED, MEMBER_BLOCKED, "RECOVERED",
+                            "BUDGET-EXHAUSTED"}
+        terminal_failures = sum(count for status, count in totals.items()
+                                if status in failure_statuses)
         return {
             "schema": SCHEMA,
             "team_id": self.state.get("team_id", ""),
             "mission_id": self.mission.mission_id,
             "status": self.state.get("status", ""),
+            "outcome": "degraded" if terminal_failures else "success",
+            "terminal_failures": terminal_failures,
             "wave": self.state.get("wave", ""),
             "worker_id": self.worker_id,
             "recompositions": list(self.state.get("recompositions") or []),
             "recompose_capped": bool(self.state.get("recompose_capped")),
             "recon_depth": self._recon_depth_report(),
             "waves": {w: by_wave[w] for w in WAVE_ORDER if by_wave.get(w)},
-            "totals": self._totals(),
+            "totals": totals,
             "coverage_gate": self.state.get("coverage_gate"),
         }
 

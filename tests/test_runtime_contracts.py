@@ -240,9 +240,10 @@ class TestDurableState(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             result = TaskResult(**{k: v for k, v in _valid_result().items()
                                    if k in TaskResult.__dataclass_fields__})
-            issues = record_task_result(result, project_root=tmp)
+            issues = record_task_result(result, mission_id="mission-0001",
+                                        project_root=tmp)
             self.assertEqual(issues, [])
-            log = result_log_path("task-0001", project_root=tmp)
+            log = result_log_path("mission-0001", project_root=tmp)
             lines = log.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(len(lines), 1)
             self.assertEqual(json.loads(lines[0])["task_id"], "task-0001")

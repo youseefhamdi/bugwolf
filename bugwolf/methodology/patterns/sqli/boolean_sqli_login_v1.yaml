@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: boolean_sqli_login_v1
+bug_class: sqli
+category: sqli
+severity: high
+title: "Boolean-Based Blind SQL Injection in Login Form"
+description: |
+  The login endpoint concatenates user input into a SQL query. By injecting boolean conditions, the attacker can determine the truth value of arbitrary subqueries character by character, ultimately extracting passwords, session tokens, or PII.
+detection:
+  signature: "'\\s*(OR|AND)\\s+['\\d]+|'\\s*=\\s*'|UNION\\s+SELECT"
+  method: POST
+  endpoint: "/api/login"
+remediation: |
+  Use parameterized queries exclusively, validate input length, and apply the principle of least privilege to the database user. Add WAF rules to detect tautology attempts but never rely on the WAF alone.
+references:
+  - "https://owasp.org/sqli/"
+  - "https://portswigger.net/web-security/sqli"
+bounty_range: "$2K — $15K"
+h100_proven: true

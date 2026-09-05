@@ -58,6 +58,17 @@ def load_contract() -> dict:
         return {}
     if not isinstance(data, dict) or data.get("schema") != CONTRACT_SCHEMA:
         return {}
+    expected_mission = str(os.environ.get("BUGWOLF_MISSION_ID") or "").strip()
+    actual_mission = str(data.get("mission_id") or "").strip()
+    # A harness session that declares a mission must not consume another
+    # mission's workspace contract.  Missing env context remains compatible
+    # with direct hook invocations and uses the persisted contract identity.
+    if expected_mission and actual_mission != expected_mission:
+        return {"schema": CONTRACT_SCHEMA, "contract_error":
+                "scope contract mission_id does not match harness mission"}
+    if not actual_mission:
+        return {"schema": CONTRACT_SCHEMA, "contract_error":
+                "scope contract missing mission_id"}
     return data
 
 
@@ -210,9 +221,47 @@ def main() -> int:
         tool_input = {}
     try:
         contract = load_contract()
-        verdict, reason, hosts = evaluate(tool_name, tool_input, contract)
-    except Exception:  # noqa: BLE001 - a hook bug must never block work
+    except Exception:  # noqa: BLE001 - contract read error is INERT (no mission)
+        contract = None
+    if not contract:
+        # No mission bound — hook is inert.  Same UX as the pre-v1.24.1
+        # behavior: zero cost when no scope contract is loaded.
         return 0
+    if contract.get("contract_error"):
+        reason = str(contract["contract_error"])
+        print(json.dumps({
+            "schema": HOOK_SCHEMA,
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }))
+        print(reason, file=sys.stderr)
+        return 2
+    try:
+        verdict, reason, hosts = evaluate(tool_name, tool_input, contract)
+    except Exception as exc:  # noqa: BLE001
+        # v1.24.1+ fail-CLOSED on extraction error.  A scope contract exists
+        # but the host extractor crashed — we cannot determine safety, so
+        # we REFUSE the call rather than allowing an unverified host
+        # through the gate.  This closes the silent-enforcement-gap that
+        # the v1.24.0 audit flagged.
+        reason = f"scope-extractor-error: {type(exc).__name__}: {exc}"
+        try:
+            _journal(str(contract.get("mission_id") or ""), {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "hook": "pretool-scope", "event": "extractor-error",
+                "tool": tool_name, "error": reason,
+                "target": contract.get("target"),
+                "mission_id": contract.get("mission_id"),
+            })
+        except Exception:  # noqa: BLE001
+            pass
+        print(json.dumps({
+            "schema": HOOK_SCHEMA,
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }))
+        print(reason, file=sys.stderr)
+        return 2
     if verdict == "deny":
         # Belt and braces: the structured decision (some harness versions
         # read stdout JSON on any exit code) AND exit 2 (the un-overridable

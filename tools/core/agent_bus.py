@@ -38,6 +38,12 @@ ROOT = workspace_root()
 SIGNALS_ROOT = ROOT / "state" / "signals"
 
 from tools.post_finding_trigger import trigger_after_signal, record_trigger_failure
+try:
+    from tools.core.medium_safety import path_open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def path_open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
 
 
 @dataclass
@@ -138,7 +144,7 @@ class AgentBus:
         line = json.dumps(payload)
         if len(line.encode("utf-8")) > 256_000:
             raise ValueError("signal exceeds the 256 KiB size limit")
-        with open(self._inbox, "a") as f:
+        with path_open_text(self._inbox, "a") as f:
             if fcntl:
                 fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             f.write(line + "\n")
@@ -164,7 +170,7 @@ class AgentBus:
         path = self._delivery_file(agent_name)
         delivered: Set[str] = set()
         signals = []
-        with open(path, "a+") as marker:
+        with path_open_text(path, "a+") as marker:
             if fcntl:
                 fcntl.flock(marker.fileno(), fcntl.LOCK_EX)
             marker.seek(0)
@@ -192,7 +198,7 @@ class AgentBus:
                 marker.flush()
                 os.fsync(marker.fileno())
                 # Keep a durable archive without consuming broadcasts globally.
-                with open(self._processed, "a+") as archive:
+                with path_open_text(self._processed, "a+") as archive:
                     if fcntl:
                         fcntl.flock(archive.fileno(), fcntl.LOCK_EX)
                     archive.seek(0)

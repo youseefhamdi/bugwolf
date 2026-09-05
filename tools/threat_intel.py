@@ -30,6 +30,13 @@ from urllib.request import urlopen, Request, HTTPRedirectHandler, build_opener
 from urllib.parse import quote
 
 try:
+    from tools.core.medium_safety import open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
+
+try:
     from tools.runtime_paths import CODE_ROOT, workspace_root
     from tools.safety import (
         AuthorizationError, load_authorized_scope, require_authorized_target,
@@ -486,7 +493,7 @@ class ThreatIntel:
         """Save intelligence to the state store."""
         safe_target_name(target_name)
         intel_file = INTEL_DIR / f"{target_name.replace(':', '_')}-intel.jsonl"
-        with open(intel_file, "w") as f:
+        with open_text(intel_file, "w") as f:
             for item in items:
                 f.write(json.dumps(redact(asdict(item))) + "\n")
 

@@ -230,12 +230,21 @@ class NativeTaskWorker:
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            # Plain-text output is still real work product — accept it.
-            return {"status": "DONE", "summary": text[:2000],
+            # Plain text is not a validated worker contract.  Preserve it for
+            # diagnosis, but never promote it to DONE: the scheduler must
+            # receive structured output before it can close a task.
+            return {"status": "FAILED", "summary":
+                    "worker contract invalid: expected JSON object; output: "
+                    + text[:1800],
                     "messages": [], "artifacts": [],
-                    "worker_id": self.worker_id}
+                    "worker_id": self.worker_id,
+                    "contract_error": "invalid_json"}
         if not isinstance(data, dict):
-            data = {"result": data}
+            return {"status": "FAILED",
+                    "summary": "worker contract invalid: expected JSON object",
+                    "messages": [], "artifacts": [],
+                    "worker_id": self.worker_id,
+                    "contract_error": "non_object_json"}
         return self._result_from_json(data)
 
     def _result_from_json(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -247,6 +256,12 @@ class NativeTaskWorker:
                      if isinstance(a, (str, dict))]
         is_error = bool(data.get("is_error")) \
             or str(data.get("subtype") or "") == "error_max_turns"
+        if not body and not messages and not artifacts and not data.get("lead_status"):
+            return {"status": "FAILED",
+                    "summary": "worker contract invalid: empty JSON result",
+                    "messages": [], "artifacts": [],
+                    "worker_id": self.worker_id,
+                    "contract_error": "empty_result"}
         lead = str(data.get("lead_status") or "").strip().upper()
         if is_error:
             status = "FAILED"

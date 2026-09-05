@@ -1,0 +1,123 @@
+schema: bugwolf-playbook-v1
+name: webvuln
+description: |
+  Broad-coverage web vulnerability probe set covering XSS, SQLi, open
+  redirect, path traversal, and SSRF surface hints. This is the umbrella
+  playbook used when a target shows no clear narrow signal; it stays
+  detection-only and never escalates to extraction or takeover.
+preconditions:
+  target_is_reachable: true
+  scope_allows_active: true
+  recon_complete: true
+payload_catalog:
+  - id: reflected_xss_param
+    request:
+      method: GET
+      path: /search?q=bugwolf-marker-7d3a
+    expected_status: 200
+    expected_body_match: "bugwolf-marker-7d3a"
+    sinks: [xss_reflection]
+    requires_scope_verb: active
+  - id: stored_xss_field
+    request:
+      method: POST
+      path: /api/comments
+    expected_status: 201
+    expected_body_match: ""
+    sinks: [xss_stored]
+    requires_scope_verb: active
+  - id: error_based_sqli
+    request:
+      method: GET
+      path: /items?id=1'
+    expected_status: 500
+    expected_body_match: "syntax"
+    sinks: [sql_error]
+    requires_scope_verb: active
+  - id: time_based_sqli
+    request:
+      method: GET
+      path: /items?id=1%20AND%20SLEEP(2)
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [sql_timing]
+    requires_scope_verb: active
+  - id: open_redirect
+    request:
+      method: GET
+      path: /redirect?to=https://bugwolf.example/callback
+    expected_status: 302
+    expected_body_match: ""
+    sinks: [open_redirect]
+    requires_scope_verb: active
+  - id: path_traversal
+    request:
+      method: GET
+      path: /download?file=../../../etc/hostname
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [path_traversal]
+    requires_scope_verb: active
+  - id: ssrf_hint
+    request:
+      method: GET
+      path: /fetch?url=http://127.0.0.1:8080/health
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [internal_reach]
+    requires_scope_verb: active
+  - id: cors_misconfig
+    request:
+      method: GET
+      path: /api/profile
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [cors_trust]
+    requires_scope_verb: passive
+  - id: csrf_state_missing
+    request:
+      method: POST
+      path: /account/email
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [csrf_missing]
+    requires_scope_verb: active
+  - id: prototype_pollution
+    request:
+      method: POST
+      path: /api/merge
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [prototype_pollution]
+    requires_scope_verb: active
+  - id: insecure_cookie_flag
+    request:
+      method: GET
+      path: /api/me
+    expected_status: 200
+    expected_body_match: ""
+    sinks: [cookie_hardening]
+    requires_scope_verb: passive
+evidence_collection:
+  - type: response_capture
+    target: response
+  - type: header_diff
+    target: response.headers
+    config:
+      keys: [set-cookie, x-frame-options, content-security-policy]
+  - type: timing_measurement
+    target: round_trip
+post_conditions:
+  finding_emitted: true
+  evidence_block_recorded: true
+  triage_queue_appended: true
+budget:
+  max_requests: 120
+  max_wall_clock: 300
+  min_interval_ms: 50
+governance:
+  requires_approval: true
+  scope_class: active
+  require_reproducible_evidence: true
+  destructive_allowed: false
+  notes: "Detection-only; no extraction, no enumeration beyond bounded markers."

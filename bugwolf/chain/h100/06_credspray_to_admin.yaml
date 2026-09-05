@@ -1,0 +1,77 @@
+# bugwolf-chain-h100-v1
+## Source: H1 #914422 (Dropbox credential stuffing), multiple financial programs
+## License: bugwolf-MIT
+# Port: 2026-09-05
+# Severity: critical (admin hit) / high (typical)
+# Bounty band: $2K – $25K
+schema: bugwolf-chain-h100-v1
+id: 06_credspray_to_admin
+title: "Credential Spraying → Admin Account → Privilege Escalation"
+bounty: "$8K H100"
+prerequisites:
+  - id: user_enumeration
+    description: "Login response or timing reveals whether a username exists"
+  - id: weak_password_policy
+    description: "No rate limiting / lockout for the relevant IP class"
+  - id: admin_login_surface
+    description: "Same login endpoint accepts admin accounts (no separate portal)"
+steps:
+  - order: 1
+    description: "Build a username list from public sources (LinkedIn, GitHub, conference bios)"
+    protocol: osint
+    technique: username_harvest
+    evidence:
+      kind: list
+      sources: [linkedin, github, bios]
+    destructive: false
+  - order: 2
+    description: "Enumerate valid usernames via response-time or response-body differential"
+    protocol: http
+    technique: username_enum
+    evidence:
+      kind: http_request
+      url: "/login"
+    destructive: false
+  - order: 3
+    description: "Compile a candidate password list (Season+Year, CompanyName!2026, Welcome1, P@ssw0rd)"
+    protocol: osint
+    technique: wordlist_build
+    evidence:
+      kind: list
+      candidates: [Welcome1, Company2026, Spring2026!]
+    destructive: false
+  - order: 4
+    description: "Spray credentials across the enumerated user list from rotating IPs"
+    protocol: http
+    technique: cred_spray
+    preconditions:
+      - "scope_approval"
+      - "rotating_proxy_consent"
+    evidence:
+      kind: action
+      description: "Limit attempts to N per hour per IP; abort on first success"
+    destructive: false
+  - order: 5
+    description: "Identify an admin-class account from the spray hits (role=admin in profile response)"
+    protocol: http
+    technique: role_discovery
+    evidence:
+      kind: response
+      fields: [role, is_admin]
+    destructive: false
+  - order: 6
+    description: "Authenticate as the admin and exercise admin-only endpoints to confirm blast radius"
+    protocol: http
+    technique: admin_endpoint_walk
+    preconditions:
+      - "scope_approval"
+      - "destructive_flag_approved"
+    evidence:
+      kind: action
+      description: "GET /admin/users, GET /admin/billing, GET /admin/audit-log"
+    destructive: true
+final_severity: critical
+references:
+  - "HackerOne #914422 — Dropbox credential stuffing disclosure"
+  - "OWASP Credential Stuffing Prevention Cheat Sheet"
+  - "HaveIBeenPwned Pwned Passwords list"

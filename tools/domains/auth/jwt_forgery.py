@@ -303,3 +303,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# Phase 1.5: scanner export shim
+def export_jwt_scanner():
+    from bugwolf.scanners.auth.jwt import JWTScanner
+    return JWTScanner()

@@ -31,7 +31,7 @@ SCHEMA_VERSION = "bugwolf-js-token-forge-v1"
 # (pattern, category, title, severity, rationale)
 RULES: Sequence[Tuple[str, str, str, str, str]] = (
     (
-        r"""(?i)\b(?:\w*secret\w*|\w*token\w*|signing\w*key|api\w*key|hmac\w*key|passphrase|salt|private\w*key)\s*[:=]\s*["'`][^"'`\n]{4,}["'`]""",
+        r"""(?i)\b(?:\w*secret\w*|\w*token\w*|signing\w*key|api\w*key|hmac\w*key|passphrase|salt|private\w*key)\s*[:=]\s*["'`][^"'`\n]{12,}["'`]""",
         "hardcoded_secret",
         "Hardcoded signing secret in client code",
         "critical",

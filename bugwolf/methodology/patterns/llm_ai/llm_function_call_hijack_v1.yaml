@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: llm_function_call_hijack_v1
+bug_class: llm
+category: llm_ai
+severity: high
+title: "Function-Call Argument Injection"
+description: |
+  The agent's function-calling layer accepts arguments constructed by the LLM. The attacker manipulates the conversation to coerce the LLM into emitting function arguments that perform destructive operations (file delete, fund transfer) without user confirmation.
+detection:
+  signature: "tool_call|function_call|send_email|transfer_funds"
+  method: POST
+  endpoint: "/api/agent/run"
+remediation: |
+  Require explicit user approval for every function call, validate function arguments against a strict schema before execution, and apply principle of least privilege to the agent's tools.
+references:
+  - "https://owasp.org/llm_ai/"
+  - "https://portswigger.net/web-security/llm_ai"
+bounty_range: "$5K — $25K"
+h100_proven: true

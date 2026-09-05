@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: reflected_search_xss_v1
+bug_class: xss
+category: xss
+severity: high
+title: "Reflected XSS via Search Term Echo"
+description: |
+  The search endpoint reflects the user-supplied query in the HTML response without escaping. The attacker crafts a URL with a script payload in the query string and delivers it to victims via phishing or in-app messaging. The script runs in the origin context and can hijack the user's session.
+detection:
+  signature: "<script[^>]*>|onerror\\s*=|alert\\s*\\("
+  method: GET
+  endpoint: "/search?q="
+remediation: |
+  HTML-encode all reflected values, set a strict Content-Security-Policy, and use the framework's built-in escaping helpers. Avoid `dangerouslySetInnerHTML` and equivalent APIs.
+references:
+  - "https://owasp.org/xss/"
+  - "https://portswigger.net/web-security/xss"
+bounty_range: "$500 — $5K"
+h100_proven: true

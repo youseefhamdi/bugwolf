@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field, asdict
@@ -42,11 +43,24 @@ if str(Path(__file__).resolve().parent.parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows compatibility
+    fcntl = None
+
+try:
     from tools.runtime_paths import runtime_path
 except ImportError:  # direct script execution from tools/runtime/
     from runtime_paths import runtime_path  # type: ignore
 
 SCHEMA = "bugwolf-runtime-contracts/v1"
+
+# Execution profiles are explicit mission policy, not implicit behavior.  An
+# entry point must declare which profile it uses so reports cannot confuse a
+# governed run with an isolated lab run.
+PROFILE_OFFLINE = "offline"
+PROFILE_GOVERNED = "governed"
+PROFILE_LAB_UNCENSORED = "lab-uncensored"
+EXECUTION_PROFILES = (PROFILE_OFFLINE, PROFILE_GOVERNED, PROFILE_LAB_UNCENSORED)
 
 # ---------------------------------------------------------------------------
 # Status vocabularies (stable string identifiers, consistent with signal_bus)
@@ -55,13 +69,25 @@ SCHEMA = "bugwolf-runtime-contracts/v1"
 RESULT_COMPLETED = "completed"
 RESULT_PARTIAL = "agent_partial"
 RESULT_FAILED = "agent_failed"
-RESULT_TERMINAL_STATUSES = (RESULT_COMPLETED, RESULT_PARTIAL, RESULT_FAILED)
+RESULT_BLOCKED = "blocked"
+RESULT_CANCELLED = "cancelled"
+RESULT_BUDGET_EXHAUSTED = "budget_exhausted"
+RESULT_TERMINAL_STATUSES = (
+    RESULT_COMPLETED, RESULT_PARTIAL, RESULT_FAILED, RESULT_BLOCKED,
+    RESULT_CANCELLED, RESULT_BUDGET_EXHAUSTED,
+)
 
 TASK_PENDING = "pending"
 TASK_ACTIVE = "active"
 TASK_DONE = "done"
 TASK_BLOCKED = "blocked"
-TASK_STATUSES = (TASK_PENDING, TASK_ACTIVE, TASK_DONE, TASK_BLOCKED)
+TASK_FAILED = "failed"
+TASK_CANCELLED = "cancelled"
+TASK_BUDGET_EXHAUSTED = "budget_exhausted"
+TASK_STATUSES = (
+    TASK_PENDING, TASK_ACTIVE, TASK_DONE, TASK_BLOCKED, TASK_FAILED,
+    TASK_CANCELLED, TASK_BUDGET_EXHAUSTED,
+)
 
 # Lead terminal states (plan 5.5 R2) - the ONLY closes allowed
 LEAD_OPEN = "OPEN"
@@ -271,6 +297,10 @@ class TaskResult:
     task_id: str
     agent_role: str
     status: str
+    # Optional for backwards-compatible standalone records; mission-bound
+    # scheduler records always populate and validate it before persistence.
+    mission_id: str = ""
+    attempt_id: str = ""
     summary: str = ""
     hypotheses: List[Dict[str, Any]] = field(default_factory=list)
     observations: List[Dict[str, Any]] = field(default_factory=list)
@@ -347,7 +377,8 @@ def _summary_mentions_insight(summary: str) -> bool:
     return False
 
 
-def validate_task_result(result: Any) -> List[str]:
+def validate_task_result(result: Any, *, expected_mission_id: str = "",
+                          expected_task_id: str = "") -> List[str]:
     """Strict validation. Returns a list of issue strings (empty = valid).
 
     Enforces the plan's structural mandates:
@@ -363,6 +394,14 @@ def validate_task_result(result: Any) -> List[str]:
         issues.append("task result missing task_id")
     if not str(result.get("agent_role") or "").strip():
         issues.append("task result missing agent_role")
+    if result.get("mission_id") is not None and not isinstance(result.get("mission_id"), str):
+        issues.append("task result mission_id must be a string")
+    if result.get("attempt_id") is not None and not isinstance(result.get("attempt_id"), str):
+        issues.append("task result attempt_id must be a string")
+    if expected_mission_id and str(result.get("mission_id") or "") != expected_mission_id:
+        issues.append("task result mission_id does not match expected mission")
+    if expected_task_id and str(result.get("task_id") or "") != expected_task_id:
+        issues.append("task result task_id does not match expected task")
     if result.get("status") not in RESULT_TERMINAL_STATUSES:
         issues.append(f"result status {result.get('status')!r} not in RESULT_TERMINAL_STATUSES")
 
@@ -441,7 +480,7 @@ class MissionSpec:
     target: str
     objective: str = ""
     domains: List[str] = field(default_factory=list)
-    operation_profile: str = "research"
+    operation_profile: str = PROFILE_GOVERNED
     model_profile: str = "balanced"
     budget: Dict[str, Any] = field(default_factory=dict)
     intake_record: Dict[str, Any] = field(default_factory=dict)
@@ -471,6 +510,9 @@ def validate_mission_spec(mission: Any) -> List[str]:
         issues.append("mission spec missing mission_id")
     if not str(mission.get("target") or "").strip():
         issues.append("mission spec missing target")
+    operation_profile = mission.get("operation_profile") or PROFILE_GOVERNED
+    if operation_profile not in EXECUTION_PROFILES:
+        issues.append(f"operation profile {operation_profile!r} not in EXECUTION_PROFILES")
     domains = mission.get("domains") or []
     if not isinstance(domains, (list, tuple)):
         issues.append("mission domains must be a list")
@@ -489,6 +531,9 @@ def validate_mission_spec(mission: Any) -> List[str]:
             val = budget.get(key)
             if val is not None and (not isinstance(val, int) or val <= 0):
                 issues.append(f"budget.{key} must be a positive int")
+    accounts = mission.get("accounts") or []
+    if not isinstance(accounts, list) or any(not isinstance(a, dict) for a in accounts):
+        issues.append("mission accounts must be a list of objects")
     ref = mission.get("preflight_manifest_ref")
     if ref and validate_artifact_ref(ref):
         issues.extend("preflight_manifest_ref: " + s for s in validate_artifact_ref(ref))
@@ -576,25 +621,55 @@ def parse_mission(text: str, *, project_root: Optional[str] = None) -> MissionSp
 
 
 def append_jsonl(path: Path, record: Dict[str, Any]) -> None:
-    """Atomically append one JSON line (the only write pattern the plan allows)."""
+    """Durably append one JSON line with an inter-process lock.
+
+    Mission results are written by scheduler/team workers and may be appended
+    concurrently.  The lock plus flush/fsync prevents interleaved or
+    acknowledged-but-lost records; readers can still recover malformed legacy
+    lines independently.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(record, sort_keys=True, default=str)
     with open(path, "a", encoding="utf-8") as fh:
-        fh.write(line + "\n")
+        if fcntl is not None:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            fh.write(line + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        finally:
+            if fcntl is not None:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 def result_log_path(mission_id: str, *, project_root: Optional[str] = None) -> Path:
-    return Path(runtime_path("state", "orchestrator", mission_id, "results.jsonl",
+    """Return the authoritative mission-scoped result journal path.
+
+    The argument is deliberately named ``mission_id``: task IDs must never be
+    passed here.  Standalone compatibility records use the explicit
+    ``standalone`` bucket rather than creating one journal per task.
+    """
+    clean = str(mission_id or "").strip() or "standalone"
+    return Path(runtime_path("state", "orchestrator", clean, "results.jsonl",
                              root=project_root))
 
 
-def record_task_result(result: TaskResult, *, project_root: Optional[str] = None) -> List[str]:
-    """Validate, then durably record a TaskResult. Returns validation issues."""
-    issues = validate_task_result(result.to_dict())
+def record_task_result(result: TaskResult, *, mission_id: Optional[str] = None,
+                       project_root: Optional[str] = None) -> List[str]:
+    """Validate, then durably record a TaskResult in one mission journal.
+
+    Older standalone callers may omit ``mission_id``; those records use the
+    explicit ``standalone`` bucket rather than silently using the task ID,
+    which previously fragmented a mission's authoritative result log.
+    """
+    record = result.to_dict()
+    resolved_mission = str(mission_id or record.get("mission_id") or "standalone")
+    record["mission_id"] = resolved_mission
+    issues = validate_task_result(record, expected_mission_id=resolved_mission)
     if issues:
         return issues
-    append_jsonl(result_log_path(result.task_id, project_root=project_root),
-                 result.to_dict())
+    append_jsonl(result_log_path(resolved_mission, project_root=project_root),
+                 record)
     return []
 
 

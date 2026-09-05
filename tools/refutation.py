@@ -10,8 +10,8 @@ report; findings below it are DEMOTED, marked not report-eligible, and
 quarantined as candidate records under ``state/learning/<target>.jsonl`` for
 operator review.
 
-No-strict mode (``--no-strict``): the historical UNCENSORED auto-confirm
-behavior is preserved verbatim — every finding is CONFIRMED and eligible.
+Strict mode is the only mode. There is no auto-confirm shortcut; findings
+below threshold are quarantined.
 
 The gate is a *reporting* gate only: "uncensored execution" is untouched
 (no scope/network/execution gates exist here), while precision over recall
@@ -19,7 +19,6 @@ The gate is a *reporting* gate only: "uncensored execution" is untouched
 
 Usage:
   python3 tools/refutation.py --target T --finding-file F --json
-  python3 tools/refutation.py --target T --finding-file F --no-strict --json
 """
 
 import json
@@ -311,57 +310,32 @@ class RefutationEngine:
 
     def refute(self, finding: Dict, model: str = "uncensored",
                strict: Optional[bool] = None) -> RefutationRecord:
-        """Refute one finding; strict (default) gates by confidence."""
-        strict = self.strict if strict is None else strict
+        """Refute one finding; strict (default) gates by confidence.
+
+        Phase 0 C-3: ``strict=False`` is no longer accepted. The
+        auto-confirm shortcut has been removed; all findings flow through
+        the F0.5 gate. ``strict`` is preserved on the signature for
+        backwards compatibility but is ignored if False.
+        """
+        if strict is False:
+            strict = True  # Phase 0 C-3: --no-strict is gone; always strict.
+        strict = True if strict is None else bool(strict)
         finding_id = finding.get("finding_id", hashlib.sha256(
             json.dumps(finding, sort_keys=True, default=str).encode()
         ).hexdigest()[:16])
 
         now = datetime.now(timezone.utc).isoformat()
-        if not strict:
-            # Historical UNCENSORED auto-confirm mode (--no-strict).
-            passes = [
-                RefutationPass(
-                    pass_number=1,
-                    model=model,
-                    started_at=now,
-                    completed_at=now,
-                    verdict=FindingVerdict.CONFIRMED,
-                    gate_results=[
-                        GateEvaluation(gate="refutation", result=GateResult.CLEARED,
-                                       reasoning="Uncensored: all findings confirmed"),
-                        GateEvaluation(gate="reachability", result=GateResult.CLEARED,
-                                       reasoning="Uncensored: all findings confirmed"),
-                        GateEvaluation(gate="trigger", result=GateResult.CLEARED,
-                                       reasoning="Uncensored: all findings confirmed"),
-                        GateEvaluation(gate="impact", result=GateResult.CLEARED,
-                                       reasoning="Uncensored: all findings confirmed"),
-                    ],
-                    survival_argument="Uncensored: finding auto-confirmed",
-                )
-            ]
-            return RefutationRecord(
-                finding_id=finding_id,
-                target=self.target,
-                title=finding.get("title", ""),
-                bug_class=finding.get("bug_class", ""),
-                severity=finding.get("severity", "high"),
-                endpoint=finding.get("endpoint", ""),
-                passes=passes,
-                final_verdict=FindingVerdict.CONFIRMED,
-                total_passes=1,
-                survived_passes=1,
-                killed_passes=0,
-                confidence=1.0,
-                eligible_for_report=True,
-                quarantined=False,
-            )
-
         # F0.5 strict mode: score, gate, and quarantine below threshold.
         score = confidence_score(finding)
         gates = self._strict_gates(finding, score)
-        reproducible = (not self.require_reproducible
-                        or has_reproducible_evidence(finding))
+        # Phase 0 C-3.2: when --require-reproducible is set, a finding is
+        # CONFIRMED only if it carries a recorded request/response evidence
+        # block. Findings without it are DEMOTED regardless of score.
+        if self.require_reproducible and not has_reproducible_evidence(finding):
+            reproducible = False
+        else:
+            reproducible = (not self.require_reproducible
+                            or has_reproducible_evidence(finding))
         eligible = score >= STRICT_CONFIDENCE_THRESHOLD and reproducible
         verdict = FindingVerdict.CONFIRMED if eligible else FindingVerdict.DEMOTED
         quarantined = False
@@ -432,19 +406,14 @@ class RefutationEngine:
 
     def refute_chain(self, chain_findings: List[Dict],
                      strict: Optional[bool] = None) -> RefutationRecord:
-        """Refute a chain; strict mode scores the joined finding set."""
-        strict = self.strict if strict is None else strict
-        if not strict:
-            return RefutationRecord(
-                finding_id="chain-auto-confirmed",
-                target=self.target,
-                title="Chain - Auto Confirmed",
-                final_verdict=FindingVerdict.CONFIRMED,
-                total_passes=1,
-                survived_passes=1,
-                confidence=1.0,
-                eligible_for_report=True,
-            )
+        """Refute a chain; strict mode scores the joined finding set.
+
+        Phase 0 C-3: ``strict=False`` is no longer accepted; the
+        auto-confirm branch has been removed.
+        """
+        if strict is False:
+            strict = True  # Phase 0 C-3: --no-strict is gone; always strict.
+        strict = True if strict is None else bool(strict)
         joined: Dict[str, Any] = {}
         for item in chain_findings or []:
             if not isinstance(item, dict):
@@ -473,8 +442,6 @@ def main() -> int:
                         default=True,
                         help="F0.5 confidence gate (default): quarantine "
                              "low-confidence findings")
-    parser.add_argument("--no-strict", dest="strict", action="store_false",
-                        help="UNCENSORED auto-confirm mode (legacy)")
     parser.add_argument("--require-reproducible", action="store_true",
                         help="Live-execution gate: CONFIRMED requires a "
                              "recorded request/response evidence block")
@@ -515,3 +482,19 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.4 governance shim — 7-Question Gate compatibility wrapper.
+# ---------------------------------------------------------------------------
+
+def with_question_gate(finding, *, gate=None):
+    """Phase 1.4 shim — re-export the new 7-Question Gate.
+
+    Returns a :class:`FindingVerdict` produced by
+    :class:`bugwolf.governance.question_gate.QuestionGate.evaluate`.
+    The gate NEVER raises; every error path yields REJECTED.
+    """
+    from bugwolf.governance.question_gate import QuestionGate
+    g = gate or QuestionGate()
+    return g.evaluate_verdict(finding or {})

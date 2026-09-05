@@ -44,6 +44,19 @@ sys.path.insert(0, str(CODE_ROOT))
 
 LEDGER_DIR = ROOT / "state" / "ledger"
 
+
+def _canonical_json_bytes(obj: dict) -> bytes:
+    """Serialize obj to canonical JSON bytes for hash-chain integrity.
+
+    Phase 0 L-9: pins separators, ensure_ascii, and sort_keys so that the
+    producer and the verifier compute the same byte sequence. Adding a
+    schema_version field lets future format migrations coexist.
+    """
+    payload = dict(obj)
+    payload.setdefault("schema_version", 1)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False).encode("utf-8")
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
@@ -596,7 +609,7 @@ class LedgerVerifier:
                 unsigned = dict(entry)
                 actual_hash = unsigned.pop("entry_hash")
                 expected_hash = hashlib.sha256(
-                    json.dumps(unsigned, sort_keys=True).encode()).hexdigest()
+                    _canonical_json_bytes(unsigned)).hexdigest()
                 if actual_hash != expected_hash:
                     integrity.tampered_entries += 1
                     integrity.hash_chain_intact = False

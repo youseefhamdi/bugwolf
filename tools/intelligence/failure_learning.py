@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import re
 import sys
 from dataclasses import asdict, dataclass, field
@@ -71,6 +72,7 @@ except ImportError:  # pragma: no cover
     AdaptiveMemory = None
 
 SCHEMA = "bugwolf/failure-learning/v1"
+LOG = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Deterministic bypass-candidate catalog per blocker/defense marker.
@@ -201,7 +203,8 @@ def learn(target: str, failures: List[Dict[str, Any]], *,
             memory = AdaptiveMemory(target, root=memory_root or base_dir
                                     or (Path(project_root) if project_root
                                         else None))
-        except Exception:
+        except Exception as exc:
+            LOG.warning("failure_learning.adaptive_memory_init_failed: %s", exc)
             memory = None
 
     for failure in failures:
@@ -247,7 +250,8 @@ def learn(target: str, failures: List[Dict[str, Any]], *,
                         journey="blocker-feedback",
                     )
                     report.memory_records.append(record)
-                except Exception:
+                except Exception as exc:
+                    LOG.debug("failure_learning.memory_record_skip: %s", exc)
                     continue
     return report
 
@@ -379,6 +383,7 @@ def main() -> int:
         raw = json.loads(Path(args.failures).read_text())
     except (OSError, json.JSONDecodeError) as exc:
         print(json.dumps({"error": f"cannot read failures: {exc}"}))
+        LOG.error("failure_learning.read_failures_failed: %s", exc)
         return 2
     failures = raw.get("failures") if isinstance(raw, dict) else raw
     if not isinstance(failures, list):
@@ -398,9 +403,13 @@ def main() -> int:
 
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        LOG.info("failure_learning.report target=%s candidates=%d",
+                 args.target, len(report.candidates))
     else:
         print(f"[+] {args.target}: {len(report.candidates)} bypass candidates "
               f"quarantined -> {out}")
+        LOG.info("failure_learning.summary target=%s candidates=%d out=%s",
+                 args.target, len(report.candidates), out)
     return 0
 
 

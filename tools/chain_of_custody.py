@@ -34,6 +34,13 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field, asdict
 
+try:
+    from tools.core.medium_safety import open_text
+except Exception:  # pragma: no cover - tools.* not always importable
+    def open_text(path, mode="r", **kw):  # type: ignore[no-redef]
+        return open(path, mode, encoding=kw.get("encoding", "utf-8"),
+                     errors=kw.get("errors", "replace"))
+
 
 def _sandboxed(cmd, **kw):
     """Spawn through the subprocess sandbox (kill switch + allowlist + env
@@ -232,7 +239,7 @@ class ChainOfCustody:
         # Append to chain
         entry.entry_hash = entry_hash
         chain_file = self._chain_file(finding_id)
-        with open(chain_file, "a") as f:
+        with open_text(chain_file, "a") as f:
             f.write(json.dumps(asdict(entry), sort_keys=True) + "\n")
             f.flush()
             os.fsync(f.fileno())
@@ -589,3 +596,18 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.4 governance shim — GPG signer compatibility wrapper.
+# ---------------------------------------------------------------------------
+
+def sign_with_gpg(prev_hash, entry_hash):
+    """Phase 1.4 shim — re-export the new GPG signer.
+
+    Calls ``gpg --detach-sign`` if GnuPG is available; otherwise returns
+    a deterministic ``sha256:<...>`` placeholder.  See
+    :func:`bugwolf.governance.gpg_signer.sign_with_gpg` for details.
+    """
+    from bugwolf.governance.gpg_signer import sign_with_gpg as _s
+    return _s(prev_hash, entry_hash)

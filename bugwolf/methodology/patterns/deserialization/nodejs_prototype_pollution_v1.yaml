@@ -1,0 +1,19 @@
+schema: bugwolf-methodology-pattern-v1
+id: nodejs_prototype_pollution_v1
+bug_class: deserialization
+category: deserialization
+severity: high
+title: "Node.js Prototype Pollution via Merge"
+description: |
+  The Node.js service merges user-supplied JSON via a vulnerable deep-merge function. The attacker injects a `__proto__` key to mutate Object.prototype, leading to XSS, authentication bypass, or RCE depending on the polluted property.
+detection:
+  signature: "__proto__|constructor\\.prototype"
+  method: POST
+  endpoint: "/api/config"
+remediation: |
+  Use Object.create(null) for merged containers, freeze Object.prototype, and use a deep-merge library that explicitly rejects __proto__ and constructor keys.
+references:
+  - "https://owasp.org/deserialization/"
+  - "https://portswigger.net/web-security/deserialization"
+bounty_range: "$3K — $20K"
+h100_proven: true

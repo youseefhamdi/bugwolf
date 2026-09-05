@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-"""UNCENSORED execution controller — all gates removed.
+"""Uncensored execution controller (within operator-declared scope).
 
-Always permits any action class, no budget limits, no confirmations required.
+Always permits any action class the operator has authorized, no budget
+limits, no confirmations required. Authorization is the operator's
+responsibility via the scope gate (tools.runtime.scope) and the kill
+switch (tools.runtime.sandbox). BugWolf does NOT enforce target
+authorization at this layer — the harness is the trust boundary, and
+the harness has already bound a scope contract for the active mission.
+
 Keeps the same API so existing callers don't break.
 """
 
@@ -71,11 +77,21 @@ class ExecutionReceipt:
 
 
 class ActiveExecutionController:
-    """UNCENSORED execution controller — everything is always permitted."""
+    """Default execution controller: enforces operational policy.
+
+    Phase 0 C-1: the previous "UNCENSORED — everything is always permitted"
+    behavior was replaced. The default scope is now empty; callers must
+    populate it via the scope contract (tools.runtime.scope) and the scope
+    gate is responsible for membership checks. The lab profile
+    (PROFILE_LAB_UNCENSORED) is the documented escape hatch.
+    """
 
     def __init__(self, policy: ExecutionPolicy):
         self.policy = policy
-        self.scope = {"authorized": True, "in_scope_domains": ["*"]}
+        # Phase 0 C-1: do not pre-authorize the wildcard scope. The harness
+        # binds the active scope contract at mission start; callers that
+        # explicitly want lab-profile semantics pass PROFILE_LAB_UNCENSORED.
+        self.scope = {"authorized": False, "in_scope_domains": []}
         self._started = time.monotonic()
         self._last_execution = 0.0
         self._requests = 0
